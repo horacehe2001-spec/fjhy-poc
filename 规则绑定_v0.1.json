@@ -1,0 +1,4407 @@
+{
+ "meta": {
+  "version": "0.1",
+  "generated": "2026-10-18",
+  "purpose": "把 82 条规则绑到本体概念上，并标出每个概念在 POC 样本里到底取不取得到",
+  "note": "**compiled 与 demo_executable 是两件事，不要合并。** compiled = 规则资产层面是否已编译成可执行形式（口径清楚、阈值可信、决策表齐备）；demo_executable = 用这 40 张样本能不能真的跑。TR-D1-01「付款主体与核算主体一致」客户自己标「是否已有=是」，说明真实共享系统里有这个闸；但导出样本里没有「付款主体」列，所以演示跑不了。把这两件事混成一个字段，会让「客户系统做不到」和「我手上没数据」分不清——前者是产品缺口，后者只是取数没到位。",
+  "availability_classes": {
+   "样本可得": "单人 33/33 与多人 7/7 都有且非空（实测列填充率）",
+   "样本可得(审批意见)": "来自 50 页审批意见 PDF，可解析",
+   "仅单人可得": "单人导出有、多人导出缺列。实测缺的是 报账人/报账人公司(核算主体)/单据状态/费用承担部门 四列，见 G-32",
+   "仅多人可得": "多人费用明细行有「部门」列，单人没有",
+   "样本全空": "列存在但 100% 为空（发票文件/事前附件/报销附件），见 G-29",
+   "样本缺列": "导出里没有这一列",
+   "需OA同步": "出差审批单/出差日历字段，OA 尚未同步到共享，见 G-04",
+   "需票据OCR": "需要读发票/车票/住宿单原件，而样本一个票据文件都没给",
+   "待业务侧明确": "口径本身还没定（职级、常驻地、直管企业范围）",
+   "已录入资产": "已落在 规则资产/标准表_v0.1.yaml 里",
+   "需外部数据源": "预算系统等本系统之外的数据",
+   "可推导": "本体里没有直接字段，但可由样本已有字段算出"
+  },
+  "measured": {
+   "sample_bills": 40,
+   "single": 33,
+   "multi": 7,
+   "single_columns_full": 16,
+   "single_columns_empty": 3,
+   "multi_missing_columns": [
+    "报账人",
+    "报账人公司（核算主体）",
+    "单据状态",
+    "费用承担部门"
+   ],
+   "orphan_detail_bill": "FJPG-BX2609041860（8 行明细无主表行，见 G-30）"
+  }
+ },
+ "derivations": {
+  "C0305": "出差天数 = 伙食补助费 ÷ 日标准（伙食补助按自然天数包干计发）；见 TR-D6-03 的 note，这是少数几条绕开 G-04 的路"
+ },
+ "concept_availability": {
+  "C0101": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "单据编号",
+   "type": "string",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0102": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "单据类型",
+   "type": "enum",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0103": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "单据日期",
+   "type": "datetime",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0104": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "提单人",
+   "type": "ref",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0105": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "报账人",
+   "type": "ref",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "仅单人可得",
+   "gap": "G-32"
+  },
+  "C0106": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "报账部门",
+   "type": "string",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0107": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "核算主体",
+   "type": "ref",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "仅单人可得",
+   "gap": "G-32"
+  },
+  "C0108": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "单据状态",
+   "type": "enum",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "仅单人可得",
+   "gap": "G-32"
+  },
+  "C0109": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "费用承担部门",
+   "type": "string",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "仅单人可得",
+   "gap": "G-32"
+  },
+  "C0110": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "业务类型",
+   "type": "enum",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0111": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "报账金额",
+   "type": "money",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0112": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "付款金额",
+   "type": "money",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0113": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "币种",
+   "type": "string",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0114": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "税金",
+   "type": "money",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0115": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "摘要",
+   "type": "text",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0116": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "补充说明",
+   "type": "text",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0117": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "附件张数",
+   "type": "int",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0118": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "凭证编号",
+   "type": "string",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0119": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "入账期间",
+   "type": "string",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0120": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "商旅结算",
+   "type": "money",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0121": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "核销金额",
+   "type": "money",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0122": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "挂账及付款金额",
+   "type": "money",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0123": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "收款方",
+   "type": "string",
+   "source": "审批意见",
+   "sensitive": true,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0124": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "收款账号",
+   "type": "string",
+   "source": "审批意见",
+   "sensitive": true,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0125": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "收款银行",
+   "type": "string",
+   "source": "审批意见",
+   "sensitive": true,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0126": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "支付方式",
+   "type": "string",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0127": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "付款用途",
+   "type": "text",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0128": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "是否多人",
+   "type": "bool",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列"
+  },
+  "C0129": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "出行人员",
+   "type": "ref",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0130": {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "name": "标准依据人",
+   "type": "string",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0201": {
+   "entity": "E02",
+   "entity_name": "费用明细",
+   "name": "单据号",
+   "type": "ref",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0202": {
+   "entity": "E02",
+   "entity_name": "费用明细",
+   "name": "费用小类",
+   "type": "enum",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0203": {
+   "entity": "E02",
+   "entity_name": "费用明细",
+   "name": "费用明细金额",
+   "type": "money",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C0204": {
+   "entity": "E02",
+   "entity_name": "费用明细",
+   "name": "分摊部门",
+   "type": "string",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "仅多人可得"
+  },
+  "C0301": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "出差人名单",
+   "type": "ref",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0302": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "出差起始日期",
+   "type": "date",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0303": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "出差结束日期",
+   "type": "date",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0304": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "出差地点",
+   "type": "string",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0305": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "出差天数",
+   "type": "int",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "可推导"
+  },
+  "C0306": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "出差人数",
+   "type": "int",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0307": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "审批日期",
+   "type": "date",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0308": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "回填日期",
+   "type": "date",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0309": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "用餐情况",
+   "type": "enum",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0310": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "用车情况",
+   "type": "enum",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0311": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "出差事由",
+   "type": "text",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0312": {
+   "entity": "E03",
+   "entity_name": "出差审批单",
+   "name": "审批形式",
+   "type": "enum",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0401": {
+   "entity": "E04",
+   "entity_name": "出差日历",
+   "name": "日期",
+   "type": "date",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0402": {
+   "entity": "E04",
+   "entity_name": "出差日历",
+   "name": "地点",
+   "type": "string",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0403": {
+   "entity": "E04",
+   "entity_name": "出差日历",
+   "name": "是否用餐",
+   "type": "bool",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0404": {
+   "entity": "E04",
+   "entity_name": "出差日历",
+   "name": "是否用车",
+   "type": "bool",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0405": {
+   "entity": "E04",
+   "entity_name": "出差日历",
+   "name": "用餐栏次",
+   "type": "enum",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需OA同步",
+   "gap": "G-04"
+  },
+  "C0501": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "发票类型",
+   "type": "enum",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0502": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "发票号码",
+   "type": "string",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0503": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "开票日期",
+   "type": "date",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0504": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "开票单位",
+   "type": "string",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0505": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "发票抬头",
+   "type": "string",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0506": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "价税合计",
+   "type": "money",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0507": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "税额",
+   "type": "money",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0508": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "税率",
+   "type": "rate",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0509": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "发票明细",
+   "type": "text",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0510": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "备注栏",
+   "type": "text",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0511": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "红冲状态",
+   "type": "enum",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0512": {
+   "entity": "E05",
+   "entity_name": "发票",
+   "name": "是否数电票",
+   "type": "bool",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0601": {
+   "entity": "E06",
+   "entity_name": "住宿费发票",
+   "name": "入住时间",
+   "type": "date",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0602": {
+   "entity": "E06",
+   "entity_name": "住宿费发票",
+   "name": "离店时间",
+   "type": "date",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0603": {
+   "entity": "E06",
+   "entity_name": "住宿费发票",
+   "name": "入住人姓名",
+   "type": "string",
+   "source": "审核要点",
+   "sensitive": true,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0604": {
+   "entity": "E06",
+   "entity_name": "住宿费发票",
+   "name": "住宿天数",
+   "type": "int",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0605": {
+   "entity": "E06",
+   "entity_name": "住宿费发票",
+   "name": "住宿间数",
+   "type": "int",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0606": {
+   "entity": "E06",
+   "entity_name": "住宿费发票",
+   "name": "是否午休房",
+   "type": "bool",
+   "source": "制度",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0701": {
+   "entity": "E07",
+   "entity_name": "交通费凭证",
+   "name": "交通工具",
+   "type": "enum",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0702": {
+   "entity": "E07",
+   "entity_name": "交通费凭证",
+   "name": "坐席等级",
+   "type": "string",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0703": {
+   "entity": "E07",
+   "entity_name": "交通费凭证",
+   "name": "出发地",
+   "type": "string",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0704": {
+   "entity": "E07",
+   "entity_name": "交通费凭证",
+   "name": "到达地",
+   "type": "string",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0705": {
+   "entity": "E07",
+   "entity_name": "交通费凭证",
+   "name": "乘车日期",
+   "type": "date",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0706": {
+   "entity": "E07",
+   "entity_name": "交通费凭证",
+   "name": "是否含往返",
+   "type": "bool",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0707": {
+   "entity": "E07",
+   "entity_name": "交通费凭证",
+   "name": "退票手续费",
+   "type": "money",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0708": {
+   "entity": "E07",
+   "entity_name": "交通费凭证",
+   "name": "大巴票备注身份信息",
+   "type": "bool",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C0801": {
+   "entity": "E08",
+   "entity_name": "出差人",
+   "name": "工号",
+   "type": "string",
+   "source": "审批意见",
+   "sensitive": true,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0802": {
+   "entity": "E08",
+   "entity_name": "出差人",
+   "name": "姓名",
+   "type": "string",
+   "source": "单据样本",
+   "sensitive": true,
+   "ocr": false,
+   "availability": "样本缺列"
+  },
+  "C0803": {
+   "entity": "E08",
+   "entity_name": "出差人",
+   "name": "所属部门",
+   "type": "string",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列"
+  },
+  "C0804": {
+   "entity": "E08",
+   "entity_name": "出差人",
+   "name": "职级",
+   "type": "enum",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C0805": {
+   "entity": "E08",
+   "entity_name": "出差人",
+   "name": "常驻地",
+   "type": "string",
+   "source": "制度",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "待业务侧明确",
+   "gap": "G-31"
+  },
+  "C0806": {
+   "entity": "E08",
+   "entity_name": "出差人",
+   "name": "所属单位",
+   "type": "ref",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列"
+  },
+  "C0807": {
+   "entity": "E08",
+   "entity_name": "出差人",
+   "name": "是否配备公务用车",
+   "type": "bool",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列"
+  },
+  "C0901": {
+   "entity": "E09",
+   "entity_name": "核算主体",
+   "name": "单位名称",
+   "type": "string",
+   "source": "单据样本",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列"
+  },
+  "C0902": {
+   "entity": "E09",
+   "entity_name": "核算主体",
+   "name": "直管企业",
+   "type": "enum",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "待业务侧明确",
+   "gap": "G-01"
+  },
+  "C0903": {
+   "entity": "E09",
+   "entity_name": "核算主体",
+   "name": "所属行业",
+   "type": "enum",
+   "source": "场景表",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列"
+  },
+  "C0904": {
+   "entity": "E09",
+   "entity_name": "核算主体",
+   "name": "付款主体",
+   "type": "string",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列"
+  },
+  "C1001": {
+   "entity": "E10",
+   "entity_name": "标准表",
+   "name": "标准类型",
+   "type": "enum",
+   "source": "制度",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "已录入资产"
+  },
+  "C1002": {
+   "entity": "E10",
+   "entity_name": "标准表",
+   "name": "适用职级",
+   "type": "ref",
+   "source": "制度",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "已录入资产"
+  },
+  "C1003": {
+   "entity": "E10",
+   "entity_name": "标准表",
+   "name": "适用地区",
+   "type": "string",
+   "source": "制度",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "已录入资产"
+  },
+  "C1004": {
+   "entity": "E10",
+   "entity_name": "标准表",
+   "name": "限额金额",
+   "type": "money",
+   "source": "制度",
+   "sensitive": false,
+   "ocr": true,
+   "availability": "已录入资产"
+  },
+  "C1005": {
+   "entity": "E10",
+   "entity_name": "标准表",
+   "name": "计量单位",
+   "type": "string",
+   "source": "制度",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "已录入资产"
+  },
+  "C1006": {
+   "entity": "E10",
+   "entity_name": "标准表",
+   "name": "生效期间",
+   "type": "daterange",
+   "source": "制度",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "已录入资产"
+  },
+  "C1007": {
+   "entity": "E10",
+   "entity_name": "标准表",
+   "name": "出处条款",
+   "type": "string",
+   "source": "制度",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "已录入资产"
+  },
+  "C1101": {
+   "entity": "E11",
+   "entity_name": "预算",
+   "name": "预算科目",
+   "type": "string",
+   "source": "场景表",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需外部数据源"
+  },
+  "C1102": {
+   "entity": "E11",
+   "entity_name": "预算",
+   "name": "预算金额",
+   "type": "money",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需外部数据源"
+  },
+  "C1103": {
+   "entity": "E11",
+   "entity_name": "预算",
+   "name": "已用金额",
+   "type": "money",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需外部数据源"
+  },
+  "C1104": {
+   "entity": "E11",
+   "entity_name": "预算",
+   "name": "预算调整审批材料",
+   "type": "ref",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需外部数据源"
+  },
+  "C1201": {
+   "entity": "E12",
+   "entity_name": "审批记录",
+   "name": "序号",
+   "type": "int",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C1202": {
+   "entity": "E12",
+   "entity_name": "审批记录",
+   "name": "审批节点",
+   "type": "enum",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C1203": {
+   "entity": "E12",
+   "entity_name": "审批记录",
+   "name": "审批人",
+   "type": "string",
+   "source": "审批意见",
+   "sensitive": true,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C1204": {
+   "entity": "E12",
+   "entity_name": "审批记录",
+   "name": "审批意见",
+   "type": "text",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C1205": {
+   "entity": "E12",
+   "entity_name": "审批记录",
+   "name": "审批时间",
+   "type": "datetime",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C1301": {
+   "entity": "E13",
+   "entity_name": "附件",
+   "name": "附件类型",
+   "type": "enum",
+   "source": "场景表",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得"
+  },
+  "C1302": {
+   "entity": "E13",
+   "entity_name": "附件",
+   "name": "文件名",
+   "type": "string",
+   "source": "场景表",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本全空",
+   "gap": "G-29"
+  },
+  "C1303": {
+   "entity": "E13",
+   "entity_name": "附件",
+   "name": "是否必要",
+   "type": "bool",
+   "source": "场景表",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "已录入资产"
+  },
+  "C1304": {
+   "entity": "E13",
+   "entity_name": "附件",
+   "name": "页数",
+   "type": "int",
+   "source": "审批意见",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本可得(审批意见)"
+  },
+  "C1401": {
+   "entity": "E14",
+   "entity_name": "事权审批单",
+   "name": "事项类别",
+   "type": "enum",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列",
+   "gap": "G-12"
+  },
+  "C1402": {
+   "entity": "E14",
+   "entity_name": "事权审批单",
+   "name": "事权审批金额",
+   "type": "money",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列",
+   "gap": "G-12"
+  },
+  "C1403": {
+   "entity": "E14",
+   "entity_name": "事权审批单",
+   "name": "是否已附",
+   "type": "bool",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列",
+   "gap": "G-12"
+  },
+  "C1501": {
+   "entity": "E15",
+   "entity_name": "会议培训通知",
+   "name": "是否统一安排食宿",
+   "type": "bool",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C1502": {
+   "entity": "E15",
+   "entity_name": "会议培训通知",
+   "name": "是否提供用餐",
+   "type": "enum",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C1503": {
+   "entity": "E15",
+   "entity_name": "会议培训通知",
+   "name": "是否提供接送车",
+   "type": "bool",
+   "source": "制度",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C1504": {
+   "entity": "E15",
+   "entity_name": "会议培训通知",
+   "name": "是否费用自理",
+   "type": "bool",
+   "source": "制度",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "需票据OCR",
+   "gap": "G-29"
+  },
+  "C1601": {
+   "entity": "E16",
+   "entity_name": "费用分摊",
+   "name": "分摊对象",
+   "type": "string",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列"
+  },
+  "C1602": {
+   "entity": "E16",
+   "entity_name": "费用分摊",
+   "name": "分摊金额",
+   "type": "money",
+   "source": "规则清单",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "样本缺列"
+  },
+  "C1701": {
+   "entity": "E17",
+   "entity_name": "直管企业特殊规则",
+   "name": "直管企业",
+   "type": "enum",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "待业务侧明确",
+   "gap": "G-01"
+  },
+  "C1702": {
+   "entity": "E17",
+   "entity_name": "直管企业特殊规则",
+   "name": "规则类别",
+   "type": "enum",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "待业务侧明确",
+   "gap": "G-01"
+  },
+  "C1703": {
+   "entity": "E17",
+   "entity_name": "直管企业特殊规则",
+   "name": "特殊规则正文",
+   "type": "text",
+   "source": "审核要点",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "待业务侧明确",
+   "gap": "G-01"
+  },
+  "C1704": {
+   "entity": "E17",
+   "entity_name": "直管企业特殊规则",
+   "name": "覆盖的通用规则",
+   "type": "ref",
+   "source": "待业务侧明确",
+   "sensitive": false,
+   "ocr": false,
+   "availability": "待业务侧明确",
+   "gap": "G-01"
+  }
+ },
+ "bindings": [
+  {
+   "rule_id": "TR-D1-01",
+   "name": "付款主体与核算主体一致",
+   "dimension": "D1",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "依赖不可得字段：C0904(付款主体·样本缺列)",
+   "concepts": [
+    {
+     "id": "C0904",
+     "entity": "E09",
+     "name": "付款主体",
+     "availability": "样本缺列",
+     "gap": null
+    },
+    {
+     "id": "C0107",
+     "entity": "E01",
+     "name": "核算主体",
+     "availability": "仅单人可得",
+     "gap": "G-32"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D1-02",
+   "name": "住宿费发票抬头为核算主体",
+   "dimension": "D1",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "仅单人 33 张（多人导出缺 核算主体，见 G-32）",
+   "degraded": {
+    "missing": [
+     "C0505"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "发票抬头"
+    ],
+    "cannot_hit_why": "实现（app/rules/impl.py:tr_d1_02）本就是「取不到抬头就 pending，绝不瞎判」，2026-10-22 起 attachment_extract 读图抽取部分住宿发票的 title，取到即判，取不到仍转人工。",
+    "degenerates_to": "退化成只对「已经读到发票抬头」的住宿发票判，读不到的那部分转人工，不整单放过也不整单拦截。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0505",
+     "entity": "E05",
+     "name": "发票抬头",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0107",
+     "entity": "E01",
+     "name": "核算主体",
+     "availability": "仅单人可得",
+     "gap": "G-32"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D1-03",
+   "name": "本人自行提单，代提单需授权",
+   "dimension": "D1",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "仅单人 33 张（多人导出缺 报账人，见 G-32）",
+   "degraded": {
+    "mode": "evidence_absent",
+    "missing": [
+     "共享系统代提单授权记录"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "共享系统代提单授权记录"
+    ],
+    "cannot_hit_why": "「**结构性无法命中。** 判「代提单未授权」需要证明授权记录不存在，而共享系统的代提单授权记录不在本次数据范围内——取不到就只能转人工，不能把「查不到授权」当成「没有授权」。实测：40 张样本里提单人≠报账人的有 5 张，全部走 pending。共享侧提供授权记录后，这条就能真正判了。」",
+    "degenerates_to": "标出「提单人≠报账人」这一事实，交人工核授权",
+    "why": "「**结构性无法命中。** 判「代提单未授权」需要证明授权记录不存在，而共享系统的代提单授权记录不在本次数据范围内——取不到就只能转人工，不能把「查不到授权」当成「没有授权」。实测：40 张样本里提单人≠报账人的有 5 张，全部走 pending。共享侧提供授权记录后，这条就能真正判了。」"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0104",
+     "entity": "E01",
+     "name": "提单人",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0105",
+     "entity": "E01",
+     "name": "报账人",
+     "availability": "仅单人可得",
+     "gap": "G-32"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D2-01",
+   "name": "是否有关联出差审批单",
+   "dimension": "D2",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "2026-10-22 复核：C1301（附件类型）本身已可得（attachment_classify 219/219 判完），但 app/rules/impl.py 里**没有 @rule(\"TR-D2-01\") 这个实现函数**——这是代码缺口，不是数据缺口。10-22 曾一度误标为可执行（只验证了概念可得性，没核对实现是否存在），被 tests/test_detection.py 的「执行集每条规则要有正例或声明」测试抓出：没有实现的规则会在 engine.py 里走「规则在执行集里但没有实现（代码缺口）」这条兜底，永远只产生 pending，报告上却显示它在工作——这比不在执行集里更危险，所以收回。",
+   "concepts": [
+    {
+     "id": "C1301",
+     "entity": "E13",
+     "name": "附件类型",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D2-02",
+   "name": "审批单天数与人数准确填报",
+   "dimension": "D2",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：依赖 OA 审批单字段同步（缺口 G-04）。字段没同步时判「待人工」，不按缺失值判不符合。",
+   "concepts": [
+    {
+     "id": "C0305",
+     "entity": "E03",
+     "name": "出差天数",
+     "availability": "可推导",
+     "gap": null
+    },
+    {
+     "id": "C0306",
+     "entity": "E03",
+     "name": "出差人数",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D2-03",
+   "name": "出差人与出差审批单一致",
+   "dimension": "D2",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：配置器里状态为「有效」，说明客户侧已上线。但本 POC 拿不到 OA 审批单数据，本演示判「待人工」。",
+   "concepts": [
+    {
+     "id": "C0301",
+     "entity": "E03",
+     "name": "出差人名单",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D2-04",
+   "name": "出差起迄地与审批单一致",
+   "dimension": "D2",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：规则表评估列：「OA将出差时间和出差地点同步给共享系统，可以实现」——是「将」不是「已」。缺口 G-04。",
+   "concepts": [
+    {
+     "id": "C0304",
+     "entity": "E03",
+     "name": "出差地点",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D2-05",
+   "name": "出差日历地点与出差地点一致",
+   "dimension": "D2",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：需交通费发票 OCR 取出发地/到达地。本 POC 未接票据 OCR，判「待人工」。",
+   "concepts": [
+    {
+     "id": "C0402",
+     "entity": "E04",
+     "name": "地点",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0703",
+     "entity": "E07",
+     "name": "出发地",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0704",
+     "entity": "E07",
+     "name": "到达地",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D2-06",
+   "name": "交通费发票地点与审批单一致",
+   "dimension": "D2",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：配置器里状态就是「无效」。依赖 OA 同步 + 票据 OCR 两个条件，都不具备。",
+   "concepts": [
+    {
+     "id": "C0704",
+     "entity": "E07",
+     "name": "到达地",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0304",
+     "entity": "E03",
+     "name": "出差地点",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D2-07",
+   "name": "出差起迄时间不超过审批单时间",
+   "dimension": "D2",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：缺口 G-04。",
+   "concepts": [
+    {
+     "id": "C0302",
+     "entity": "E03",
+     "name": "出差起始日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0303",
+     "entity": "E03",
+     "name": "出差结束日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D2-08",
+   "name": "多人同行需提供全部人员名单及出差申请",
+   "dimension": "D2",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：多人单的费用明细按**部门**分摊而非按人（实测 7 张多人单的明细表只有「部门」列，没有人名列），无法由明细反推出差人名单。需客户确认多人单是否有出差人字段（",
+   "concepts": [
+    {
+     "id": "C0204",
+     "entity": "E02",
+     "name": "分摊部门",
+     "availability": "仅多人可得",
+     "gap": null
+    },
+    {
+     "id": "C0301",
+     "entity": "E03",
+     "name": "出差人名单",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D2-09",
+   "name": "纸质线下审批需全体手写签名及回来后日期",
+   "dimension": "D2",
+   "rule_class": "soft",
+   "control_type": "警告",
+   "node": "N04",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "logic 未声明 concepts（软规则/提示词型），由 AI 审核节点处理，不进硬执行集",
+   "concepts": [],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D3-01",
+   "name": "住宿发票敏感开票单位",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 开票单位，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0504"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "开票单位"
+    ],
+    "cannot_hit_why": "实现（_sensitive_scan）取不到开票单位时判 pending，不猜。2026-10-22 起部分发票的 issuer 已由 attachment_extract 读图抽取回填。",
+    "degenerates_to": "退化成只扫「已经读到开票单位」的那些发票，读不到的那部分转人工，不能确认整单干净。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0504",
+     "entity": "E05",
+     "name": "开票单位",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": "敏感开票单位名单"
+  },
+  {
+   "rule_id": "TR-D3-02",
+   "name": "发票明细敏感词",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 发票明细，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0509"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "发票明细"
+    ],
+    "cannot_hit_why": "实现（_sensitive_scan）取不到发票明细时判 pending，不猜。2026-10-22 起部分发票的 detail_text 已由 attachment_extract 读图抽取回填。",
+    "degenerates_to": "退化成只扫「已经读到发票明细」的那些发票，读不到的那部分转人工，不能确认整单干净。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0509",
+     "entity": "E05",
+     "name": "发票明细",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": "敏感消费项名单"
+  },
+  {
+   "rule_id": "TR-D3-03",
+   "name": "发票已红冲提醒退回",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：需接入发票查验接口才能知道红冲状态。单据样本里无此字段。",
+   "concepts": [
+    {
+     "id": "C0511",
+     "entity": "E05",
+     "name": "红冲状态",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D3-04",
+   "name": "住宿费发票应为增值税专用发票且信息完整",
+   "dimension": "D3",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：来源为 OCR 正文。条文文字 OCR 准确度高，但「原则上」三字决定它不能是硬拦截。需业务侧确认例外口径。",
+   "concepts": [
+    {
+     "id": "C0501",
+     "entity": "E05",
+     "name": "发票类型",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0505",
+     "entity": "E05",
+     "name": "发票抬头",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D3-05",
+   "name": "不同职级同行住宿费发票分别开具",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：多人单明细无人员职级字段（同 TR-D2-08，缺口 G-14）。",
+   "concepts": [
+    {
+     "id": "C0804",
+     "entity": "E08",
+     "name": "职级",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    },
+    {
+     "id": "C0603",
+     "entity": "E06",
+     "name": "入住人姓名",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D3-06",
+   "name": "福州港务住宿发票须注明入住离店时间与人员姓名",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：需票据 OCR。且本 POC 样本核算主体全是财智分公司，适用范围不含福州港务，本条在演示中不适用（不是不符合）。",
+   "concepts": [
+    {
+     "id": "C0601",
+     "entity": "E06",
+     "name": "入住时间",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0602",
+     "entity": "E06",
+     "name": "离店时间",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0603",
+     "entity": "E06",
+     "name": "入住人姓名",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D3-07",
+   "name": "东南守押住宿发票须列明天数间数",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：同 TR-D3-06：需票据 OCR，且本 POC 样本不适用该主体。",
+   "concepts": [
+    {
+     "id": "C0604",
+     "entity": "E06",
+     "name": "住宿天数",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0605",
+     "entity": "E06",
+     "name": "住宿间数",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D3-08",
+   "name": "2025-09-30 后纸质铁路票不可报销",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 乘车日期/交通工具，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0705",
+     "C0701"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "交通工具",
+     "发票凭证形式(纸质/电子)"
+    ],
+    "cannot_hit_why": "实现（tr_d3_08）里交通工具（C0701）和凭证形式（C0705/invoice.is_eticket）任一取不到都转人工，不把「不知道是不是火车」当「不是火车」跳过，也不把「不知道是不是纸质」当「电子」放过。2026-10-22 起 vehicle/is_eticket 已由 attachment_extract 读图抽取部分回填。",
+    "degenerates_to": "退化成只对「交通工具和凭证形式都读到」的2025-09-30后铁路票判，任一取不到就转人工。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0705",
+     "entity": "E07",
+     "name": "乘车日期",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0701",
+     "entity": "E07",
+     "name": "交通工具",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D3-09",
+   "name": "动车退票手续费抵扣凭证",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：需票据 OCR。税率 6% 来自原生文本，可信。",
+   "concepts": [
+    {
+     "id": "C0707",
+     "entity": "E07",
+     "name": "退票手续费",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0512",
+     "entity": "E05",
+     "name": "是否数电票",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0508",
+     "entity": "E05",
+     "name": "税率",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D3-10",
+   "name": "大巴票备注身份信息方可抵扣",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：需票据 OCR。**身份证号是敏感信息，OCR 出来后不得落库明文，不得出现在报告正文与审计表**——本规则只回「有/无」，不回号码本身。",
+   "concepts": [
+    {
+     "id": "C0708",
+     "entity": "E07",
+     "name": "大巴票备注身份信息",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0507",
+     "entity": "E05",
+     "name": "税额",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D3-11",
+   "name": "旅客运输服务进项税额计算正确",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：各票种适用税率表材料里没有，不自行填（航空 9%、铁路 9%、公路水路 3% 是行业常识，但常识不是制度依据）。缺口 G-15。",
+   "concepts": [
+    {
+     "id": "C0507",
+     "entity": "E05",
+     "name": "税额",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0508",
+     "entity": "E05",
+     "name": "税率",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D3-12",
+   "name": "机票保险费用不允许报销",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：口径冲突未裁决（G-16），不编译。**宁可不判，不可按一方口径误判另一方。**",
+   "concepts": [
+    {
+     "id": "C0509",
+     "entity": "E05",
+     "name": "发票明细",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D3-13",
+   "name": "交通意外保险每人次限一份且不重复",
+   "dimension": "D3",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：「公司是否已统一购买」是外部事实，系统里没有这个标志位。缺口 G-17。",
+   "concepts": [
+    {
+     "id": "C0509",
+     "entity": "E05",
+     "name": "发票明细",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-01",
+   "name": "交通坐席等级符合制度标准",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：**交通工具等级表无法录入**：该表是扫描表格，OCR 结果乱码（「人《1) 分公 炎过交认《软认、」），人眼读图也因表格线断裂、文字重影失败。编一个等级表出来",
+   "concepts": [
+    {
+     "id": "C0702",
+     "entity": "E07",
+     "name": "坐席等级",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0804",
+     "entity": "E08",
+     "name": "职级",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": "交通工具等级标准表"
+  },
+  {
+   "rule_id": "TR-D4-02",
+   "name": "住宿费标准控制",
+   "dimension": "D4",
+   "rule_class": "mixed",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 住宿天数/出差地点，不确定区间转人工）",
+   "degraded": {
+    "mode": "interval",
+    "missing": [
+     "C0304",
+     "C0604"
+    ],
+    "lower": 350,
+    "upper": 980,
+    "unit": "元/人·天",
+    "on_indeterminate": "待人工",
+    "why": "「按城市取限额要 出差地点（C0304，需 OA 同步 G-04）与 住宿天数（C0604，需票据 OCR），两个都取不到。但限额本身是有界的：已录入的 15 行里最低 350（福建其他·其他人员）、最高 980（北京·公司领导）。于是做区间判定——日均 > 980 必定超标（任何城市任何职级都超），日均 <= 350 必定不超，中间那段一律转人工。这样**误报和漏报都是 0**，代价是中间段要人看。天数用 出差天数（C0305，可由伙食补助 ÷ 日标准倒算）代替住宿天数，是偏宽的一侧（天数算多了，日均就算小了），只会少报不会错报。」"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C1004",
+     "entity": "E10",
+     "name": "限额金额",
+     "availability": "已录入资产",
+     "gap": null
+    },
+    {
+     "id": "C0304",
+     "entity": "E03",
+     "name": "出差地点",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0604",
+     "entity": "E06",
+     "name": "住宿天数",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-03",
+   "name": "出差补贴标准控制",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "composite 规则的 delegate 不在执行集里：TR-D4-05。这些 delegate 未编译或缺字段，本条永远给不出结论，每张单只会产生一条 pending，把真正需要人看的淹掉。",
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-04",
+   "name": "伙食补助费标准",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 出差地点，不确定区间转人工）",
+   "degraded": {
+    "mode": "interval",
+    "missing": [
+     "C0304"
+    ],
+    "lower": 100,
+    "upper": 120,
+    "unit": "元/人·天",
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "C0305(来自OA而非倒算)"
+    ],
+    "cannot_hit_why": "「**在缺 OA 出差天数（C0305 来自倒算而非 OA）时，本条是个恒等式，永远不会命中。**穷举证明：天数 = 伙食补助总额 ÷ 100（整除才认），人日均 = 总额 ÷ (天数 × 人数) = 100 ÷ 人数 ≤ 100，恒不超标；不整除时一律 pending。所以本条现在实际退化成「伙食补助是否为日标准整数倍」的校验——这个校验本身有价值（能发现计算错误，实测 220 元那种会被挑出来），但它**不是标准控制**，报告上不能让人以为伙食补助标准已经被管住了。OA 同步出差起止日期（G-04）之后，天数来自 OA 而非倒算，恒等式才解除。」",
+    "degenerates_to": "伙食补助是否为日标准的整数倍",
+    "why": "「选 100 还是 120 要看出差地是否属西藏/青海/新疆（C0304，需 OA 同步 G-04）。但三档只有 100 与 120 两个值：日均 <= 100 必定不超，日均 > 120 必定超标，100 < 日均 <= 120 这一段转人工。**不能直接按 100 判**——那样一次合规的西藏出差（120/天）会被报成超标准，是误报。」"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0304",
+     "entity": "E03",
+     "name": "出差地点",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0305",
+     "entity": "E03",
+     "name": "出差天数",
+     "availability": "可推导",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-05",
+   "name": "市内交通费标准",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "依赖不可得字段：C0404(是否用车·需OA同步)、C0310(用车情况·需OA同步)",
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0404",
+     "entity": "E04",
+     "name": "是否用车",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0310",
+     "entity": "E03",
+     "name": "用车情况",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-06",
+   "name": "超标准住宿需书面说明并审批",
+   "dimension": "D4",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "全部 40 张",
+   "degraded": null,
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    },
+    {
+     "id": "C1202",
+     "entity": "E12",
+     "name": "审批节点",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-07",
+   "name": "超标准乘坐交通工具需审批",
+   "dimension": "D4",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：前置的 TR-D4-01 无法编译（等级表无法录入），本条无从触发。",
+   "concepts": [
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    },
+    {
+     "id": "C1202",
+     "entity": "E12",
+     "name": "审批节点",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-08",
+   "name": "午休房按限额 50% 报销",
+   "dimension": "D4",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：「是否午休房」在系统里无标志位，需从住宿发票入住离店时间推断（需票据 OCR）。",
+   "concepts": [
+    {
+     "id": "C0606",
+     "entity": "E06",
+     "name": "是否午休房",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C1004",
+     "entity": "E10",
+     "name": "限额金额",
+     "availability": "已录入资产",
+     "gap": null
+    },
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-09",
+   "name": "闽运集团市内交通费包干标准",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 出差地点，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0304"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "出差地点"
+    ],
+    "cannot_hit_why": "**实现只读出差地点（C0304），不读常驻地（C0805）**——原先登记的 C0805 是录错了，实现（_trip_place）从未取过它。取不到出差地点时按上界 80 判必定超标那一侧，其余转人工，不猜中间档。2026-10-22 起部分单据的 trip.place 已由 attachment_extract 读审批单抽取回填。本 POC 样本核算主体不含闽运集团，实测会判「不适用」，这条修正不改变这一事实。",
+    "degenerates_to": "退化成只对「人日均超过 80 元/人·天上界」这一侧确定判超标，中间档和 0 元档转人工；本 POC 样本因核算主体不含闽运集团，实测恒为「不适用」。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0304",
+     "entity": "E03",
+     "name": "出差地点",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-10",
+   "name": "漳州港务古雷港区内不属出差",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 出差地点，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0304"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "出差地点"
+    ],
+    "cannot_hit_why": "**实现里「常驻地=漳州市古雷港经济开发区」是写死的常量**（本条按核算主体绑定，漳州港务的常驻地是固定值，不是按人查的字段）——原先登记的 C0805 是录错了，实现从未按字段查过常驻地。真正要的只有出差地点（C0304），取不到时若本单三项费用均为 0 仍可判合规，否则转人工。2026-10-22 起部分单据的 trip.place 已由 attachment_extract 读审批单抽取回填。本 POC 样本不含漳州港务主体，实测会判「不适用」，这条修正不改变这一事实。",
+    "degenerates_to": "退化成只在「出差地点确实读到」时判（古雷港内整单不成立 / 当天往返周边三项费用为 0）；读不到出差地点但三项费用都是 0 仍可判合规，否则转人工。本 POC 样本因不含漳州港务主体，实测恒为「不适用」。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0304",
+     "entity": "E03",
+     "name": "出差地点",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-11",
+   "name": "泉州港务补助特殊标准",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 出差地点，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0304"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "出差地点"
+    ],
+    "cannot_hit_why": "实现取不到出差地点时按上界 120（西藏青海新疆档）判必定超标那一侧，其余转人工，不猜中间档。2026-10-22 起部分单据的 trip.place 已由 attachment_extract 读审批单抽取回填。本 POC 样本里去泉州港务驻点的单核算主体是财智分公司，按核算主体绑定不适用本条，实测会判「不适用」，这条修正不改变这一事实。",
+    "degenerates_to": "退化成只对「人日均超过 120 元/人·天上界」这一侧确定判超标，0~120 的其余四档转人工；本 POC 样本因核算主体绑定问题，实测恒为「不适用」。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0304",
+     "entity": "E03",
+     "name": "出差地点",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": "泉州港务补助标准"
+  },
+  {
+   "rule_id": "TR-D4-12",
+   "name": "闽深公司无交通补贴",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 税额，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0507"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "出租车发票税额"
+    ],
+    "cannot_hit_why": "实现里「出租车发票不抵税」这一支要税额（C0507）才能判；取不到税额且认出是出租车发票时转人工，不把「不知道」当「没抵税」放过——2026-10-22 修了这一支的实现（app/rules/impl.py:tr_d4_12），原先税额取不到会被静默当合规漏判。补贴/交通费上限这两支不靠税额，照常判。用户决策：税额这类金额字段暂不做读图抽取，这一支会长期转人工。",
+    "degenerates_to": "退化成只判「有无市内交通补贴」与「交通费是否超日上限 80 元」这两支；出租车发票不抵税这一支，认出是出租车发票但税额未知时转人工，不直接放行。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0507",
+     "entity": "E05",
+     "name": "税额",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-13",
+   "name": "闽货、饮食服务公司无交通补贴",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "全部 40 张",
+   "degraded": null,
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0106",
+     "entity": "E01",
+     "name": "报账部门",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0305",
+     "entity": "E03",
+     "name": "出差天数",
+     "availability": "可推导",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-14",
+   "name": "拖轮公司增员差旅费标准",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 住宿天数，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0604"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "住宿晚数"
+    ],
+    "cannot_hit_why": "实现（tr_d4_14）明确不拿出差天数顶替晚数（住 N 晚对应 N+1 天，顶替会把上限算高一档），取不到晚数就转人工。2026-10-22 起部分住宿发票的晚数已由 attachment_extract 读图抽取回填（hotel_invoice.nights）。",
+    "degenerates_to": "退化成只对「已读到住宿晚数」的住宿费判超标，读不到晚数转人工，不拿出差天数顶替。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0604",
+     "entity": "E06",
+     "name": "住宿天数",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0305",
+     "entity": "E03",
+     "name": "出差天数",
+     "availability": "可推导",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-15",
+   "name": "东南守押同性同行须住双人间",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：需要性别字段与间数字段，系统里都没有。性别属个人敏感信息，是否采集需合规评估（缺口 G-19）。",
+   "concepts": [
+    {
+     "id": "C0605",
+     "entity": "E06",
+     "name": "住宿间数",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0804",
+     "entity": "E08",
+     "name": "职级",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D4-16",
+   "name": "在榕人员当天往返闽侯连江贵安长乐机场不发市内交通费",
+   "dimension": "D4",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：金额口径冲突未裁决（G-11）。40 与 50 差的是钱，不自行拍板。",
+   "concepts": [
+    {
+     "id": "C0304",
+     "entity": "E03",
+     "name": "出差地点",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D5-01",
+   "name": "会议培训统一安排食宿的补贴按往返各1天计发",
+   "dimension": "D5",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：规则表「实现途径」列原文就是「？」——客户自己没定由谁执行。缺口 G-09。且「是否统一安排食宿」要从会议通知附件读出，需 AI 理解。",
+   "concepts": [
+    {
+     "id": "C1501",
+     "entity": "E15",
+     "name": "是否统一安排食宿",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D5-02",
+   "name": "举办方免费提供餐次的伙食补助扣减",
+   "dimension": "D5",
+   "rule_class": "mixed",
+   "control_type": "禁止",
+   "node": "N04",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：**规则表评估列原文写的就是「无法实现」。** 要判它得知道往返当天举办方提供了几餐，这个信息在会议通知的正文里，且常常根本没写。不要把「无法实现」的规则偷偷做",
+   "concepts": [
+    {
+     "id": "C1502",
+     "entity": "E15",
+     "name": "是否提供用餐",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D5-03",
+   "name": "乘机往返机场专线费用与当日交通补贴可并存",
+   "dimension": "D5",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：实现途径列为「？」（缺口 G-09），且需票据 OCR 识别交通工具。",
+   "concepts": [
+    {
+     "id": "C0701",
+     "entity": "E07",
+     "name": "交通工具",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D5-04",
+   "name": "按审批单回填内容校验补贴金额",
+   "dimension": "D5",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：**规则表评估列原文「无法实现」。** 回填的用餐/用车情况在 OA 审批单里，共享系统读不到（缺口 G-04）。",
+   "concepts": [
+    {
+     "id": "C0309",
+     "entity": "E03",
+     "name": "用餐情况",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0310",
+     "entity": "E03",
+     "name": "用车情况",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D5-05",
+   "name": "主办方提供餐食接送车的不报补贴",
+   "dimension": "D5",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N04",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "依赖不可得字段：C1502(是否提供用餐·需票据OCR)、C1503(是否提供接送车·需票据OCR)",
+   "concepts": [
+    {
+     "id": "C1502",
+     "entity": "E15",
+     "name": "是否提供用餐",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C1503",
+     "entity": "E15",
+     "name": "是否提供接送车",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D5-06",
+   "name": "两家接待单位各安排一次工作餐当天不发伙食补助",
+   "dimension": "D5",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：「当天接待次数」无数据来源。出差审批单的用餐勾选只有三档（自行用餐/协助安排就餐/按规定接待一餐），记不了「两家各一次」。",
+   "concepts": [
+    {
+     "id": "C0309",
+     "entity": "E03",
+     "name": "用餐情况",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D5-07",
+   "name": "本单位全程提供交通工具不报市内交通费",
+   "dimension": "D5",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：依赖 OA 回填的用车情况（缺口 G-04）。",
+   "concepts": [
+    {
+     "id": "C0310",
+     "entity": "E03",
+     "name": "用车情况",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D5-08",
+   "name": "已配公务用车的负责人不得重复领交通补贴",
+   "dimension": "D5",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：「是否配备公务用车」是人事主数据，系统里没有这个标志位。缺口 G-20。",
+   "concepts": [
+    {
+     "id": "C0807",
+     "entity": "E08",
+     "name": "是否配备公务用车",
+     "availability": "样本缺列",
+     "gap": null
+    },
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D5-09",
+   "name": "因私停留绕道扣减补贴",
+   "dimension": "D5",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：依赖 OA 审批单的出差起止日期（缺口 G-04）与票据 OCR 的乘车日期。",
+   "concepts": [
+    {
+     "id": "C0303",
+     "entity": "E03",
+     "name": "出差结束日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0705",
+     "entity": "E07",
+     "name": "乘车日期",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D5-10",
+   "name": "工会疗休养不从差旅费列支",
+   "dimension": "D5",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "全部 40 张",
+   "degraded": null,
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0115",
+     "entity": "E01",
+     "name": "摘要",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0127",
+     "entity": "E01",
+     "name": "付款用途",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": [
+    "疗休养"
+   ]
+  },
+  {
+   "rule_id": "TR-D6-01",
+   "name": "必要附件完整性",
+   "dimension": "D6",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "2026-10-22 复核：C1301（附件类型）本身已可得（attachment_classify 219/219 判完），决策表数据也齐（必要附件决策表_v0.1.yaml 29 行）。但 app/rules/impl.py 里**没有 @rule(\"TR-D6-01\") 这个实现函数**——没人写过读决策表、按业务大类×小类核对附件齐全性的求值代码，这是代码缺口，不是数据缺口。10-22 曾一度误标为可执行（只核对了概念可得性和决策表数据，没核对实现是否存在），被 tests/test_detection.py 抓出：没实现的规则会走 engine.py 的兜底 pending，报告上却显示它在工作，收回。要真正解锁，需要补一个 tr_d6_01 实现函数，这是后续工作，不是今天字段抽取的范围。",
+   "concepts": [
+    {
+     "id": "C1301",
+     "entity": "E13",
+     "name": "附件类型",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C1303",
+     "entity": "E13",
+     "name": "是否必要",
+     "availability": "已录入资产",
+     "gap": null
+    },
+    {
+     "id": "C0110",
+     "entity": "E01",
+     "name": "业务类型",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0202",
+     "entity": "E02",
+     "name": "费用小类",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": "必要附件决策表"
+  },
+  {
+   "rule_id": "TR-D6-02",
+   "name": "会议培训类需上传通知文件",
+   "dimension": "D6",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N04",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "2026-10-22 复核：C1301/C0116 都已可得，但 app/rules/impl.py 里**没有 @rule(\"TR-D6-02\") 这个实现函数**——代码缺口，不是数据缺口。10-22 曾一度误标为可执行，被 tests/test_detection.py 抓出后收回。",
+   "concepts": [
+    {
+     "id": "C1301",
+     "entity": "E13",
+     "name": "附件类型",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D6-03",
+   "name": "出差2天以上需有住宿费发票",
+   "dimension": "D6",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 出差起始日期/出差结束日期，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0302",
+     "C0303"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "单次出差起止日期"
+    ],
+    "cannot_hit_why": "**本条要的是单次连续出差 2 天以上，不是累计 2 个出差日。** 单次起止日期（C0302/C0303）在 OA 出差审批单里，真实样本尚未同步（G-04），实现靠伙食补助倒算累计出差日数顶替，只有伙食补助金额是日标准整数倍时才敢确认（同时满足'是单次连续'这一条件靠 trip.synced_from_oa，真实数据恒为空）；拿累计日数硬顶会把「3 次当天往返累计 3 日」误判成「连续 3 天出差」，实测产生过 9 条误报（FJPG-BX2607260052），所以取不到单次起止日期时转人工，不拿累计数冒充单次数。",
+    "degenerates_to": "退化成'伙食补助能不能整除出日标准'的推断，推不出来或推出来的不是单次连续，一律转人工，不直接判缺住宿发票。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    },
+    {
+     "id": "C0305",
+     "entity": "E03",
+     "name": "出差天数",
+     "availability": "可推导",
+     "gap": null
+    },
+    {
+     "id": "C0302",
+     "entity": "E03",
+     "name": "出差起始日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0303",
+     "entity": "E03",
+     "name": "出差结束日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D6-04",
+   "name": "海运集团事权审批单",
+   "dimension": "D6",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：**适用范围未定（缺口 G-12）。** 条文主语是「海运集团」，而 40 张样本的核算主体是「财智分公司」。若适用，样本里 28 张金额 ≥1000 的单全部",
+   "concepts": [
+    {
+     "id": "C1401",
+     "entity": "E14",
+     "name": "事项类别",
+     "availability": "样本缺列",
+     "gap": "G-12"
+    },
+    {
+     "id": "C0111",
+     "entity": "E01",
+     "name": "报账金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C1301",
+     "entity": "E13",
+     "name": "附件类型",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D6-05",
+   "name": "交通费凭证需含往返行程",
+   "dimension": "D6",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N04",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 是否含往返，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0706"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "交通凭证的往返标记"
+    ],
+    "cannot_hit_why": "实现（tr_d6_05）有三条判往返的线索，has_round_trip 只是其中最直接的一条，取不到会退而看多张凭证的出发/到达地是否能配对成往返，取不到任何线索才转人工。2026-10-22 起 from_place/to_place/has_round_trip 已由 attachment_extract 读图抽取部分回填。",
+    "degenerates_to": "退化成「凭证自带往返标记」或「多张凭证出发/到达地能精确配对」才判 ok，站名写法不一致但像是同一往返的转人工，两条线索都没有且无补充说明才判 hit。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0706",
+     "entity": "E07",
+     "name": "是否含往返",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D6-06",
+   "name": "应有住宿而无住宿发票的连带限制",
+   "dimension": "D6",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 出差起始日期/出差结束日期，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0302",
+     "C0303"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "单次出差起止日期"
+    ],
+    "cannot_hit_why": "同 TR-D6-03：要的是单次连续出差天数，不是累计出差日数，取不到单次起止日期（OA 未同步，G-04）转人工，不拿累计日数硬顶——本条比 D6-03 更严厉（连带否掉三项费用），拿不准更不能硬判。",
+    "degenerates_to": "退化成'伙食补助能不能整除出日标准'的推断，推不出来或推出来的不是单次连续，一律转人工，不直接否掉三项费用。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    },
+    {
+     "id": "C0305",
+     "entity": "E03",
+     "name": "出差天数",
+     "availability": "可推导",
+     "gap": null
+    },
+    {
+     "id": "C0302",
+     "entity": "E03",
+     "name": "出差起始日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0303",
+     "entity": "E03",
+     "name": "出差结束日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D7-01",
+   "name": "出差日期不能早于申请日期",
+   "dimension": "D7",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：配置器状态「有效」，客户侧已上线。本 POC 拿不到 OA 审批单的申请日期，判「待人工」。",
+   "concepts": [
+    {
+     "id": "C0302",
+     "entity": "E03",
+     "name": "出差起始日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0307",
+     "entity": "E03",
+     "name": "审批日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D7-02",
+   "name": "出差日期不能晚于申请结束时间",
+   "dimension": "D7",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：**配置器里状态就是「无效」。** 客户已把它关掉，原因大概率是 OA 同步未就绪（缺口 G-04）。不要在报告里声称跑过。",
+   "concepts": [
+    {
+     "id": "C0303",
+     "entity": "E03",
+     "name": "出差结束日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D7-03",
+   "name": "住宿发票开具时间不早于出差首日",
+   "dimension": "D7",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 开票日期/出差起始日期，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0503",
+     "C0302"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "开票日期",
+     "出差首日"
+    ],
+    "cannot_hit_why": "实现（tr_d7_03）取不到开票日期或出差首日（OA同步或审批单读图二选一）就转人工。2026-10-22 起 invoice.issue_date 已由 attachment_extract 读图抽取回填。",
+    "degenerates_to": "退化成只对「开票日期和出差首日都读到」的住宿发票判，缺一项就转人工。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0503",
+     "entity": "E05",
+     "name": "开票日期",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0302",
+     "entity": "E03",
+     "name": "出差起始日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D7-04",
+   "name": "住宿发票晚于出差末日需查备注栏时间",
+   "dimension": "D7",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 开票日期/备注栏，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0503",
+     "C0510"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "开票日期",
+     "出差末日"
+    ],
+    "cannot_hit_why": "实现（tr_d7_04）取不到开票日期或出差末日就转人工；开票晚于末日但备注栏有文字时，是否说明了时间需人工核对（不自动解析备注栏语义）。2026-10-22 起 invoice.issue_date/remark_col 已由 attachment_extract 读图抽取部分回填。",
+    "degenerates_to": "退化成只对「开票日期和出差末日都读到」的住宿发票判；开票晚于末日且备注栏为空才判 hit，备注栏有字但语义不明确的转人工。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0503",
+     "entity": "E05",
+     "name": "开票日期",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0510",
+     "entity": "E05",
+     "name": "备注栏",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D7-05",
+   "name": "发票备注时间应在出差日期内",
+   "dimension": "D7",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 备注栏，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0510"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "发票备注栏里的日期",
+     "出差首末日"
+    ],
+    "cannot_hit_why": "实现（tr_d7_05）从备注栏文字里找不出日期（没写日期，不是没写备注）时直接判 ok（不强行判定），出差首末日取不到也走补充说明兜底，不硬拦截。2026-10-22 起 invoice.remark_col 已由 attachment_extract 部分回填，但二次解析备注栏里的日期本身就可能找不到。",
+    "degenerates_to": "退化成只对「备注栏里能解析出一个日期」的发票核对是否在出差区间内，解析不出日期的一律判 ok（不是漏判，是备注栏本来就没写时间，不适用本条拦截）。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0510",
+     "entity": "E05",
+     "name": "备注栏",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D7-06",
+   "name": "住宿费按各出差人各自日期匹配",
+   "dimension": "D7",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：**规则表评估列原文「无法实现」。** 多人单的费用明细按部门不按人（实测 7 张多人单只有「部门」列），更没有逐人的出差日期。缺口 G-14。",
+   "concepts": [
+    {
+     "id": "C0603",
+     "entity": "E06",
+     "name": "入住人姓名",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0302",
+     "entity": "E03",
+     "name": "出差起始日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0303",
+     "entity": "E03",
+     "name": "出差结束日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D7-07",
+   "name": "审批日期不得晚于出差起始日期",
+   "dimension": "D7",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：缺口 G-04。",
+   "concepts": [
+    {
+     "id": "C0307",
+     "entity": "E03",
+     "name": "审批日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0302",
+     "entity": "E03",
+     "name": "出差起始日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D7-08",
+   "name": "回填日期不得早于出差结束日期",
+   "dimension": "D7",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "OUT",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：**执行点在 OA，不在本系统。** 规则表「实现途径=通过OA控制？」+「评估=无法实现」。",
+   "concepts": [
+    {
+     "id": "C0308",
+     "entity": "E03",
+     "name": "回填日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0303",
+     "entity": "E03",
+     "name": "出差结束日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D7-09",
+   "name": "行程日期在出差申请日期范围内",
+   "dimension": "D7",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：缺口 G-04 + 需票据 OCR。",
+   "concepts": [
+    {
+     "id": "C0705",
+     "entity": "E07",
+     "name": "乘车日期",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C0302",
+     "entity": "E03",
+     "name": "出差起始日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0303",
+     "entity": "E03",
+     "name": "出差结束日期",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D8-01",
+   "name": "报销金额不得超预算",
+   "dimension": "D8",
+   "rule_class": "hard",
+   "control_type": "禁止",
+   "node": "N01",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：预算数据不在单据样本里，需接预算模块。规则表标「已有」，说明客户系统里有，本 POC 没有这个数据源。",
+   "concepts": [
+    {
+     "id": "C1102",
+     "entity": "E11",
+     "name": "预算金额",
+     "availability": "需外部数据源",
+     "gap": null
+    },
+    {
+     "id": "C1103",
+     "entity": "E11",
+     "name": "已用金额",
+     "availability": "需外部数据源",
+     "gap": null
+    },
+    {
+     "id": "C0111",
+     "entity": "E01",
+     "name": "报账金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C1104",
+     "entity": "E11",
+     "name": "预算调整审批材料",
+     "availability": "需外部数据源",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D8-02",
+   "name": "费用分摊对象与金额准确",
+   "dimension": "D8",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N04",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "依赖不可得字段：C1601(分摊对象·样本缺列)、C1602(分摊金额·样本缺列)、C0204(分摊部门·仅多人可得)",
+   "concepts": [
+    {
+     "id": "C1601",
+     "entity": "E16",
+     "name": "分摊对象",
+     "availability": "样本缺列",
+     "gap": null
+    },
+    {
+     "id": "C1602",
+     "entity": "E16",
+     "name": "分摊金额",
+     "availability": "样本缺列",
+     "gap": null
+    },
+    {
+     "id": "C0204",
+     "entity": "E02",
+     "name": "分摊部门",
+     "availability": "仅多人可得",
+     "gap": null
+    },
+    {
+     "id": "C0111",
+     "entity": "E01",
+     "name": "报账金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D8-03",
+   "name": "费用清单与发票税目一致",
+   "dimension": "D8",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N04",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：需票据 OCR + 税目到费用小类的映射表（材料里没有，不自行编）。缺口 G-21。",
+   "concepts": [
+    {
+     "id": "C0202",
+     "entity": "E02",
+     "name": "费用小类",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0509",
+     "entity": "E05",
+     "name": "发票明细",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D8-04",
+   "name": "结算单与发票金额一致且有对方签章",
+   "dimension": "D8",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N04",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：「结算单」在差旅场景里主要指商旅平台（携程、建发国旅）结算单，该链路未接入（缺口 G-05）。样本 40 张的「商旅结算」字段全为 0.00。",
+   "concepts": [
+    {
+     "id": "C0506",
+     "entity": "E05",
+     "name": "价税合计",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D8-05",
+   "name": "餐补金额计算正确",
+   "dimension": "D8",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "composite 规则的 delegate 不在执行集里：TR-D5-01、TR-D5-02、TR-D5-06。这些 delegate 未编译或缺字段，本条永远给不出结论，每张单只会产生一条 pending，把真正需要人看的淹掉。",
+   "concepts": [
+    {
+     "id": "C0203",
+     "entity": "E02",
+     "name": "费用明细金额",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D9-01",
+   "name": "例外情形的补充说明是否充分",
+   "dimension": "D9",
+   "rule_class": "soft",
+   "control_type": "警告",
+   "node": "N04",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "全部 40 张",
+   "degraded": null,
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D9-02",
+   "name": "出差必要性与事由合理性",
+   "dimension": "D9",
+   "rule_class": "soft",
+   "control_type": "警告",
+   "node": "N04",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "logic 未声明 concepts（软规则/提示词型），由 AI 审核节点处理，不进硬执行集",
+   "concepts": [],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D9-03",
+   "name": "非会议培训类需逐日完整勾选用餐用车",
+   "dimension": "D9",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "OUT",
+   "compiled": false,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "规则未编译：**执行点在 OA。** 规则表「实现途径=通过OA控制？」+「评估=无法实现」。进候选集、不进执行集。",
+   "concepts": [
+    {
+     "id": "C0309",
+     "entity": "E03",
+     "name": "用餐情况",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0310",
+     "entity": "E03",
+     "name": "用车情况",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0405",
+     "entity": "E04",
+     "name": "用餐栏次",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D9-04",
+   "name": "严禁变相旅游与无实质内容差旅",
+   "dimension": "D9",
+   "rule_class": "soft",
+   "control_type": "警告",
+   "node": "N04",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "logic 未声明 concepts（软规则/提示词型），由 AI 审核节点处理，不进硬执行集",
+   "concepts": [],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D9-05",
+   "name": "出差地点须写到市级且非常驻地",
+   "dimension": "D9",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": false,
+   "demo_scope": null,
+   "degraded": null,
+   "demo_blocker": "依赖不可得字段：C0402(地点·需OA同步)、C0805(常驻地·待业务侧明确)",
+   "concepts": [
+    {
+     "id": "C0402",
+     "entity": "E04",
+     "name": "地点",
+     "availability": "需OA同步",
+     "gap": "G-04"
+    },
+    {
+     "id": "C0805",
+     "entity": "E08",
+     "name": "常驻地",
+     "availability": "待业务侧明确",
+     "gap": "G-31"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D10-01",
+   "name": "闽运集团本部代报授权",
+   "dimension": "D10",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "仅单人 33 张（多人导出缺 报账人，见 G-32）",
+   "degraded": null,
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0104",
+     "entity": "E01",
+     "name": "提单人",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0105",
+     "entity": "E01",
+     "name": "报账人",
+     "availability": "仅单人可得",
+     "gap": "G-32"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D10-02",
+   "name": "八方物流驾驶员汇总报销同行人免签",
+   "dimension": "D10",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "全部 40 张",
+   "degraded": null,
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D10-03",
+   "name": "八方物流综合办授权审批驾驶员出差",
+   "dimension": "D10",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "仅单人 33 张（多人导出缺 报账人，见 G-32）",
+   "degraded": null,
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C1203",
+     "entity": "E12",
+     "name": "审批人",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    },
+    {
+     "id": "C0103",
+     "entity": "E01",
+     "name": "单据日期",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0105",
+     "entity": "E01",
+     "name": "报账人",
+     "availability": "仅单人可得",
+     "gap": "G-32"
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D10-04",
+   "name": "中平船舶管理凭住宿清单先行报销",
+   "dimension": "D10",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "区间判定（缺 发票类型，不确定区间转人工）",
+   "degraded": {
+    "missing": [
+     "C0501"
+    ],
+    "on_indeterminate": "待人工",
+    "cannot_hit_without": [
+     "发票类型"
+    ],
+    "cannot_hit_why": "实现（tr_d10_04）靠 invoice.inv_type=='住宿清单' 判定是否已用住宿清单替代，取不到发票类型时判「不适用」而非强行放行或拦截——本 POC 40 张样本核算主体全是财智分公司，实测本条恒为「不适用」，这条修正是为未来真实出现该主体的单据做准备。",
+    "degenerates_to": "退化成只对「读到发票类型」的中平船舶管理住宿费/机票判是否已凭住宿清单替代，读不到发票类型时判「不适用」（不是本条该管的情形），不强行放行也不强行拦截。"
+   },
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0501",
+     "entity": "E05",
+     "name": "发票类型",
+     "availability": "需票据OCR",
+     "gap": "G-29"
+    },
+    {
+     "id": "C1301",
+     "entity": "E13",
+     "name": "附件类型",
+     "availability": "样本可得",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D10-05",
+   "name": "涉密项目审核以业财审核为准",
+   "dimension": "D10",
+   "rule_class": "hard",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "全部 40 张",
+   "degraded": null,
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0116",
+     "entity": "E01",
+     "name": "补充说明",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    },
+    {
+     "id": "C1204",
+     "entity": "E12",
+     "name": "审批意见",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    }
+   ],
+   "external_table": null
+  },
+  {
+   "rule_id": "TR-D10-06",
+   "name": "大额支付与拆单检测",
+   "dimension": "D10",
+   "rule_class": "mixed",
+   "control_type": "警告",
+   "node": "N01",
+   "compiled": true,
+   "demo_executable": true,
+   "demo_scope": "仅单人 33 张（多人导出缺 核算主体，见 G-32）",
+   "degraded": null,
+   "demo_blocker": null,
+   "concepts": [
+    {
+     "id": "C0111",
+     "entity": "E01",
+     "name": "报账金额",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0123",
+     "entity": "E01",
+     "name": "收款方",
+     "availability": "样本可得(审批意见)",
+     "gap": null
+    },
+    {
+     "id": "C0103",
+     "entity": "E01",
+     "name": "单据日期",
+     "availability": "样本可得",
+     "gap": null
+    },
+    {
+     "id": "C0107",
+     "entity": "E01",
+     "name": "核算主体",
+     "availability": "仅单人可得",
+     "gap": "G-32"
+    }
+   ],
+   "external_table": null
+  }
+ ],
+ "reverse_index": {
+  "C0904": [
+   "TR-D1-01"
+  ],
+  "C0107": [
+   "TR-D1-01",
+   "TR-D1-02",
+   "TR-D10-06"
+  ],
+  "C0505": [
+   "TR-D1-02",
+   "TR-D3-04"
+  ],
+  "C0104": [
+   "TR-D1-03",
+   "TR-D10-01"
+  ],
+  "C0105": [
+   "TR-D1-03",
+   "TR-D10-01",
+   "TR-D10-03"
+  ],
+  "C1301": [
+   "TR-D2-01",
+   "TR-D6-01",
+   "TR-D6-02",
+   "TR-D6-04",
+   "TR-D10-04"
+  ],
+  "C0305": [
+   "TR-D2-02",
+   "TR-D4-04",
+   "TR-D4-13",
+   "TR-D4-14",
+   "TR-D6-03",
+   "TR-D6-06"
+  ],
+  "C0306": [
+   "TR-D2-02"
+  ],
+  "C0301": [
+   "TR-D2-03",
+   "TR-D2-08"
+  ],
+  "C0304": [
+   "TR-D2-04",
+   "TR-D2-06",
+   "TR-D4-02",
+   "TR-D4-04",
+   "TR-D4-09",
+   "TR-D4-10",
+   "TR-D4-11",
+   "TR-D4-16"
+  ],
+  "C0402": [
+   "TR-D2-05",
+   "TR-D9-05"
+  ],
+  "C0703": [
+   "TR-D2-05"
+  ],
+  "C0704": [
+   "TR-D2-05",
+   "TR-D2-06"
+  ],
+  "C0302": [
+   "TR-D2-07",
+   "TR-D6-03",
+   "TR-D6-06",
+   "TR-D7-01",
+   "TR-D7-03",
+   "TR-D7-06",
+   "TR-D7-07",
+   "TR-D7-09"
+  ],
+  "C0303": [
+   "TR-D2-07",
+   "TR-D5-09",
+   "TR-D6-03",
+   "TR-D6-06",
+   "TR-D7-02",
+   "TR-D7-06",
+   "TR-D7-08",
+   "TR-D7-09"
+  ],
+  "C0204": [
+   "TR-D2-08",
+   "TR-D8-02"
+  ],
+  "C0504": [
+   "TR-D3-01"
+  ],
+  "C0509": [
+   "TR-D3-02",
+   "TR-D3-12",
+   "TR-D3-13",
+   "TR-D8-03"
+  ],
+  "C0511": [
+   "TR-D3-03"
+  ],
+  "C0501": [
+   "TR-D3-04",
+   "TR-D10-04"
+  ],
+  "C0804": [
+   "TR-D3-05",
+   "TR-D4-01",
+   "TR-D4-15"
+  ],
+  "C0603": [
+   "TR-D3-05",
+   "TR-D3-06",
+   "TR-D7-06"
+  ],
+  "C0601": [
+   "TR-D3-06"
+  ],
+  "C0602": [
+   "TR-D3-06"
+  ],
+  "C0604": [
+   "TR-D3-07",
+   "TR-D4-02",
+   "TR-D4-14"
+  ],
+  "C0605": [
+   "TR-D3-07",
+   "TR-D4-15"
+  ],
+  "C0705": [
+   "TR-D3-08",
+   "TR-D5-09",
+   "TR-D7-09"
+  ],
+  "C0701": [
+   "TR-D3-08",
+   "TR-D5-03"
+  ],
+  "C0707": [
+   "TR-D3-09"
+  ],
+  "C0512": [
+   "TR-D3-09"
+  ],
+  "C0508": [
+   "TR-D3-09",
+   "TR-D3-11"
+  ],
+  "C0708": [
+   "TR-D3-10"
+  ],
+  "C0507": [
+   "TR-D3-10",
+   "TR-D3-11",
+   "TR-D4-12"
+  ],
+  "C0702": [
+   "TR-D4-01"
+  ],
+  "C0203": [
+   "TR-D4-02",
+   "TR-D4-03",
+   "TR-D4-04",
+   "TR-D4-05",
+   "TR-D4-09",
+   "TR-D4-10",
+   "TR-D4-11",
+   "TR-D4-12",
+   "TR-D4-13",
+   "TR-D4-14",
+   "TR-D4-16",
+   "TR-D5-01",
+   "TR-D5-02",
+   "TR-D5-03",
+   "TR-D5-04",
+   "TR-D5-05",
+   "TR-D5-06",
+   "TR-D5-07",
+   "TR-D5-08",
+   "TR-D5-09",
+   "TR-D6-03",
+   "TR-D6-06",
+   "TR-D8-05"
+  ],
+  "C1004": [
+   "TR-D4-02",
+   "TR-D4-08"
+  ],
+  "C0404": [
+   "TR-D4-05"
+  ],
+  "C0310": [
+   "TR-D4-05",
+   "TR-D5-04",
+   "TR-D5-07",
+   "TR-D9-03"
+  ],
+  "C0116": [
+   "TR-D4-06",
+   "TR-D4-07",
+   "TR-D4-08",
+   "TR-D6-02",
+   "TR-D6-03",
+   "TR-D6-05",
+   "TR-D6-06",
+   "TR-D7-05",
+   "TR-D7-07",
+   "TR-D9-01",
+   "TR-D10-02",
+   "TR-D10-05"
+  ],
+  "C1202": [
+   "TR-D4-06",
+   "TR-D4-07"
+  ],
+  "C0606": [
+   "TR-D4-08"
+  ],
+  "C0106": [
+   "TR-D4-13"
+  ],
+  "C1501": [
+   "TR-D5-01"
+  ],
+  "C1502": [
+   "TR-D5-02",
+   "TR-D5-05"
+  ],
+  "C0309": [
+   "TR-D5-04",
+   "TR-D5-06",
+   "TR-D9-03"
+  ],
+  "C1503": [
+   "TR-D5-05"
+  ],
+  "C0807": [
+   "TR-D5-08"
+  ],
+  "C0115": [
+   "TR-D5-10"
+  ],
+  "C0127": [
+   "TR-D5-10"
+  ],
+  "C1303": [
+   "TR-D6-01"
+  ],
+  "C0110": [
+   "TR-D6-01"
+  ],
+  "C0202": [
+   "TR-D6-01",
+   "TR-D8-03"
+  ],
+  "C1401": [
+   "TR-D6-04"
+  ],
+  "C0111": [
+   "TR-D6-04",
+   "TR-D8-01",
+   "TR-D8-02",
+   "TR-D10-06"
+  ],
+  "C0706": [
+   "TR-D6-05"
+  ],
+  "C0307": [
+   "TR-D7-01",
+   "TR-D7-07"
+  ],
+  "C0503": [
+   "TR-D7-03",
+   "TR-D7-04"
+  ],
+  "C0510": [
+   "TR-D7-04",
+   "TR-D7-05"
+  ],
+  "C0308": [
+   "TR-D7-08"
+  ],
+  "C1102": [
+   "TR-D8-01"
+  ],
+  "C1103": [
+   "TR-D8-01"
+  ],
+  "C1104": [
+   "TR-D8-01"
+  ],
+  "C1601": [
+   "TR-D8-02"
+  ],
+  "C1602": [
+   "TR-D8-02"
+  ],
+  "C0506": [
+   "TR-D8-04"
+  ],
+  "C0405": [
+   "TR-D9-03"
+  ],
+  "C0805": [
+   "TR-D9-05"
+  ],
+  "C1203": [
+   "TR-D10-03"
+  ],
+  "C0103": [
+   "TR-D10-03",
+   "TR-D10-06"
+  ],
+  "C1204": [
+   "TR-D10-05"
+  ],
+  "C0123": [
+   "TR-D10-06"
+  ]
+ },
+ "gaps": {
+  "G-31": {
+   "title": "常驻地字段在共享系统里是否存在、取值口径为何，未定",
+   "detail": "本体 glossary 原先把常驻地挂在 G-03 上，但 G-03 已重定义为「交通工具等级标准表无法录入」，属悬空引用，现独立为 G-31。制度《差旅管理实施细则》对常驻地有明确界定（标准表 RES-01~08，含漳州港务古雷港、泉州港务中心城区等特殊口径），但 40 张样本里没有任何一列是常驻地。TR-D9-05「出差地点须写到市级且非常驻地」靠它，TR-D4-02 住宿费标准匹配又靠 TR-D9-05。",
+   "impact": "TR-D9-05 及其下游 TR-D4-02",
+   "owner": "共享中心（数据接口方）",
+   "blocking": true
+  },
+  "G-32": {
+   "title": "多人差旅报账单导出缺 4 列，其中包含核算主体",
+   "detail": "实测：「2多人差旅报账单」只有 12 列，比单人少 报账人 / 报账人公司（核算主体） / 单据状态 / 费用承担部门。核算主体是 D1 维度 3 条规则的比较基准，缺了它，TR-D1-01 / TR-D1-02 / TR-D6-04 对 7 张多人单全部无法判。**注意这不是「多人单没有核算主体」，而是「导出时没带上」**——两种结论的处置完全不同。",
+   "impact": "7 张多人单 × D1 维度 3 条规则",
+   "owner": "共享中心（数据接口方）",
+   "blocking": false
+  }
+ }
+}

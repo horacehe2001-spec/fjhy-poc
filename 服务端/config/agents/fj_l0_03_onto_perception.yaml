@@ -1,0 +1,113 @@
+# ============================================================================
+# L0 感知 Agent · 本体口径感知
+# ----------------------------------------------------------------------------
+# 职责：看见抽取那一栏交过来多少、本体这边统过多少，差额就是这一栏要干的活。
+#       只看见，不归并、不对账、不下结论。
+#
+# 为什么统一口径这条链也要一个 L0：
+#   抽取链的产出是**连续到达**的——今天抽 8 条草稿，明天文件库又变了再抽 8 条。
+#   没有一个「看见差额」的环节，统一口径就只能整库重算，
+#   而整库重算一次要把 185 条条款全部重新归并比对。
+#   更要紧的是：**没有差额这个数，页面上就说不出「还差多少没统口径」**，
+#   而那正是这一栏唯一要回答的问题。
+#
+# 它不读 onto_adoption：
+#   采纳是人的动作，感知层看不看都不影响它该投什么信号。
+#   读了反而会诱发一种实现——「已采纳的就不用再对账了」——
+#   那是错的：采纳之后制度文件还可能改，改了就要重新对。
+# ============================================================================
+
+agent_id: fj_l0_03_onto_perception
+agent_version: "0.1.0"
+layer: L0
+name: 本体口径感知
+description: 看见抽取产出与本体之间的差额，投信号；不归并不对账不下结论
+execution_strategy: batch
+
+triggers:
+  message:
+    enabled: true
+    channels: [fjhy_draft_ready]
+    why: |
+      抽取链产出草稿后醒来。此时条款、草稿都齐了，差额算得准。
+      **不订阅 fjhy_clause_ready**：只切了条款还没出草稿时也能归并，
+      但那时醒来会和草稿产出后的那次重复做一遍整库对账，
+      而对账是整表重算，重复做一次没有新信息、只有一倍耗时。
+  heartbeat:
+    enabled: true
+    interval_seconds: 120
+    why: |
+      兜两件事：一是 NOTIFY 丢通知（LISTEN/NOTIFY 是尽力而为的，
+      连接断开期间的通知收不到且不报错）；
+      二是**制度文件改了但没重跑抽取**的情况——文件库变化感知在抽取那条链上，
+      本体这边只能靠心跳才发现「对账结论已经过期了」。
+  subscribe:
+    enabled: false
+
+sense:
+  tables:
+    - doclib_clause
+    - doclib_draft
+    - doclib_rule_source
+    - doclib_conflict
+    - onto_align
+    - rule
+  select: |
+    五个数：已切条款、已出草稿、已归并来源、已对齐组、待裁决冲突，
+    外加本体现有规则数。差额 = 该统的 − 已统的。
+  snapshot: false
+
+decide:
+  kind: 差额感知
+  conclusion_values: [有待统口径, 口径已齐, 上游没产出]
+  pending_counts_as: 有待统口径
+  pending_why: |
+    判不出有没有差额时一律当「有待统口径」。
+    落到「口径已齐」会让下游不醒，而对账是幂等的整表重算——
+    **多算一次的代价是几秒，少算一次的代价是页面上挂着一份过期结论**。
+  no_judgement: true
+  no_judgement_why: |
+    L0 不判断哪条该落地、哪条有冲突。它只报数。
+    感知层一旦开始下结论，「谁发现的」和「谁判的」就混在一起，
+    出错时查不出是看漏了还是判错了。
+
+act:
+  writes: [agent_signal, agent_signal_log]
+  signal:
+    channel: fjhy_onto_requested
+    kind: onto_requested
+  idempotency: "{clause_count}:{draft_count}:{conflict_pending}"
+  idempotency_why: |
+    三个计数进键：条款数、草稿数、待裁决冲突数。
+    任一变化都意味着对账结论可能变了，该重算。
+    **三个都没变就不重复投信号**——心跳每 2 分钟醒一次，
+    不带幂等键会让下游每 2 分钟整表重算一遍，白烧数据库。
+
+feedback:
+  metrics:
+    - name: delta_clauses
+      desc: 已切条款与已归并来源的差额。这个数是「还差多少没统口径」的直接指标
+      source: doclib_clause
+    - name: stale_align_minutes
+      desc: 对账结论的最长滞留时间。结论过期而页面照旧显示，是最坏的一种过时
+      source: onto_align
+    - name: signal_suppressed
+      desc: 因幂等键未变而被抑制的心跳次数。这个数高说明心跳间隔可以放长
+      source: agent_signal_log
+
+improve:
+  params:
+    scan_limit:
+      default: 2000
+      bounds: [200, 5000]
+      why: 一次看多少条条款。条款数会随文件库长，要有上限
+    claim_timeout_seconds:
+      default: 300
+      bounds: [60, 1800]
+      why: 太短会把还在算的批次误判成孤儿而重复处理；太长则崩溃后恢复慢
+  forbidden:
+    - 规则内容
+    - 阈值
+    - 控制类型（禁止/警告）
+    - 归并键与对账判定（那是 L2 的事，感知层只报数）
+    - 「判不出就当有待统口径」这条兜底方向

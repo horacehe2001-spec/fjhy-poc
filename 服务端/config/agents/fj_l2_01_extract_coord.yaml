@@ -1,0 +1,145 @@
+# ============================================================================
+# L2 协同 Agent · 抽取协同与冲突仲裁
+# ----------------------------------------------------------------------------
+# 职责：把分散在不同文件里、说同一件事的条款归并到一起；口径不一致的标冲突。
+#
+# 为什么这一层是必要的，不是锦上添花：
+#   同一条规则在客户资料里**确实有多个来源**。实例：
+#     差旅费审核规则.xlsx 第5行「交通费标准控制：按照各单位制度要求
+#     校验报销人交通坐席等级，不符合报销等级的不允许提单」
+#     vs 差旅管理实施细则里关于交通工具等级的具体条款
+#   没有这一层，清单上就是两条看起来无关的候选，
+#   抽出来会变成两条规则——而它们其实是一条，只是出处不同。
+#
+# **多源不是冗余，是证据强度。**
+#   制度条款 + 规则表都写了同一件事 → 这条规则比单一出处可信得多；
+#   只有规则表写了而制度里没有 → 它可能是业务惯例而不是制度要求。
+#   这两种情况必须在清单上分得开，否则「有据可查」四个字就没有分量了。
+#
+# **系统只发现冲突，不自动选边**（2026-10-18 决策）。
+#   自动选边的风险很具体：选错了就是一条「看起来有制度依据」的错规则，
+#   而审定的人未必回查两个原文。裁决必须记 resolved_by——
+#   「谁拍的板」在制度冲突这种事情上，和结论本身一样重要。
+# ============================================================================
+
+agent_id: fj_l2_01_extract_coord
+agent_version: "0.1.0"
+layer: L2
+name: 抽取协同与冲突仲裁
+description: 归并同一条规则的多个来源，标出口径不一致，不自动选边
+execution_strategy: batch
+
+triggers:
+  message:
+    enabled: true
+    channels: [fjhy_draft_ready, fjhy_onto_requested]
+    why: |
+      两条路醒来：
+        fjhy_draft_ready    草稿产出后。此时条款与草稿都齐了，证据最全
+        fjhy_onto_requested 本体口径感知看见差额后。**这条是统一口径那条链的入口**——
+                            归并是「统一口径」的第一步，而统一口径是本体那一栏的事，
+                            所以它要能被本体那边唤醒，不只被抽取链唤醒
+  heartbeat:
+    enabled: true
+    interval_seconds: 300
+    why: |
+      兜两件事：一是 NOTIFY 丢通知；
+      二是**只切了条款没出草稿的那部分也要归并**——
+      归并只靠条款本身就能做，不依赖草稿。
+      只走 message 这条路的话，没跑过 AI 的文件永远不会被归并。
+  subscribe:
+    enabled: false
+
+sense:
+  tables:
+    - doclib_clause
+    - doclib_draft
+    - doclib_rule_source
+    - doclib_conflict
+    - rule
+  select: |
+    已切出的条款（含其特征、数值、来源文件类别、文本来源与可信度），
+    以及已有的归并结果与冲突记录（避免重复建行、保留已忽略的裁决）。
+  snapshot: false
+
+decide:
+  kind: 多源归并与冲突识别
+  group_by: |
+    归并键按**可判定的硬特征**算，不按相似度猜：
+      主题词（交通费/住宿费/伙食补助/市内交通/接待用餐…）
+      + 控制对象（标准、等级、审批、发票、附件）
+    两条都对得上才归为同一条规则。
+  group_why: |
+    **宁可不归并，不可错归并。** 把两条不同的规则归到一起，
+    后果是其中一条的例外情形被当成另一条的——而例外正是八要素里
+    最容易丢、丢了最伤的一项。归不到一起只是少一条证据链。
+  conflict_kinds: [阈值不一致, 控制类型不一致, 适用范围不一致]
+  conflict_detect: |
+    同一归并组内：
+      阈值不一致   —— 两边都给了数值且不相等（460 vs 480）
+      控制类型不一致 —— 一边「禁止」一边「警告」
+      适用范围不一致 —— 一边限定了职级/单位，另一边没有
+  auto_resolve: false
+  auto_resolve_why: |
+    **不自动选边。** 规则表是人工整理的二手产物，制度条款是法源但可能是
+    OCR 来的、可信度低一档。两边各有各的弱点，没有一个能当通用优先级。
+    自动选边等于用一条规则覆盖另一条，而被覆盖的那条连痕迹都不留。
+  conclusion_values: [单一来源, 多源印证, 口径冲突]
+  pending_counts_as: 口径冲突
+  pending_why: |
+    判不出是「印证」还是「冲突」时一律落「口径冲突」交人看。
+    落到「多源印证」会让一条实际有分歧的规则显示成「证据充分」，
+    那是最坏的一种错——它让人停止核查。
+
+act:
+  writes: [doclib_rule_source, doclib_conflict, agent_signal_log]
+  signal:
+    channel: fjhy_extract_coord_done
+    kind: extract_coord_done
+  idempotency: "{group_key}:{clause_id_set_hash}"
+  idempotency_why: |
+    归并组的成员集合进键：组里多了一条新来源就该重算冲突。
+    只用 group_key 会让「后来又抽到第三个出处」的情况被当成重复丢掉，
+    而第三个出处恰恰可能是那个推翻前两条的。
+
+feedback:
+  metrics:
+    - name: false_positive
+      desc: 被标成冲突、但人工认定其实不矛盾的条数（归并归错了，或只是表述不同）
+      source: doclib_conflict
+    - name: false_negative
+      desc: 人工发现的、系统没识别出来的口径冲突条数
+      source: doclib_conflict
+    - name: multi_source_ratio
+      desc: 有两个及以上出处的规则占比。这个数是规则清单可信度的直接指标
+      source: doclib_rule_source
+    - name: unresolved_age_days
+      desc: 待裁决冲突的最长滞留天数。冲突放着不裁决，下游规则就一直悬着
+      source: doclib_conflict
+  separate_fp_fn: true
+  separate_why: |
+    **误报与漏报必须分开计。**
+    误报=把不矛盾的两条标成冲突，人看几次发现都是虚惊，就不再认真看冲突了；
+    漏报=真冲突没发现，两条互相矛盾的规则同时生效，对同一张单会给出
+    互相打架的结论，而没人知道为什么。
+
+improve:
+  params:
+    max_groups_per_cycle:
+      default: 200
+      bounds: [20, 2000]
+      why: 归并是两两比对，组数大时耗时按平方涨，要有上限
+    min_group_support:
+      default: 2
+      bounds: [2, 5]
+      why: 至少两个出处才成组。设成 1 的话每条条款都是一个组，归并就失去意义
+    claim_timeout_seconds:
+      default: 600
+      bounds: [120, 3600]
+      why: 太短会把还在归并的批次误判成孤儿而重复处理；太长则崩溃后恢复慢
+  forbidden:
+    - 规则内容
+    - 阈值
+    - 控制类型（禁止/警告）
+    - 冲突的裁决结论（系统只发现，裁决是人的动作，且必须记 resolved_by）
+    - 来源优先级（不许配置成「制度优先」或「规则表优先」而自动选边）

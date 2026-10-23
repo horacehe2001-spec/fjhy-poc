@@ -1,0 +1,48 @@
+# 福建海运集团POC · 差旅费 AI 智能审核 —— 本地开发用数据库
+#
+# 容器与库名都带 fjhy-poc 前缀，一眼可辨、事后好清理（全局纪律第 12 条）。
+# **不复用本机已有的 fjpg_audit_pg / sdafi-base-pg / tf_ai_pg**——它们属于别的工程，
+# 往里加表会动到对方的迁移链。
+#
+#   起：  docker compose -f docker-compose.yml up -d
+#   停：  docker compose -f docker-compose.yml down
+#   清：  docker compose -f docker-compose.yml down -v     # 连数据卷一起删
+#
+# 镜像用 timescale/timescaledb:latest-pg16：本机已有该镜像（无需联网拉取），
+# 且五张审计表要做 hypertable。没有 timescaledb 扩展时迁移脚本会退化成普通表，
+# 不会失败——但会在日志里明确写一行「未启用 hypertable」，不静默。
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: fjhy-poc-sdafi-pg
+    environment:
+      POSTGRES_DB: fjhy_poc
+      POSTGRES_USER: fjhy
+      POSTGRES_PASSWORD: fjhy_poc_dev_only   # 仅本地开发；生产从环境变量注入
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:55460:5432"               # 只绑本机回环，不对外暴露
+    volumes:
+      - fjhy_poc_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fjhy -d fjhy_poc"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    command:
+      - postgres
+      # 数据池是唯一介质，LISTEN/NOTIFY 是三种触发里「消息」与「订阅」的载体，
+      # 所以这两项要显式调大：默认值在多 Agent 并发订阅时会不够。
+      - -c
+      - max_connections=200
+      - -c
+      - shared_preload_libraries=timescaledb
+      # 审计表要能按时间做保留策略，时区固定，避免跨时区解读审计时间出错
+      - -c
+      - timezone=Asia/Shanghai
+      - -c
+      - log_min_duration_statement=500      # 慢查询 >0.5s 记日志，便于量化 cycle_duration
+volumes:
+  fjhy_poc_pgdata:
+    name: fjhy-poc-sdafi-pgdata

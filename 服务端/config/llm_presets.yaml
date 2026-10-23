@@ -1,0 +1,216 @@
+# ============================================================================
+# 国内主流大模型厂商预置
+# ----------------------------------------------------------------------------
+# 放在 YAML 而不是写进迁移 SQL：厂商地址和型号会变，而迁移一旦应用就不许改
+# （migrate.py 记指纹）。改一次地址发一个新迁移，半年下来会堆出一串
+# 0014/0017/0021 全是改同一行，谁都看不出当前有效值是哪个。
+#
+# 【这份文件最重要的字段是 verified_on，不是 base_url】
+# verified_on 有日期 = 那天对着厂商官方文档核对过。
+# verified_on 为空   = **凭印象填的，没核对**。界面上必须显眼标出来。
+# 把没核对的和核对过的混在一个下拉里而不作区分，用户配不通时会先怀疑自己的
+# Key，再怀疑网络，最后才会想到是我给的地址错——那段时间全是白花的。
+#
+# 【型号名一律只做"建议"】
+# 2026-10-18 核对时实测到的漂移：智谱已到 glm-5.3（我印象里是 glm-4-plus）、
+# Kimi 已到 kimi-k3（印象里 moonshot-v1-8k）、MiniMax 域名从 api.minimax.chat
+# 换成了 api.minimaxi.com。所以 suggest_model 只是个起点，
+# 真实可用型号由界面调厂商的 GET /v1/models 现拉。
+#
+# 核对方式：2026-10-18 用联网检索读各家官方文档页。
+# **没有用真 Key 实际调通过任何一家**——手上没有 Key。
+# 所以这里写的是"地址与官方文档一致"，不是"这个地址能连通"。两件事。
+# ============================================================================
+
+version: "0.1"
+verified_method: "联网检索各厂商官方文档（2026-10-18）。未用真实 Key 实测连通。"
+
+presets:
+
+  # ── 核对过官方文档的 ──────────────────────────────────────────────────────
+
+  - preset_id: aliyun_bailian_text
+    vendor: 阿里云百炼
+    label: 阿里云百炼 · 通义千问（文本）
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    suggest_model: qwen-plus
+    modality: text
+    key_hint: sk- 开头
+    model_list: true
+    verified_on: 2026-10-18
+    source_url: https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope
+    sort_no: 1
+    caveat: >-
+      旧域名仍可用，但官方已推出业务空间专属域名
+      https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+      （WorkspaceId 在控制台业务空间详情页看）。
+      另外 Coding Plan / Token Plan 是**另外的端点**，和按量计费地址不能混用，
+      混用的表现是额度不扣在你以为的那个套餐上。
+
+  - preset_id: aliyun_bailian_vision
+    vendor: 阿里云百炼
+    label: 阿里云百炼 · 通义千问 VL（读图）
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    suggest_model: qwen-vl-max
+    modality: vision
+    key_hint: sk- 开头
+    model_list: true
+    verified_on: 2026-10-18
+    source_url: https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope
+    sort_no: 2
+    caveat: >-
+      地址与文本款相同，区别只在型号。本系统的 vision_read 用途（读发票/行程单图）
+      必须选这一类——**纯文本模型拿到图不会报错，会编一段看起来合理的内容**，
+      那种错误比报错难发现得多。型号名 qwen-vl-max 是建议值，请用「拉取型号」确认。
+
+  - preset_id: deepseek
+    vendor: DeepSeek
+    label: DeepSeek（深度求索）
+    base_url: https://api.deepseek.com/v1
+    suggest_model: deepseek-chat
+    modality: text
+    key_hint: sk- 开头
+    model_list: true
+    verified_on: 2026-10-18
+    source_url: https://api-docs.deepseek.com/
+    sort_no: 3
+    caveat: >-
+      base_url 写 https://api.deepseek.com 或带 /v1 都可以，/v1 只是兼容路径、
+      与模型版本无关。deepseek-chat / deepseek-reasoner 是**别名**，
+      背后指向哪个版本官方会换（核对时第三方文档已出现指向 V3.2 的说法，
+      与官方页面快照不一致）。要钉死版本就不能用别名。
+      reasoner 会多回一个 reasoning_content 字段，解析时别当成正文。
+
+  - preset_id: volcengine_ark
+    vendor: 火山方舟
+    label: 火山方舟 · 豆包（字节）
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    suggest_model: ""
+    modality: both
+    key_hint: 方舟 API Key
+    model_list: false
+    verified_on: 2026-10-18
+    source_url: https://volcengine.com/docs/82379/1330626
+    sort_no: 4
+    caveat: >-
+      **这家和其他家不一样：model 字段不填型号名，要填推理接入点 ID（ep- 开头）。**
+      得先在方舟控制台建一个推理接入点，把它的 ID 粘过来。
+      不知道这一点就会反复试型号名、一直 404，而错误信息不会告诉你原因。
+      所以这条预置把「拉取型号」关掉了——拉回来的也不是能直接用的 model 值。
+      另有编程专用端点 /api/coding/v3。
+
+  - preset_id: zhipu_glm
+    vendor: 智谱 AI
+    label: 智谱 GLM
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    suggest_model: glm-5.3
+    modality: both
+    key_hint: 形如 xxxxx.yyyyy
+    model_list: true
+    verified_on: 2026-10-18
+    source_url: https://docs.bigmodel.cn/cn/guide/develop/openai/introduction
+    sort_no: 5
+    caveat: >-
+      GLM Coding Plan 用的是**另一个端点** /api/coding/paas/v4，
+      官方文档明确警告端点配错会导致套餐额度用不上。
+      另有第三方说法称品牌升级为 Z.AI、地址为 https://api.z.ai/api/paas/v4/
+      ——这条我没在官方文档里核实到，没放进预置。
+
+  - preset_id: moonshot_kimi
+    vendor: 月之暗面
+    label: Kimi（月之暗面）
+    base_url: https://api.moonshot.cn/v1
+    suggest_model: kimi-k3
+    modality: both
+    key_hint: sk- 开头
+    model_list: true
+    verified_on: 2026-10-18
+    source_url: https://platform.kimi.com/docs/guide/migrating-from-openai-to-kimi
+    sort_no: 6
+    caveat: >-
+      国内站 Key 只能配 api.moonshot.cn，国际站（platform.moonshot.ai）的 Key
+      要配 api.moonshot.ai —— 两边不通用，混配表现为 401，看着像 Key 抄错了。
+      型号列表接口 GET /v1/models 可用，建议用它确认当前型号。
+
+  - preset_id: stepfun
+    vendor: 阶跃星辰
+    label: 阶跃星辰 StepFun
+    base_url: https://api.stepfun.com/v1
+    suggest_model: ""
+    modality: both
+    key_hint: 阶跃 API Key
+    model_list: true
+    verified_on: 2026-10-18
+    source_url: https://platform.stepfun.com/docs/zh/guides/developer/openai
+    sort_no: 7
+    caveat: >-
+      Step Plan 套餐走 /step_plan/v1（用 Anthropic SDK 时还要去掉 /v1，
+      因为那个 SDK 自己会拼 /v1/messages）。
+      型号名我没核实到具体值，留空，请用「拉取型号」取。
+
+  # ── 没核对过的：地址是凭印象填的，界面上会标红 ────────────────────────────
+
+  - preset_id: minimax
+    vendor: MiniMax
+    label: MiniMax（未核实）
+    base_url: https://api.minimaxi.com/v1
+    suggest_model: ""
+    modality: both
+    key_hint: MiniMax API Key
+    model_list: true
+    verified_on: null
+    source_url: ""
+    sort_no: 20
+    caveat: >-
+      **地址来自第三方文章，没在 MiniMax 官方文档里核实过。**
+      已知域名从 api.minimax.chat 变成了 api.minimaxi.com（注意多个 i），
+      但这条变更也只有第三方来源。用之前请自己对一下官方文档。
+
+  - preset_id: baidu_qianfan
+    vendor: 百度智能云千帆
+    label: 百度文心 · 千帆（未核实）
+    base_url: https://qianfan.baidubce.com/v2
+    suggest_model: ""
+    modality: both
+    key_hint: 千帆 API Key
+    model_list: true
+    verified_on: null
+    source_url: ""
+    sort_no: 21
+    caveat: >-
+      **这个地址我没核实到。** 2026-10-18 检索没能拿到千帆 OpenAI 兼容端点的
+      官方页面。千帆历史上有过 v1/v2 两套、以及 AK/SK 与 Bearer 两种鉴权方式，
+      配之前务必对一遍官方文档。配不通优先怀疑这里，不是你的 Key。
+
+  - preset_id: tencent_hunyuan
+    vendor: 腾讯混元
+    label: 腾讯混元（未核实）
+    base_url: https://api.hunyuan.cloud.tencent.com/v1
+    suggest_model: ""
+    modality: both
+    key_hint: 混元 API Key
+    model_list: true
+    verified_on: null
+    source_url: ""
+    sort_no: 22
+    caveat: >-
+      **这个地址我没核实到。** 同上，配不通优先怀疑地址。
+
+  # ── 私有化部署 ────────────────────────────────────────────────────────────
+
+  - preset_id: local_openai_compatible
+    vendor: 私有化部署
+    label: 私有化部署 / 一体机（vLLM、Ollama、本地网关）
+    base_url: http://127.0.0.1:11434/v1
+    suggest_model: ""
+    modality: both
+    key_hint: 多数本地服务不校验，可留空或填任意串
+    model_list: true
+    verified_on: 2026-10-18
+    source_url: ""
+    sort_no: 30
+    caveat: >-
+      地址请改成实际的内网地址。财务共享中心的差旅数据含姓名、工号、
+      银行账号，走公网厂商就等于把这些数据交给第三方——
+      这是**要先问清楚客户允不允许**的事，不是技术选型。
+      注意 http 下 API Key 是明文过网，内网也不等于安全。

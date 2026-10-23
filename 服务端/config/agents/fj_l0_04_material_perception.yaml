@@ -1,0 +1,119 @@
+# ============================================================================
+# L0 感知 Agent · 素材感知（本体构建链的入口）
+# ----------------------------------------------------------------------------
+# 职责：看见手上有多少素材、本体里已经有多少，把差额投出去。只看见，不抽不判。
+#
+# 这条链补的是一个**曾经完全在系统之外**的步骤：本体骨架是人读客户材料
+# 手写进 本体_v0.1.yaml 的，页面上看不到来源、没有入口、客户没法自己再跑。
+# 所以 L0 的第一件事就是把「素材在哪、有多少」摆出来——
+# 不摆出来，后面抽出的候选就还是「不知道从哪来的」。
+#
+# 它还负责把**源头**与**规则资产装载现状**摆出来（2026-10-19 用户要求：
+# 这两件事原来是「建立」页上两个独立面板，并进这个 Agent，页面上那一格
+# 因此叫「素材感知（源头、规则资产装载）」）。理由是它们本来就属于
+# 「手上有什么」：源文件是谁写的、sha256、库里的投影是否还同步、
+# 装载命令为什么故意没做成按钮、现在多少规则与发布。
+#
+# **它只数素材，不碰 YAML。** 源文件的写入口只有一个：人工采纳（onto_build.adopt）。
+# 规则资产装载也只是**报现状**，不触发装载——那条命令会清空 release_current。
+# ============================================================================
+
+agent_id: fj_l0_04_material_perception
+agent_version: "0.1.0"
+layer: L0
+name: 素材感知（源头、规则资产装载）
+description: 数清单据明细表/条款/审批记录与本体现有规模的差额，并摆出源文件与装载现状；不抽候选不判断
+execution_strategy: batch
+
+triggers:
+  message:
+    enabled: true
+    channels: [fjhy_onto_aligned]
+    why: |
+      统一口径跑完后醒来。那条链会把条款与归并结果落好，
+      此时再数素材，差额才是最新的。
+  heartbeat:
+    enabled: true
+    interval_seconds: 180
+    why: |
+      兜两件事：NOTIFY 丢通知；以及**文件库新扫进来一批材料**——
+      那条路不经过统一口径，只有心跳能发现素材变多了。
+  subscribe:
+    enabled: false
+
+sense:
+  tables:
+    - doc_lib_file
+    - doclib_clause
+    - approval_record
+    - ontology_entity
+    - ontology_concept
+    - ontology_enum_value
+    - process_node
+    - onto_candidate
+    - ontology_version
+    - rule
+    - release
+    - release_current
+  select: |
+    素材侧：登记的单据明细表份数、已切条款数、审批记录条数。
+    本体侧：实体/概念/枚举取值/流程节点的现有规模。
+    差额 = 素材里能数出来的 − 本体里已经有的。
+    源头：本体源文件的行数与 sha256（读文件，不读表），
+    对上 ontology_version.source_hash 看库里的投影是否还同步。
+    规则资产：rule / release / release_current 的计数——
+    只报现状，**不装载**（装载会清空 release_current，那是发布管理的事）。
+  snapshot: false
+
+decide:
+  kind: 素材差额感知
+  conclusion_values: [有待建, 本体已覆盖, 素材不足]
+  pending_counts_as: 有待建
+  pending_why: |
+    判不出时一律当「有待建」。候选抽取是整表重算、确定性、不出网，
+    多跑一次的代价是几秒；少跑一次的代价是页面上挂着一份过期候选。
+  no_judgement: true
+  no_judgement_why: |
+    L0 不判断哪个列头该成概念。它只报数。
+    感知层一旦开始下结论，「谁发现的」与「谁判的」就混在一起，
+    出错时分不清是看漏了还是判错了。
+
+act:
+  writes: [agent_signal, agent_signal_log]
+  signal:
+    channel: fjhy_onto_build_requested
+    kind: onto_build_requested
+  idempotency: "{bill_sheets}:{clauses}:{approvals}:{onto_concepts}"
+  idempotency_why: |
+    素材侧三个计数 + 本体侧概念数进键。任一变化都意味着候选可能变了。
+    四个都没变就不重复投信号——心跳每 3 分钟醒一次，
+    不带幂等键会让下游每 3 分钟重算一遍全部候选。
+
+feedback:
+  metrics:
+    - name: delta_headers
+      desc: 单据列头数与本体概念数的差额。这个数是「还有多少素材没进本体」的直接指标
+      source: onto_candidate
+    - name: material_unreadable
+      desc: 打不开或取不到正文的素材份数。**读不出不等于本体没有**，必须单独计
+      source: doc_lib_file
+    - name: signal_suppressed
+      desc: 因幂等键未变被抑制的心跳次数。这个数高说明心跳间隔可以放长
+      source: agent_signal_log
+
+improve:
+  params:
+    scan_limit:
+      default: 2000
+      bounds: [200, 5000]
+      why: 一次看多少条条款。条款数会随文件库长，要有上限
+    claim_timeout_seconds:
+      default: 300
+      bounds: [60, 1800]
+      why: 太短会把还在数的批次误判成孤儿而重复处理；太长则崩溃后恢复慢
+  forbidden:
+    - 规则内容
+    - 阈值
+    - 控制类型（禁止/警告）
+    - 本体元素的判定（哪个列头该成概念，是 L1/L2 的事）
+    - 本体源文件 本体_v0.1.yaml（整条链都不许写它，只有人工采纳能改）

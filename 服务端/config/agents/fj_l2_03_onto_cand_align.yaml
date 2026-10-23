@@ -1,0 +1,132 @@
+# ============================================================================
+# L2 协同 Agent · 本体候选对齐（落候选台账）
+# ----------------------------------------------------------------------------
+# 职责：把两条 L1 产出的候选汇到一起、去重、定判定，落进 onto_candidate。
+#       **到这里就停。** 采纳是人的动作，而且采纳改的是源文件不是库。
+#
+# 为什么要有这一层（而不是让两个 L1 各自落库）：
+#   1. **判定口径只能有一处。** 「建议新增 / 层间不一致 / 已在本体」这三档的
+#      边界是整条链最值钱的东西，分散在两个 Agent 里迟早变成两套。
+#   2. 同一个名字可能被两条路同时抽到（「总经理」既是审批记录里的节点名，
+#      又是 EN16 的枚举取值），**必须合成一条候选**，否则页面上同一件事出现两行，
+#      人处置完一行以为完了。
+#   3. 候选表是**整表重算**的，重算的边界需要一个明确的收口点。
+#
+# **「已在本体」也要落表。** 它不是噪声，是一句话：
+#   「枚举里有这个取值，而样本数据与 14 份材料正文里都没检索到」——
+#   实测 23 个。这句话和「我们没查」完全是两件事，不落表就说不出口。
+#   但它**不许被采纳**（adopt 直接拒绝）：它要的是人去判「样本没覆盖 /
+#   出处在读不出的表格页里 / 当初凭常识补的」，而只有第三种该删。
+# ============================================================================
+
+agent_id: fj_l2_03_onto_cand_align
+agent_version: "0.1.0"
+layer: L2
+name: 本体候选对齐
+description: 汇总去重两条 L1 的候选、定三档判定、落候选台账；不写本体不碰 YAML
+execution_strategy: batch
+
+triggers:
+  message:
+    enabled: true
+    channels: [fjhy_onto_cand_ready]
+    why: |
+      两个 L1（字段候选、流程候选）都发这个通道，这里是**扇入点**。
+      任一侧产出就醒来重算整表——候选是整表重算的，重算一次是秒级。
+  heartbeat:
+    enabled: true
+    interval_seconds: 300
+    why: |
+      兜 NOTIFY 丢通知，以及**本体被重装了但素材没变**的情况：
+      人采纳了一个概念之后，原来的候选就不该再报「本体里没有」，
+      而那条路（人工采纳 → 重装）不经过 L1。
+  subscribe:
+    enabled: false
+
+sense:
+  tables:
+    - onto_candidate
+    - onto_cand_action
+    - ontology_concept
+    - ontology_enum_value
+    - process_node
+    - process_transition
+  select: |
+    两条 L1 抽出的候选；已有的处置动作（**采纳过的不再报**）；
+    以及本体现状（用来确认候选是否已经被采纳进去了）。
+  snapshot: false
+
+decide:
+  kind: 候选汇总与判定
+  conclusion_values: [建议新增, 层间不一致, 已在本体]
+  verdict_rules: |
+    建议新增   —— 素材里有硬证据，本体（含别名、含唯一前缀）里确实没有
+    层间不一致 —— 本体**内部**两层对不上：枚举层有而节点层没有，
+                 或迁移的一端钉不到节点
+    已在本体   —— 对上了具体元素；或枚举里有而素材里一次都没检索到
+  pending_counts_as: 层间不一致
+  pending_why: |
+    判不出方向时落「层间不一致」。它是唯一一个**不指定修哪一层**的档位，
+    而另外两档都暗含了方向（新增 / 不动）。方向判错会让人改错层。
+  dedup_by: "{kind}|{cand_key}"
+  dedup_why: |
+    同一个名字可能被两条路同时抽到（「总经理」既是节点名又是 EN16 取值）。
+    不去重，页面上同一件事出现两行，人处置完一行以为完事了。
+  auto_adopt: false
+  auto_adopt_why: |
+    **不自动采纳，一条都不。** 采纳要改 本体_v0.1.yaml（人手写的源文件），
+    而本体一改，所有引用这些字段的规则口径就跟着变。
+    这条路存在的话，「系统自己悄悄改了本体」就只是时间问题。
+
+act:
+  writes: [onto_candidate, agent_signal, agent_signal_log]
+  signal:
+    channel: fjhy_onto_build_done
+    kind: onto_build_done
+  idempotency: "{cand_key_set_hash}:{onto_version}"
+  idempotency_why: |
+    候选集合 + 本体版本进键。候选没变、本体没重装，就不重复落库。
+  never_writes_yaml: true
+  never_writes_yaml_why: |
+    act.writes 里没有 ontology_* 任何一张表，也没有 onto_cand_action。
+    **不是「约定不写」，是 WRITABLE_TABLES 白名单里就没给这个能力。**
+
+feedback:
+  metrics:
+    - name: false_positive
+      desc: 判了「建议新增」而人工认定本体里本来就有的条数。误报会让本体长出重复元素
+      source: onto_candidate
+    - name: false_negative
+      desc: 人工发现的、三档里都没报出来的本体缺口数
+      source: onto_candidate
+    - name: adopted_ratio
+      desc: 候选被采纳的比例。这个数长期很低，说明抽出来的候选质量不行
+      source: onto_cand_action
+    - name: dedup_merged
+      desc: 去重合并掉的条数。这个数是「同一件事报了两行」的直接度量
+      source: onto_candidate
+  separate_fp_fn: true
+  separate_why: |
+    **误报与漏报必须分开计。**
+    误报=把已有元素报成缺失，人照着采纳就在本体里长出重复元素，
+    而重复元素会被不同规则各自引用，同一个字段从此两套口径；
+    漏报=真缺的元素没报出来，于是素材里有、本体里没有，
+    而规则写到那里才发现——那时已经晚了一个批次。
+
+improve:
+  params:
+    max_candidates:
+      default: 300
+      bounds: [20, 2000]
+      why: 候选上限。清单长到人不看就等于没有清单
+    claim_timeout_seconds:
+      default: 600
+      bounds: [120, 3600]
+      why: 太短会把还在汇总的批次误判成孤儿而重复处理；太长则崩溃后恢复慢
+  forbidden:
+    - 规则内容
+    - 阈值
+    - 控制类型（禁止/警告）
+    - 三档判定的边界（建议新增 / 层间不一致 / 已在本体 的含义）
+    - 「不自动采纳」这条
+    - 本体源文件（整条链都不许写 本体_v0.1.yaml）

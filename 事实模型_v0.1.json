@@ -1,0 +1,2367 @@
+{
+ "meta": {
+  "version": "0.1",
+  "generated": "2026-10-18",
+  "purpose": "规则引擎的输入契约。由 本体_v0.1.yaml 生成，不手写——手写必然与本体漂移。",
+  "generator": "scratchpad/gen_fact.py（输入：本体_v0.1.yaml + 规则绑定_v0.1.json）",
+  "note": "每个字段都带 availability。引擎在装载规则时**必须**检查：规则引用的字段若 availability 不在可用集合内，这条规则不得进入执行集，并在启动日志里逐条列出被剔除的规则和原因——Fail Fast，不是静默跳过。静默跳过会让一条本该拦截的闸悄悄消失，比没有这道闸更危险。"
+ },
+ "entities": [
+  {
+   "entity_id": "E01",
+   "entity": "报账单",
+   "source": "单据样本",
+   "field_count": 30,
+   "fields": [
+    {
+     "concept_id": "C0101",
+     "field": "单据编号",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0102",
+     "field": "单据类型",
+     "type": "enum",
+     "enum": "EN01",
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0103",
+     "field": "单据日期",
+     "type": "timestamp",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D10-03",
+      "TR-D10-06"
+     ]
+    },
+    {
+     "concept_id": "C0104",
+     "field": "提单人",
+     "type": "ref",
+     "enum": null,
+     "ref": "E08",
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D1-03",
+      "TR-D10-01"
+     ]
+    },
+    {
+     "concept_id": "C0105",
+     "field": "报账人",
+     "type": "ref",
+     "enum": null,
+     "ref": "E08",
+     "availability": "仅单人可得",
+     "gap": "G-32",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D1-03",
+      "TR-D10-01",
+      "TR-D10-03"
+     ]
+    },
+    {
+     "concept_id": "C0106",
+     "field": "报账部门",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D4-13"
+     ]
+    },
+    {
+     "concept_id": "C0107",
+     "field": "核算主体",
+     "type": "ref",
+     "enum": null,
+     "ref": "E09",
+     "availability": "仅单人可得",
+     "gap": "G-32",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D1-01",
+      "TR-D1-02",
+      "TR-D10-06"
+     ]
+    },
+    {
+     "concept_id": "C0108",
+     "field": "单据状态",
+     "type": "enum",
+     "enum": "EN02",
+     "ref": null,
+     "availability": "仅单人可得",
+     "gap": "G-32",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0109",
+     "field": "费用承担部门",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "仅单人可得",
+     "gap": "G-32",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0110",
+     "field": "业务类型",
+     "type": "enum",
+     "enum": "EN03",
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D6-01"
+     ]
+    },
+    {
+     "concept_id": "C0111",
+     "field": "报账金额",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D6-04",
+      "TR-D8-01",
+      "TR-D8-02",
+      "TR-D10-06"
+     ]
+    },
+    {
+     "concept_id": "C0112",
+     "field": "付款金额",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0113",
+     "field": "币种",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0114",
+     "field": "税金",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0115",
+     "field": "摘要",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D5-10"
+     ]
+    },
+    {
+     "concept_id": "C0116",
+     "field": "补充说明",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D4-06",
+      "TR-D4-07",
+      "TR-D4-08",
+      "TR-D6-02",
+      "TR-D6-03",
+      "TR-D6-05",
+      "TR-D6-06",
+      "TR-D7-05",
+      "TR-D7-07",
+      "TR-D9-01",
+      "TR-D10-02",
+      "TR-D10-05"
+     ]
+    },
+    {
+     "concept_id": "C0117",
+     "field": "附件张数",
+     "type": "integer",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0118",
+     "field": "凭证编号",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0119",
+     "field": "入账期间",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0120",
+     "field": "商旅结算",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0121",
+     "field": "核销金额",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0122",
+     "field": "挂账及付款金额",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0123",
+     "field": "收款方",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": true,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D10-06"
+     ]
+    },
+    {
+     "concept_id": "C0124",
+     "field": "收款账号",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": true,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0125",
+     "field": "收款银行",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": true,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0126",
+     "field": "支付方式",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0127",
+     "field": "付款用途",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D5-10"
+     ]
+    },
+    {
+     "concept_id": "C0128",
+     "field": "是否多人",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0129",
+     "field": "出行人员",
+     "type": "ref",
+     "enum": null,
+     "ref": "E08",
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0130",
+     "field": "标准依据人",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    }
+   ]
+  },
+  {
+   "entity_id": "E02",
+   "entity": "费用明细",
+   "source": "单据样本",
+   "field_count": 4,
+   "fields": [
+    {
+     "concept_id": "C0201",
+     "field": "单据号",
+     "type": "ref",
+     "enum": null,
+     "ref": "E01",
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0202",
+     "field": "费用小类",
+     "type": "enum",
+     "enum": "EN04",
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D6-01",
+      "TR-D8-03"
+     ]
+    },
+    {
+     "concept_id": "C0203",
+     "field": "费用明细金额",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D4-02",
+      "TR-D4-03",
+      "TR-D4-04",
+      "TR-D4-05",
+      "TR-D4-09",
+      "TR-D4-11",
+      "TR-D4-12",
+      "TR-D4-13",
+      "TR-D4-14",
+      "TR-D4-16",
+      "TR-D5-01",
+      "TR-D5-02",
+      "TR-D5-03",
+      "TR-D5-04",
+      "TR-D5-05",
+      "TR-D5-06",
+      "TR-D5-07",
+      "TR-D5-08",
+      "TR-D5-09",
+      "TR-D6-03",
+      "TR-D6-06",
+      "TR-D8-05"
+     ]
+    },
+    {
+     "concept_id": "C0204",
+     "field": "分摊部门",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "仅多人可得",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D2-08",
+      "TR-D8-02"
+     ]
+    }
+   ]
+  },
+  {
+   "entity_id": "E03",
+   "entity": "出差审批单",
+   "source": "审核要点",
+   "field_count": 12,
+   "fields": [
+    {
+     "concept_id": "C0301",
+     "field": "出差人名单",
+     "type": "ref",
+     "enum": null,
+     "ref": "E08",
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D2-03",
+      "TR-D2-08"
+     ]
+    },
+    {
+     "concept_id": "C0302",
+     "field": "出差起始日期",
+     "type": "date",
+     "enum": null,
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D2-07",
+      "TR-D6-03",
+      "TR-D6-06",
+      "TR-D7-01",
+      "TR-D7-03",
+      "TR-D7-06",
+      "TR-D7-07",
+      "TR-D7-09"
+     ]
+    },
+    {
+     "concept_id": "C0303",
+     "field": "出差结束日期",
+     "type": "date",
+     "enum": null,
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D2-07",
+      "TR-D5-09",
+      "TR-D6-03",
+      "TR-D6-06",
+      "TR-D7-02",
+      "TR-D7-06",
+      "TR-D7-08",
+      "TR-D7-09"
+     ]
+    },
+    {
+     "concept_id": "C0304",
+     "field": "出差地点",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D2-04",
+      "TR-D2-06",
+      "TR-D4-02",
+      "TR-D4-04",
+      "TR-D4-10",
+      "TR-D4-11",
+      "TR-D4-16"
+     ]
+    },
+    {
+     "concept_id": "C0305",
+     "field": "出差天数",
+     "type": "integer",
+     "enum": null,
+     "ref": null,
+     "availability": "可推导",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D2-02",
+      "TR-D4-04",
+      "TR-D4-13",
+      "TR-D4-14",
+      "TR-D6-03",
+      "TR-D6-06"
+     ]
+    },
+    {
+     "concept_id": "C0306",
+     "field": "出差人数",
+     "type": "integer",
+     "enum": null,
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D2-02"
+     ]
+    },
+    {
+     "concept_id": "C0307",
+     "field": "审批日期",
+     "type": "date",
+     "enum": null,
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D7-01",
+      "TR-D7-07"
+     ]
+    },
+    {
+     "concept_id": "C0308",
+     "field": "回填日期",
+     "type": "date",
+     "enum": null,
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D7-08"
+     ]
+    },
+    {
+     "concept_id": "C0309",
+     "field": "用餐情况",
+     "type": "enum",
+     "enum": "EN05",
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D5-04",
+      "TR-D5-06",
+      "TR-D9-03"
+     ]
+    },
+    {
+     "concept_id": "C0310",
+     "field": "用车情况",
+     "type": "enum",
+     "enum": "EN06",
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D4-05",
+      "TR-D5-04",
+      "TR-D5-07",
+      "TR-D9-03"
+     ]
+    },
+    {
+     "concept_id": "C0311",
+     "field": "出差事由",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0312",
+     "field": "审批形式",
+     "type": "enum",
+     "enum": "EN07",
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    }
+   ]
+  },
+  {
+   "entity_id": "E04",
+   "entity": "出差日历",
+   "source": "审核要点",
+   "field_count": 5,
+   "fields": [
+    {
+     "concept_id": "C0401",
+     "field": "日期",
+     "type": "date",
+     "enum": null,
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0402",
+     "field": "地点",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D2-05",
+      "TR-D9-05"
+     ]
+    },
+    {
+     "concept_id": "C0403",
+     "field": "是否用餐",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0404",
+     "field": "是否用车",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D4-05"
+     ]
+    },
+    {
+     "concept_id": "C0405",
+     "field": "用餐栏次",
+     "type": "enum",
+     "enum": "EN08",
+     "ref": null,
+     "availability": "需OA同步",
+     "gap": "G-04",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D9-03"
+     ]
+    }
+   ]
+  },
+  {
+   "entity_id": "E05",
+   "entity": "发票",
+   "source": "规则清单",
+   "field_count": 12,
+   "fields": [
+    {
+     "concept_id": "C0501",
+     "field": "发票类型",
+     "type": "enum",
+     "enum": "EN09",
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-04",
+      "TR-D10-04"
+     ]
+    },
+    {
+     "concept_id": "C0502",
+     "field": "发票号码",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0503",
+     "field": "开票日期",
+     "type": "date",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D7-03",
+      "TR-D7-04"
+     ]
+    },
+    {
+     "concept_id": "C0504",
+     "field": "开票单位",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-01"
+     ]
+    },
+    {
+     "concept_id": "C0505",
+     "field": "发票抬头",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D1-02",
+      "TR-D3-04"
+     ]
+    },
+    {
+     "concept_id": "C0506",
+     "field": "价税合计",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D8-04"
+     ]
+    },
+    {
+     "concept_id": "C0507",
+     "field": "税额",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-10",
+      "TR-D3-11",
+      "TR-D4-12"
+     ]
+    },
+    {
+     "concept_id": "C0508",
+     "field": "税率",
+     "type": "rate",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-09",
+      "TR-D3-11"
+     ]
+    },
+    {
+     "concept_id": "C0509",
+     "field": "发票明细",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-02",
+      "TR-D3-12",
+      "TR-D3-13",
+      "TR-D8-03"
+     ]
+    },
+    {
+     "concept_id": "C0510",
+     "field": "备注栏",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D7-04",
+      "TR-D7-05"
+     ]
+    },
+    {
+     "concept_id": "C0511",
+     "field": "红冲状态",
+     "type": "enum",
+     "enum": "EN10",
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-03"
+     ]
+    },
+    {
+     "concept_id": "C0512",
+     "field": "是否数电票",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-09"
+     ]
+    }
+   ]
+  },
+  {
+   "entity_id": "E06",
+   "entity": "住宿费发票",
+   "source": "审核要点",
+   "field_count": 6,
+   "fields": [
+    {
+     "concept_id": "C0601",
+     "field": "入住时间",
+     "type": "date",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-06"
+     ]
+    },
+    {
+     "concept_id": "C0602",
+     "field": "离店时间",
+     "type": "date",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-06"
+     ]
+    },
+    {
+     "concept_id": "C0603",
+     "field": "入住人姓名",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": true,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-05",
+      "TR-D3-06",
+      "TR-D7-06"
+     ]
+    },
+    {
+     "concept_id": "C0604",
+     "field": "住宿天数",
+     "type": "integer",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-07",
+      "TR-D4-02",
+      "TR-D4-14"
+     ]
+    },
+    {
+     "concept_id": "C0605",
+     "field": "住宿间数",
+     "type": "integer",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-07",
+      "TR-D4-15"
+     ]
+    },
+    {
+     "concept_id": "C0606",
+     "field": "是否午休房",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D4-08"
+     ]
+    }
+   ]
+  },
+  {
+   "entity_id": "E07",
+   "entity": "交通费凭证",
+   "source": "审核要点",
+   "field_count": 8,
+   "fields": [
+    {
+     "concept_id": "C0701",
+     "field": "交通工具",
+     "type": "enum",
+     "enum": "EN11",
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-08",
+      "TR-D5-03"
+     ]
+    },
+    {
+     "concept_id": "C0702",
+     "field": "坐席等级",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D4-01"
+     ]
+    },
+    {
+     "concept_id": "C0703",
+     "field": "出发地",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D2-05"
+     ]
+    },
+    {
+     "concept_id": "C0704",
+     "field": "到达地",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D2-05",
+      "TR-D2-06"
+     ]
+    },
+    {
+     "concept_id": "C0705",
+     "field": "乘车日期",
+     "type": "date",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-08",
+      "TR-D5-09",
+      "TR-D7-09"
+     ]
+    },
+    {
+     "concept_id": "C0706",
+     "field": "是否含往返",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D6-05"
+     ]
+    },
+    {
+     "concept_id": "C0707",
+     "field": "退票手续费",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-09"
+     ]
+    },
+    {
+     "concept_id": "C0708",
+     "field": "大巴票备注身份信息",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-10"
+     ]
+    }
+   ]
+  },
+  {
+   "entity_id": "E08",
+   "entity": "出差人",
+   "source": "单据样本",
+   "field_count": 7,
+   "fields": [
+    {
+     "concept_id": "C0801",
+     "field": "工号",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": true,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0802",
+     "field": "姓名",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": null,
+     "sensitive": true,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0803",
+     "field": "所属部门",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0804",
+     "field": "职级",
+     "type": "enum",
+     "enum": "EN12",
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D3-05",
+      "TR-D4-01",
+      "TR-D4-15"
+     ]
+    },
+    {
+     "concept_id": "C0805",
+     "field": "常驻地",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "待业务侧明确",
+     "gap": "G-31",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D4-09",
+      "TR-D4-10",
+      "TR-D9-05"
+     ]
+    },
+    {
+     "concept_id": "C0806",
+     "field": "所属单位",
+     "type": "ref",
+     "enum": null,
+     "ref": "E09",
+     "availability": "样本缺列",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0807",
+     "field": "是否配备公务用车",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D5-08"
+     ]
+    }
+   ]
+  },
+  {
+   "entity_id": "E09",
+   "entity": "核算主体",
+   "source": "单据样本",
+   "field_count": 4,
+   "fields": [
+    {
+     "concept_id": "C0901",
+     "field": "单位名称",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0902",
+     "field": "直管企业",
+     "type": "enum",
+     "enum": "EN13",
+     "ref": null,
+     "availability": "待业务侧明确",
+     "gap": "G-01",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0903",
+     "field": "所属行业",
+     "type": "enum",
+     "enum": "EN14",
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C0904",
+     "field": "付款主体",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D1-01"
+     ]
+    }
+   ]
+  },
+  {
+   "entity_id": "E10",
+   "entity": "标准表",
+   "source": "制度",
+   "field_count": 7,
+   "fields": [
+    {
+     "concept_id": "C1001",
+     "field": "标准类型",
+     "type": "enum",
+     "enum": "EN15",
+     "ref": null,
+     "availability": "已录入资产",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1002",
+     "field": "适用职级",
+     "type": "ref",
+     "enum": null,
+     "ref": "E08",
+     "availability": "已录入资产",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1003",
+     "field": "适用地区",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "已录入资产",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1004",
+     "field": "限额金额",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "已录入资产",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": true,
+     "used_by_rules": [
+      "TR-D4-02",
+      "TR-D4-08"
+     ]
+    },
+    {
+     "concept_id": "C1005",
+     "field": "计量单位",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "已录入资产",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1006",
+     "field": "生效期间",
+     "type": "daterange",
+     "enum": null,
+     "ref": null,
+     "availability": "已录入资产",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1007",
+     "field": "出处条款",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "已录入资产",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    }
+   ]
+  },
+  {
+   "entity_id": "E11",
+   "entity": "预算",
+   "source": "规则清单",
+   "field_count": 4,
+   "fields": [
+    {
+     "concept_id": "C1101",
+     "field": "预算科目",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "需外部数据源",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1102",
+     "field": "预算金额",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "需外部数据源",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D8-01"
+     ]
+    },
+    {
+     "concept_id": "C1103",
+     "field": "已用金额",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "需外部数据源",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D8-01"
+     ]
+    },
+    {
+     "concept_id": "C1104",
+     "field": "预算调整审批材料",
+     "type": "ref",
+     "enum": null,
+     "ref": "E13",
+     "availability": "需外部数据源",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D8-01"
+     ]
+    }
+   ]
+  },
+  {
+   "entity_id": "E12",
+   "entity": "审批记录",
+   "source": "审批意见",
+   "field_count": 5,
+   "fields": [
+    {
+     "concept_id": "C1201",
+     "field": "序号",
+     "type": "integer",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1202",
+     "field": "审批节点",
+     "type": "enum",
+     "enum": "EN16",
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D4-06",
+      "TR-D4-07"
+     ]
+    },
+    {
+     "concept_id": "C1203",
+     "field": "审批人",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": true,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D10-03"
+     ]
+    },
+    {
+     "concept_id": "C1204",
+     "field": "审批意见",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D10-05"
+     ]
+    },
+    {
+     "concept_id": "C1205",
+     "field": "审批时间",
+     "type": "timestamp",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    }
+   ]
+  },
+  {
+   "entity_id": "E13",
+   "entity": "附件",
+   "source": "场景表",
+   "field_count": 4,
+   "fields": [
+    {
+     "concept_id": "C1301",
+     "field": "附件类型",
+     "type": "enum",
+     "enum": "EN17",
+     "ref": null,
+     "availability": "样本全空",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D2-01",
+      "TR-D6-01",
+      "TR-D6-02",
+      "TR-D6-04",
+      "TR-D10-04"
+     ]
+    },
+    {
+     "concept_id": "C1302",
+     "field": "文件名",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本全空",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1303",
+     "field": "是否必要",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "样本全空",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D6-01"
+     ]
+    },
+    {
+     "concept_id": "C1304",
+     "field": "页数",
+     "type": "integer",
+     "enum": null,
+     "ref": null,
+     "availability": "样本可得(审批意见)",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    }
+   ]
+  },
+  {
+   "entity_id": "E14",
+   "entity": "事权审批单",
+   "source": "审核要点",
+   "field_count": 3,
+   "fields": [
+    {
+     "concept_id": "C1401",
+     "field": "事项类别",
+     "type": "enum",
+     "enum": "EN18",
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": "G-12",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D6-04"
+     ]
+    },
+    {
+     "concept_id": "C1402",
+     "field": "事权审批金额",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": "G-12",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1403",
+     "field": "是否已附",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": "G-12",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    }
+   ]
+  },
+  {
+   "entity_id": "E15",
+   "entity": "会议培训通知",
+   "source": "场景表",
+   "field_count": 4,
+   "fields": [
+    {
+     "concept_id": "C1501",
+     "field": "是否统一安排食宿",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D5-01"
+     ]
+    },
+    {
+     "concept_id": "C1502",
+     "field": "是否提供用餐",
+     "type": "enum",
+     "enum": "EN19",
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D5-02",
+      "TR-D5-05"
+     ]
+    },
+    {
+     "concept_id": "C1503",
+     "field": "是否提供接送车",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D5-05"
+     ]
+    },
+    {
+     "concept_id": "C1504",
+     "field": "是否费用自理",
+     "type": "boolean",
+     "enum": null,
+     "ref": null,
+     "availability": "需票据OCR",
+     "gap": "G-29",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    }
+   ]
+  },
+  {
+   "entity_id": "E16",
+   "entity": "费用分摊",
+   "source": "规则清单",
+   "field_count": 2,
+   "fields": [
+    {
+     "concept_id": "C1601",
+     "field": "分摊对象",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D8-02"
+     ]
+    },
+    {
+     "concept_id": "C1602",
+     "field": "分摊金额",
+     "type": "decimal(18,2)",
+     "enum": null,
+     "ref": null,
+     "availability": "样本缺列",
+     "gap": null,
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": [
+      "TR-D8-02"
+     ]
+    }
+   ]
+  },
+  {
+   "entity_id": "E17",
+   "entity": "直管企业特殊规则",
+   "source": "审核要点",
+   "field_count": 4,
+   "fields": [
+    {
+     "concept_id": "C1701",
+     "field": "直管企业",
+     "type": "enum",
+     "enum": "EN13",
+     "ref": null,
+     "availability": "待业务侧明确",
+     "gap": "G-01",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1702",
+     "field": "规则类别",
+     "type": "enum",
+     "enum": "EN20",
+     "ref": null,
+     "availability": "待业务侧明确",
+     "gap": "G-01",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1703",
+     "field": "特殊规则正文",
+     "type": "string",
+     "enum": null,
+     "ref": null,
+     "availability": "待业务侧明确",
+     "gap": "G-01",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    },
+    {
+     "concept_id": "C1704",
+     "field": "覆盖的通用规则",
+     "type": "ref",
+     "enum": null,
+     "ref": "规则清单",
+     "availability": "待业务侧明确",
+     "gap": "G-01",
+     "sensitive": false,
+     "ocr_sourced": false,
+     "used_by_rules": []
+    }
+   ]
+  }
+ ],
+ "enums": {
+  "EN01": {
+   "name": "单据类型",
+   "source": "单据样本",
+   "values": [
+    "差旅费报账单",
+    "多人差旅费报账单"
+   ]
+  },
+  "EN02": {
+   "name": "单据状态",
+   "source": "单据样本",
+   "values": [
+    "审批完成"
+   ]
+  },
+  "EN03": {
+   "name": "业务类型",
+   "source": "场景表",
+   "values": [
+    "国内差旅费",
+    "国内差旅费(参加会议/培训产生）",
+    "国内差旅费(参加安全相关业务产生）",
+    "国内差旅费（参加培训费用计入职工教育经费）",
+    "外派差旅费"
+   ]
+  },
+  "EN04": {
+   "name": "费用小类",
+   "source": "场景表",
+   "values": [
+    "住宿费",
+    "住宿费（参加会议产生）",
+    "交通费",
+    "伙食补助费",
+    "市内交通费补贴",
+    "市内交通补贴",
+    "其他差旅费",
+    "住船补贴",
+    "党员教育培训差旅费",
+    "培训费",
+    "会议费",
+    "差旅补贴",
+    "行车补贴费（与差旅一同报销）"
+   ]
+  },
+  "EN05": {
+   "name": "用餐情况",
+   "source": "制度",
+   "values": [
+    "自行用餐（含免费）",
+    "协助安排就餐",
+    "按规定接待一餐"
+   ]
+  },
+  "EN06": {
+   "name": "用车情况",
+   "source": "制度",
+   "values": [
+    "本单位或其他单位提供车辆",
+    "自行用车",
+    "接待单位协助提供车辆"
+   ]
+  },
+  "EN07": {
+   "name": "审批形式",
+   "source": "审核要点",
+   "values": [
+    "线上",
+    "纸质线下"
+   ]
+  },
+  "EN08": {
+   "name": "用餐栏次",
+   "source": "审核要点",
+   "values": [
+    "早",
+    "中",
+    "晚"
+   ]
+  },
+  "EN09": {
+   "name": "发票类型",
+   "source": "规则清单",
+   "values": [
+    "增值税专用发票",
+    "增值税普通发票",
+    "数电专票",
+    "数电普票",
+    "铁路电子客票",
+    "航空运输电子客票行程单",
+    "非增值税类发票",
+    "收据",
+    "住宿清单"
+   ]
+  },
+  "EN10": {
+   "name": "红冲状态",
+   "source": "规则清单",
+   "values": [
+    "正常",
+    "已红冲"
+   ]
+  },
+  "EN11": {
+   "name": "交通工具",
+   "source": "审核要点",
+   "values": [
+    "飞机",
+    "火车",
+    "动车",
+    "高铁",
+    "轮船",
+    "长途汽车",
+    "大巴",
+    "专线地铁",
+    "专线商务车",
+    "市内公共交通",
+    "出租车",
+    "租车",
+    "私家车"
+   ]
+  },
+  "EN12": {
+   "name": "职级",
+   "source": "审批意见",
+   "values": [
+    "其他员工",
+    "部门负责人",
+    "副总经理",
+    "总经理"
+   ]
+  },
+  "EN13": {
+   "name": "直管企业",
+   "source": "审核要点",
+   "values": [
+    "福州港务",
+    "东南守押",
+    "闽运集团",
+    "漳州港务",
+    "泉州港务",
+    "八方物流",
+    "闽深公司",
+    "闽货",
+    "饮食服务公司",
+    "福建福港拖轮",
+    "福建荔兴拖轮",
+    "中平船舶管理"
+   ]
+  },
+  "EN14": {
+   "name": "所属行业",
+   "source": "场景表",
+   "values": [
+    "海运行业",
+    "陆运行业",
+    "工程施工行业",
+    "代理行业",
+    "物资商业"
+   ]
+  },
+  "EN15": {
+   "name": "标准类型",
+   "source": "制度",
+   "values": [
+    "住宿费限额标准",
+    "伙食补助费标准",
+    "市内交通费标准",
+    "交通工具等级标准"
+   ]
+  },
+  "EN16": {
+   "name": "审批节点",
+   "source": "审批意见",
+   "values": [
+    "开始",
+    "部门负责人",
+    "经办部门分管领导",
+    "综合部分管领导",
+    "分管领导",
+    "总经理",
+    "AI审核",
+    "共享审核",
+    "撤回",
+    "流程结束"
+   ]
+  },
+  "EN17": {
+   "name": "附件类型",
+   "source": "场景表",
+   "values": [
+    "出差审批单/差旅费明细表",
+    "住宿费发票",
+    "交通费报销凭证",
+    "其他差旅费发票",
+    "会议或培训通知/报名回执",
+    "租车合同或协议",
+    "租房合同",
+    "安全资金确认表/使用表",
+    "部门审核的补贴清单",
+    "事权审批单",
+    "预算调整审批材料",
+    "情况说明"
+   ]
+  },
+  "EN18": {
+   "name": "事权事项类别",
+   "source": "审核要点",
+   "values": [
+    "船舶事项",
+    "机关事项"
+   ]
+  },
+  "EN19": {
+   "name": "举办方提供用餐情况",
+   "source": "审核要点",
+   "values": [
+    "未提供",
+    "提供一餐",
+    "提供两餐",
+    "全程统一安排"
+   ]
+  },
+  "EN20": {
+   "name": "特殊规则类别",
+   "source": "审核要点",
+   "values": [
+    "住宿",
+    "补助",
+    "授权",
+    "报销方式",
+    "交通"
+   ]
+  },
+  "EN21": {
+   "name": "住宿费标准档位",
+   "source": "制度",
+   "values": [
+    "公司领导",
+    "其他人员"
+   ]
+  }
+ },
+ "derived_fields": {
+  "C0305": "出差天数 = 伙食补助费 ÷ 日标准（伙食补助按自然天数包干计发）；见 TR-D6-03 的 note，这是少数几条绕开 G-04 的路"
+ },
+ "sensitive_fields": [
+  {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "concept_id": "C0123",
+   "field": "收款方"
+  },
+  {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "concept_id": "C0124",
+   "field": "收款账号"
+  },
+  {
+   "entity": "E01",
+   "entity_name": "报账单",
+   "concept_id": "C0125",
+   "field": "收款银行"
+  },
+  {
+   "entity": "E06",
+   "entity_name": "住宿费发票",
+   "concept_id": "C0603",
+   "field": "入住人姓名"
+  },
+  {
+   "entity": "E08",
+   "entity_name": "出差人",
+   "concept_id": "C0801",
+   "field": "工号"
+  },
+  {
+   "entity": "E08",
+   "entity_name": "出差人",
+   "concept_id": "C0802",
+   "field": "姓名"
+  },
+  {
+   "entity": "E12",
+   "entity_name": "审批记录",
+   "concept_id": "C1203",
+   "field": "审批人"
+  }
+ ],
+ "masking": {
+  "note": "**脱敏必须覆盖全部出口，不是只守主输出路径。** 下面 outlets 列出的每一条，响应体都要过同一套规则：审核报告正文、审计接口（五张审计表的查询）、调试查询、配置文件接口、错误信息与堆栈、导出文件（Excel/PDF）、Prometheus 标签、日志。判断「有没有泄露」要把每个出口的响应都过一遍，而不是看 mask 模块写没写。",
+  "outlets": [
+   "AI 审核报告正文",
+   "审计接口 /audit/*（data_pool_snapshot / cycle_log / agent_signal_log / feedback_log / improve_log）",
+   "调试查询接口 /debug/*",
+   "配置接口 /config/*（大模型 Key 只回掩码）",
+   "错误响应与异常堆栈",
+   "导出文件（xlsx / pdf）",
+   "Prometheus 指标标签",
+   "应用日志与 SQL 日志",
+   "大模型请求体（送进模型前就要脱敏，不能只脱回来的）"
+  ],
+  "policies": [
+   {
+    "id": "M01",
+    "name": "姓名",
+    "applies_to": [
+     "C0123",
+     "C0801",
+     "C0603",
+     "C1203"
+    ],
+    "rule": "保留姓氏 + 等长「*」，如 乐知行 → 林**；「工号/姓名」格式只脱姓名段",
+    "must_hit": [
+     "乐知行",
+     "鄢岚",
+     "宦允文",
+     "笪澜生",
+     "甘梓宁",
+     "沃明远",
+     "冼芷清",
+     "蓝维安",
+     "璩砺川",
+     "郗岱",
+     "郯筠和"
+    ],
+    "must_not_hit": [
+     "泉州港务集团",
+     "厦门新立基",
+     "闽运长乐公交公司",
+     "科技集团",
+     "财智分公司",
+     "aiAudit",
+     "运营管理部",
+     "总账报表部"
+    ],
+    "why": "单位名、部门名、系统账号都是中文或含中文，用「2~4 个汉字」这类长度规则必然误伤单位名。只在已知的姓名字段上做，不做全文姓名识别。"
+   },
+   {
+    "id": "M02",
+    "name": "银行账号",
+    "applies_to": [
+     "C0124"
+    ],
+    "rule": "保留前 6 后 4，中间统一 12 个「*」",
+    "regex": "(?<!\\d)\\d{16,19}(?!\\d)",
+    "must_hit": [
+     "622908113255360583"
+    ],
+    "must_not_hit": [
+     "1374.80",
+     "34.11",
+     "3264",
+     "7209",
+     "FJPG-BX2610132121",
+     "2026-10-13 17:20:52",
+     "CL006004",
+     "622908"
+    ],
+    "why": "**误报和漏报同样致命。** 一个正常金额被当成卡号，整份报告就被打上不可信警告。所以用「前后不得紧邻数字」的边界断言，且长度下限 16——报账金额 1374.80 带小数点、单据编号带字母和横线、金额 3264 只有 4 位，三类都不会命中。正反两个方向都要有单元测试钉住。"
+   },
+   {
+    "id": "M03",
+    "name": "手机号",
+    "applies_to": [
+     "C0125",
+     "C0801"
+    ],
+    "rule": "保留前 3 后 4，中间 4 个「*」",
+    "regex": "(?<!\\d)1[3-9]\\d{9}(?!\\d)",
+    "must_hit": [
+     "13800138000"
+    ],
+    "must_not_hit": [
+     "1374.80",
+     "13745",
+     "2026101308211",
+     "100",
+     "120",
+     "15000000"
+    ],
+    "why": "11 位且以 1 开头的数字串在金额里也会出现（如 15000000 元），所以必须同时卡「第二位 3~9」与前后边界。"
+   },
+   {
+    "id": "M04",
+    "name": "工号",
+    "applies_to": [
+     "C0802"
+    ],
+    "rule": "保留后 2 位",
+    "must_not_hit": [
+     "FJPG-BX2610132121"
+    ],
+    "why": "工号与单据编号都含数字串，单据编号不能被脱——它是演示里逐张单对账的唯一抓手，脱了就没法核对。"
+   },
+   {
+    "id": "M06",
+    "name": "自由文本里的姓名（摘要/事由/审批意见/补充说明）",
+    "applies_to": [
+     "C0115",
+     "C0116",
+     "C1204",
+     "C0127"
+    ],
+    "rule": "用**出差人姓名闭集合**逐个替换（取自提单人/报账人/出差人名单三处的并集），不做通用姓名模式匹配",
+    "measured": {
+     "摘要总数": 40,
+     "含姓名的摘要": 14,
+     "占比": "35%",
+     "闭集合人数": 15,
+     "对 19 个单位名/部门名的误伤": 0
+    },
+    "must_hit": [
+     "报泉州港务集团驻点差旅费（乐知行，9.28-9.29）",
+     "付蓝维安6.24闽运平潭公司驻点差旅费",
+     "宦允文赴北京参加第二十届中国CFO大会（5.14-5.16）"
+    ],
+    "must_not_hit": [
+     "泉州港务集团",
+     "厦门新立基",
+     "闽运长乐公交公司",
+     "科技集团",
+     "财智分公司",
+     "宁德港务集团",
+     "漳州港务",
+     "莆田港务",
+     "平潭港务",
+     "厦门轮船公司",
+     "厦门海隆",
+     "福清宏源公司",
+     "邵武客运公司",
+     "金蝶软件",
+     "中兴新云",
+     "财司协会",
+     "港口集团",
+     "运营管理部",
+     "总账报表部"
+    ],
+    "why": "**这是最容易漏掉的那条旁路。** 摘要不是「姓名字段」，所以 M01 这种按字段脱敏的策略根本不经过它；而摘要恰恰会原文进 AI 审核报告、进大模型请求体、进导出文件。实测 40 条摘要里 14 条含真实姓名（35%）。不用通用姓名正则的理由也是实测的：单位名「闽运长乐公交公司」「厦门海隆」都是中文短词，任何「2~3 个汉字的人名模式」都会把它们打掉。改用闭集合后，19 个单位名/部门名误伤 0 个。代价是闭集合要随数据更新——这个代价必须付，因为误伤单位名会让整份报告失去可读性。"
+   },
+   {
+    "id": "M05",
+    "name": "大模型 API Key",
+    "applies_to": [
+     "llm_config.api_key"
+    ],
+    "rule": "只回 `sk-****` 形式的掩码，**明文一律不出库表之外**；写入时单向，读取接口永不回明文",
+    "must_not_hit": [
+     "model_name",
+     "base_url",
+     "temperature"
+    ],
+    "why": "大模型配置是旁路出口的典型：报告正文不含 Key，但 /config 接口会原样回。参照项目在这里栽过，这条单列。"
+   }
+  ],
+  "test_requirement": "每条 policy 的 must_hit 与 must_not_hit 都要落成单元测试，两个方向都测。must_not_hit 里的值直接取自真实样本（金额 1374.80 / 34.11 / 3264 / 7209、单据编号 FJPG-BX2610132121、业务小类编码 CL006004），不是编的。"
+ },
+ "free_text_leak_paths": {
+  "note": "自由文本字段是脱敏的旁路出口。它们没有 sensitive 标记，却原文流进报告、大模型请求体和导出文件。M06 专管这一类。",
+  "fields": [
+   {
+    "concept_id": "C0115",
+    "field": "报账单.摘要",
+    "measured": "40/40 非空，14 条含真实姓名"
+   },
+   {
+    "concept_id": "C0116",
+    "field": "报账单.补充说明",
+    "measured": "来自审批意见 PDF，含出差事由与地点说明"
+   },
+   {
+    "concept_id": "C1204",
+    "field": "审批记录.审批意见",
+    "measured": "50 页 PDF，含退回理由原文"
+   },
+   {
+    "concept_id": "C0127",
+    "field": "报账单.资金用途",
+    "measured": "来自审批意见 PDF"
+   }
+  ]
+ },
+ "engine_contract": {
+  "startup_checks": [
+   "每条规则 logic.concepts 引用的概念都存在于本事实模型（不存在 → 启动失败）",
+   "每条进入执行集的规则，其所有概念的 availability ∈ {样本可得, 样本可得(审批意见), 已录入资产, 可推导}",
+   "规则引用的外部表/名单文件存在且可解析（必要附件决策表 / 敏感词表 / 内部单位名单 / 标准表）",
+   "必要附件决策表的键在源表里唯一，且 row_count 合计 == source_rows",
+   "枚举字段的取值集合与本事实模型 enums 一致（多一个表单上不存在的取值，规则就会去判一个永远为假的条件）",
+   "所有 sensitive 字段都被至少一条 masking policy 覆盖（未覆盖 → 启动失败）",
+   "free_text_leak_paths 列出的每个字段都被 M06 覆盖（未覆盖 → 启动失败）",
+   "OCR 来源的数值字段不得出现在任何硬规则的阈值位置"
+  ],
+  "on_check_failure": "Fail Fast：打印全部不合格项后退出，不做部分启动。",
+  "excluded_rules_must_be_logged": true
+ },
+ "stats": {
+  "entities": 17,
+  "fields": 121,
+  "enums": 21,
+  "sensitive_fields": 7,
+  "fields_used_by_rules": 71,
+  "fields_unused": 50,
+  "availability": {
+   "样本可得": 14,
+   "仅单人可得": 4,
+   "样本可得(审批意见)": 22,
+   "样本缺列": 13,
+   "仅多人可得": 1,
+   "需OA同步": 16,
+   "可推导": 1,
+   "需票据OCR": 30,
+   "待业务侧明确": 6,
+   "已录入资产": 7,
+   "需外部数据源": 4,
+   "样本全空": 3
+  }
+ }
+}

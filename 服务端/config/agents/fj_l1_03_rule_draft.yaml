@@ -1,0 +1,160 @@
+# ============================================================================
+# L1 研判 Agent · 规则草稿
+# ----------------------------------------------------------------------------
+# 职责：对候选条款调大模型，产出「规则八要素」草稿，并做数值幻觉核对。
+#
+# **它产出的是草稿，不是规则。** 采纳是人的动作，而且 act.writes 里
+# 根本没有 rule 表——不是「约定不写」，是能力上就不给。
+# 有一条「模型抽出来的东西自动变成生效规则」的路，就迟早会有人走上去。
+#
+# **这个 Agent 会真的出网、真的计费、真的把制度原文发给第三方。**
+# 所以三条约束写死在配置里：
+#   1. 只对候选条款跑，不是把整个文件库丢给模型（费用与耗时不可控，
+#      而且发出去的内容越多越难交代）
+#   2. 单次有上限（max_drafts_per_cycle），超了下个周期再跑
+#   3. 送进模型前先脱敏，且记录实际发送字数——
+#      哪一段原文离开了本系统、有没有被截断，事后必须查得到
+# ============================================================================
+
+agent_id: fj_l1_03_rule_draft
+agent_version: "0.1.0"
+layer: L1
+name: 规则草稿
+description: 对候选条款调模型产出八要素草稿，带数值幻觉核对；产草稿不产规则
+execution_strategy: per_station
+
+triggers:
+  message:
+    enabled: true
+    channels: [fjhy_clause_ready]
+    why: 条款切好后醒来。按文件处理，一份文件的候选一起跑
+  heartbeat:
+    enabled: true
+    interval_seconds: 180
+    why: |
+      兜 NOTIFY 丢通知与孤儿信号回收。
+      间隔比切分长：这一步出网计费，心跳空转的代价比别处高。
+  subscribe:
+    enabled: false
+
+sense:
+  tables:
+    - doclib_clause
+    - doclib_draft
+    - doc_lib_file
+    - llm_config
+  select: |
+    候选条款（非范本非单据、带规则特征、现有规则未引用、**尚无成功草稿**）。
+    「尚无成功草稿」而不是「尚无草稿」：
+      按「抽过就不再抽」判 → 上次超时的那几条被判死刑，再也不会被抽；
+      完全不判           → 排序是确定性的，每点一次都把同样 8 条重新买一遍。
+    实测两头都踩过：8 次调用 7 次超时，而那 7 条如果算「已抽过」就永久失踪；
+    不去重的话 75 条候选里另外 67 条永远排不到。
+    取数按 (文件名, 条款序号) 排，一批就落在同一份文件里，好按文件交代。
+    llm_config 只取 purpose='extract' 且 is_default 且 enabled 的那一条——
+    **没有就直接失败，不改用别的用途的模型**：读图模型和抽规则模型要求不同，
+    悄悄顶替会让结果质量无从解释。
+  snapshot: false
+
+decide:
+  kind: 大模型抽取
+  llm_purpose: extract
+  masked_before_send: true
+  masked_why: |
+    纪律：送进模型前就要脱敏，不能只脱回来的。请求体一旦发出就离开了
+    本系统的控制范围。制度条款里「一般没有」个人信息不等于「一定没有」。
+  table_page_guard: true
+  table_page_guard_why: |
+    出自**表格页且字是 OCR 来的**条款，提示词里必须明确告知模型
+    「行列对应关系可能已错位，不得据此推断任何映射」，并要求它在
+    判定逻辑依赖该映射时返回 可规则化=false。
+    实测住宿费标准表 OCR 后数字全在（460/420/430/310/480/440），
+    城市↔职级↔金额却全乱了——不告知的话，模型会照着乱掉的表
+    编出「福州 420 元」这种**看起来完全合理**的对应关系。
+  number_check: true
+  number_check_why: |
+    草稿里出现、而条款原文里没有的数值 = 幻觉嫌疑，逐个列出并打红标。
+    **这是能确定性检出的一类幻觉，必须查**：抽规则时编一个阈值出来
+    比不抽更糟，它会以「有制度依据」的面目进入规则清单，
+    而审定的人未必逐字回查原文。
+    核对不通过的草稿照样存下来——删掉它等于掩盖模型的问题。
+  conclusion_values: [可规则化, 不可规则化, 调用失败]
+  pending_counts_as: 调用失败
+  pending_why: |
+    模型没答上来必须落到「调用失败」，不能算「不可规则化」。
+    算进后者，这条条款就被判了死刑，再也不会被重新抽取。
+
+act:
+  writes: [doclib_draft, doclib_extract_task, agent_signal, agent_signal_log]
+  signal:
+    channel: fjhy_draft_ready
+    kind: draft_ready
+  idempotency: "{clause_id}:{file_fingerprint}:{llm_config_id}"
+  attempt: 同一条条款重抽一次加一行（doclib_draft.attempt 递增），不覆盖
+  attempt_why: |
+    和 doc_page_vision 同一套口径：**不覆盖，加一行。**
+    「上次抽出来的是什么、是第几次抽的」要永远查得到，
+    否则无法回答「这条草稿是改提示词之前还是之后出的」。
+  idempotency_why: |
+    模型配置进键：换了模型就该重抽——同一条条款不同模型给的草稿差别很大，
+    而「这份草稿是哪个模型出的」正是评估质量的前提。
+    文件指纹进键：条款原文改了也要重抽。
+
+feedback:
+  metrics:
+    - name: false_positive
+      desc: 草稿被人工驳回的条数（模型把不该成规则的硬凑成了规则）
+      source: doclib_draft
+    - name: false_negative
+      desc: 模型判「不可规则化」但人工认为应当成规则的条数
+      source: doclib_draft
+    - name: number_suspect_ratio
+      desc: 数值核对不通过的草稿占比。这个数高说明该换模型或缩短送入原文
+      source: doclib_draft
+    - name: truncated_ratio
+      desc: 原文被截断后才发送的占比。截断会让模型看不到例外条款
+      source: doclib_draft
+  separate_fp_fn: true
+  separate_why: |
+    **误报与漏报必须分开计。**
+    误报=模型硬凑规则，人工逐条驳回，很快就没人愿意看草稿；
+    漏报=模型说「不可规则化」而其实该成规则，那条制度就静悄悄地漏了。
+    合成一个「采纳率」两者都看不见。
+
+improve:
+  params:
+    max_drafts_per_cycle:
+      default: 8
+      bounds: [1, 50]
+      why: 这一步真计费。一次跑太多，费用和耗时都不可控，出问题也不好叫停
+      wired_to: app/doclib_extract.py:AI_BATCH_DEFAULT
+    send_char_limit:
+      default: 1500
+      bounds: [400, 6000]
+      why: |
+        送多了贵且难交代，送少了会截掉例外条款——
+        而例外恰恰是八要素里最容易丢的一项
+      wired_to: app/doclib_extract.py:SEND_CHAR_LIMIT
+    llm_timeout_seconds:
+      default: 240
+      bounds: [15, 400]
+      why: 太短会把正常的长推理判成超时；太长则一条卡住拖垮整个周期
+      wired_to: llm_config.timeout_s（purpose='extract' 那条）
+      wired_why: |
+        **实测把这个默认值从 60 改成了 240。**
+        qwen3.5-122b-a10b 读一条 1476 字的条款要 150 秒，而闸设在 60 秒：
+        8 次调用 7 次在 62 秒被我们自己掐断——模型早就在生成，token 照算，
+        结果丢弃。成功率 1/8 不是模型不行，是闸设错了。
+    claim_timeout_seconds:
+      default: 600
+      bounds: [120, 3600]
+      why: 要大于 llm_timeout，否则还在等模型就被当成孤儿重跑，白花一次钱
+      wired: false
+      wired_why: 同条款切分：这条链现在手工启动、单进程跑完，没有 claim 机制
+  forbidden:
+    - 规则内容
+    - 阈值
+    - 控制类型（禁止/警告）
+    - 提示词里的「不得引入原文没有的数字」那几条硬约束
+    - 数值核对的判定方式
+    - 「草稿不自动变成规则」这条（rule 表不在 act.writes 里，改配置也写不进去）

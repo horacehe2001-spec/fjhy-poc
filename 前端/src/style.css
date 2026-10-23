@@ -1,0 +1,278 @@
+/* ============================================================================
+ * 视觉风格参照福建省港口集团官网 www.fjpg.cn
+ *
+ * 下面的色值与阴影**不是凭印象写的**，是从官网 CSS 里取出来的：
+ *   themes/version/css/18149418.css  头部与主导航
+ *   themes/version/css/one.css       二级栏目页（左栏目导航 + 右内容区）
+ *
+ *   #015293  主色深蓝（栏目标题、导航）
+ *   #014099  导航激活底色
+ *   #1F93F9  激活下边框 / 悬停亮蓝
+ *   #0164b9  链接蓝
+ *   #2A3F7E  深靛蓝（分页激活、按钮）
+ *   #c19c41  金色点缀
+ *   #222 / #82878f / #999 / #ccc   正文 / 次要 / 弱 / 分隔线
+ *   卡片     白底 + box-shadow 0 9px 36px rgba(151,151,151,.24) + 圆角 2px
+ *   内容区   padding 40px，正文宽 1140px，右侧标题 22px bold
+ *
+ * 【一条不让步的底线】
+ * 判定结果的四种颜色（命中 / 待人工 / 通过 / 不适用）是**功能色**，不是装饰。
+ * 往官网色系靠可以，但两两之间必须一眼可辨——
+ * 审核岗一天看几百张单，「待人工」要是长得像「通过」，
+ * 他就会以为这条查过了而且没问题，而实际是判不了。
+ * 所以：待人工取官网的金 #c19c41、不适用取官网的灰 #82878f（正好协调），
+ * 命中与通过另取红绿——官网没有这两色，但功能上必须有。
+ * ========================================================================== */
+
+:root {
+  /* 官网品牌色 */
+  --brand:        #015293;
+  --brand-deep:   #014099;
+  --brand-ink:    #2a3f7e;
+  --brand-light:  #1f93f9;
+  --link:         #0164b9;
+  --gold:         #c19c41;
+
+  /* 中性色 */
+  --text:         #222222;
+  --muted:        #82878f;
+  --weak:         #999999;
+  --line:         #e6e9ee;
+  --line-strong:  #cccccc;
+  --bg:           #f3f5f8;
+  --panel:        #ffffff;
+
+  /* 判定四态 —— 功能色，必须两两可辨 */
+  --hit:          #b3261e;   /* 命中 */
+  --pend:         #c19c41;   /* 待人工（官网金） */
+  --pass:         #2f7a3e;   /* 通过 */
+  --na:           #82878f;   /* 不适用（官网灰） */
+  --demo:         #2a3f7e;   /* 演示数据（官网靛蓝） */
+
+  /* 官网的卡片阴影与圆角，原值照搬 */
+  --card-shadow:  0 9px 36px 0 rgba(151, 151, 151, 0.24);
+  --radius:       2px;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  /* 官网用 Noto Sans SC（从 Google Fonts 加载）。这里不引外网字体——
+     离线也要能看，而且一个后台系统不该因为字体 CDN 不通就排版崩掉。
+     系统里有 Noto Sans SC 就用，没有就退回微软雅黑。 */
+  font: 13px/1.7 "Noto Sans SC", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { color: var(--brand-light); text-decoration: none; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 12px; }
+
+/* ── 顶栏：白底 + 底部深蓝，与官网 header 一致 ─────────────────────────── */
+.topbar {
+  height: 56px; flex: 0 0 56px;
+  background: #fff;
+  border-bottom: 3px solid var(--brand);
+  display: flex; align-items: center; padding: 0 22px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+  position: relative; z-index: 10;
+}
+.topbar .org {
+  font-size: 16px; font-weight: 700; color: var(--brand); letter-spacing: .5px;
+}
+.topbar .org .mark {
+  display: inline-block; width: 4px; height: 17px; background: var(--gold);
+  margin-right: 9px; vertical-align: -2px;
+}
+.topbar .sys {
+  margin-left: 14px; padding-left: 14px; border-left: 1px solid var(--line-strong);
+  color: var(--muted); font-size: 13px;
+}
+.topbar .right { margin-left: auto; color: var(--muted); font-size: 12px; }
+.topbar .right b { color: var(--brand); font-weight: 600; }
+
+/* ── 布局 ──────────────────────────────────────────────────────────────── */
+.shell { display: flex; flex-direction: column; height: 100%; }
+.layout { display: flex; flex: 1; min-height: 0; }
+
+/* ── 左栏目导航：官网二级页是白底卡片，不是深色侧栏 ───────────────────── */
+.side {
+  width: 232px; flex: 0 0 232px; overflow-y: auto;
+  padding: 18px 0 24px 18px; background: transparent;
+}
+.side .card {
+  background: var(--panel); border-radius: var(--radius);
+  box-shadow: var(--card-shadow); overflow: hidden; margin-bottom: 16px;
+}
+.side .cap {
+  background: var(--brand); color: #fff; padding: 11px 16px;
+  font-size: 14px; font-weight: 600; letter-spacing: .5px;
+}
+.side .cap small { display: block; font-weight: normal; font-size: 11px; opacity: .72; }
+/* 组名本身是链接的那一组（领域知识资产：点它进落地页选领域/实例）。
+   下面通用的 `.side a` 会把它拉回普通菜单项的长相（白底、深色字、左边框），
+   所以这里把 cap 的外观重新按住，并给出 hover / 选中两态——
+   一个看不出可点的链接，等于没有这个入口。 */
+.side a.cap {
+  color: #fff; border-left: none; border-bottom: none;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.side a.cap::after { content: '›'; font-size: 16px; opacity: .8; }
+.side a.cap:hover { background: var(--brand-deep); color: #fff; }
+.side a.cap.on { background: var(--brand-deep); color: #fff; }
+.side a.cap.on::after { opacity: 1; }
+
+/* 当前实例徽标条：只在 /asset/* 的页面顶部出现。 */
+.scopebar {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 12px; padding: 6px 12px;
+  background: #f3f8ff; border: 1px solid #d6e6fb; border-radius: 6px;
+  font-size: 13px;
+}
+.scopebar .scopetag { font-weight: 600; color: var(--brand); }
+.scopebar .scopelink { font-size: 12px; color: var(--muted); }
+.scopebar .scopelink:hover { color: var(--brand); }
+.side a {
+  display: block; padding: 9px 16px 9px 15px; color: var(--text); font-size: 13px;
+  border-left: 3px solid transparent; border-bottom: 1px solid #f1f3f6;
+}
+.side a:last-child { border-bottom: none; }
+.side a:hover { background: #f5f8fc; color: var(--brand); }
+.side a.on {
+  background: #eef4fb; border-left-color: var(--gold);
+  color: var(--brand); font-weight: 600;
+}
+.side a .n {
+  float: right; color: var(--weak); font-size: 11px; font-weight: normal;
+  font-variant-numeric: tabular-nums;
+}
+.side a.on .n { color: var(--brand); }
+/* 子项：缩进 + 一个点，表示「隶属于上一项」。背景压一档，层级一眼看得出 */
+.side a.child {
+  padding-left: 34px; font-size: 12.5px; background: #fafbfd;
+}
+.side a.child::before {
+  content: '·'; color: #9aa7b6; margin-left: -10px; margin-right: 5px;
+}
+.side a.child:hover { background: #f5f8fc; }
+.side a.child.on { background: #eef4fb; }
+.side a .todo {
+  display: block; color: #9a7b22; font-size: 11px; line-height: 1.5;
+  font-weight: normal; margin-top: 2px;
+}
+.side .meta { padding: 9px 16px; color: var(--muted); font-size: 11px; }
+
+/* ── 主内容区：官网 right_content 是 padding 40px ─────────────────────── */
+.main { flex: 1; overflow-y: auto; padding: 26px 30px 48px; }
+.main > h2 {
+  margin: 0 0 6px; font-size: 22px; font-weight: 700; color: var(--brand);
+}
+.main > h2::before {
+  content: ''; display: inline-block; width: 4px; height: 20px;
+  background: var(--gold); margin-right: 10px; vertical-align: -3px;
+}
+.main > .sub { color: var(--muted); margin-bottom: 16px; max-width: 1040px; }
+
+/* ── 卡片：官网是柔和大阴影 + 2px 圆角，不是硬边框 ───────────────────── */
+.panel {
+  background: var(--panel); border-radius: var(--radius);
+  box-shadow: var(--card-shadow); padding: 18px 22px; margin-bottom: 18px;
+}
+.panel > h3 {
+  margin: 0 0 12px; font-size: 15px; font-weight: 700; color: var(--brand);
+  padding-bottom: 9px; border-bottom: 1px solid var(--line);
+}
+details.panel > summary {
+  font-size: 14px; color: var(--brand); font-weight: 600; cursor: pointer;
+}
+
+/* ── 表格 ──────────────────────────────────────────────────────────────── */
+table { width: 100%; border-collapse: collapse; }
+th, td {
+  padding: 8px 10px; border-bottom: 1px solid var(--line);
+  text-align: left; vertical-align: top;
+}
+th {
+  background: #f5f8fc; font-weight: 600; white-space: nowrap;
+  color: var(--brand); border-bottom: 2px solid #dce6f2;
+}
+tr:hover td { background: #fafcfe; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── 标签：四态两两可辨是硬要求 ────────────────────────────────────────── */
+.tag {
+  display: inline-block; padding: 1px 7px; border-radius: var(--radius);
+  font-size: 11px; border: 1px solid currentColor; white-space: nowrap;
+  line-height: 1.6;
+}
+.t-hit   { color: var(--hit);  background: #fdf3f2; }
+.t-pend  { color: #8a6d1e;     background: #fdf8ec; border-color: var(--pend); }
+.t-pass  { color: var(--pass); background: #f1f8f2; }
+.t-na    { color: var(--na);   background: #f6f7f9; }
+.t-demo  { color: var(--demo); background: #eef1f9; }
+.t-block { color: #fff; background: var(--hit);  border-color: var(--hit); }
+.t-warn  { color: #fff; background: var(--pend); border-color: var(--pend); }
+
+/* ── 键值对 ────────────────────────────────────────────────────────────── */
+.kv { display: grid; grid-template-columns: 168px 1fr; gap: 5px 14px; }
+.kv > b { font-weight: 600; color: var(--muted); }
+
+/* ── 提示框 ────────────────────────────────────────────────────────────── */
+.note {
+  background: #fdf8ec; border-left: 3px solid var(--gold);
+  padding: 10px 12px; border-radius: var(--radius); margin: 10px 0; color: #6b541a;
+}
+.err {
+  background: #fdf3f2; border-left: 3px solid var(--hit);
+  padding: 10px 12px; border-radius: var(--radius); margin: 10px 0; color: #8a241d;
+}
+.muted { color: var(--muted); }
+.mono { font-family: Consolas, monospace; font-size: 12px; }
+
+/* ── 数字卡 ────────────────────────────────────────────────────────────── */
+.stat { display: flex; gap: 26px; flex-wrap: wrap; }
+.stat > div { min-width: 100px; }
+.stat b {
+  display: block; font-size: 25px; font-variant-numeric: tabular-nums;
+  color: var(--brand-ink); font-weight: 700; line-height: 1.3;
+}
+.stat span { color: var(--muted); font-size: 12px; }
+.bar {
+  height: 7px; background: #eef0f3; border-radius: var(--radius);
+  overflow: hidden; display: flex; margin-top: 6px;
+}
+.bar i { display: block; height: 100%; }
+
+/* ── 控件：官网分页用 #2A3F7E ─────────────────────────────────────────── */
+button, .btn {
+  font: inherit; padding: 5px 14px; border: 1px solid var(--line-strong);
+  background: #fff; border-radius: 4px; cursor: pointer; color: var(--text);
+}
+button:hover { background: var(--brand-ink); color: #fff; border-color: var(--brand-ink); }
+button:disabled { opacity: .55; cursor: default; }
+button:disabled:hover { background: #fff; color: var(--text); border-color: var(--line-strong); }
+input, select, textarea {
+  font: inherit; padding: 5px 9px; border: 1px solid var(--line-strong);
+  border-radius: 4px; color: var(--text); background: #fff;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--brand-light);
+  box-shadow: 0 0 0 2px rgba(31, 147, 249, .14);
+}
+.row { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+
+pre.json {
+  background: #f7f9fb; border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 9px; overflow-x: auto; font-size: 12px; margin: 0; max-height: 360px;
+}
+
+/* ── 流程链 ────────────────────────────────────────────────────────────── */
+.chain { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.chain .node {
+  border: 1px solid #d7e0ec; background: #f5f8fc; border-radius: var(--radius);
+  padding: 5px 11px; font-size: 12px; color: var(--brand);
+}
+.chain .node.bypass {
+  border-style: dashed; color: var(--muted); background: #fafbfc;
+}
+.chain .arr { color: var(--brand-light); }

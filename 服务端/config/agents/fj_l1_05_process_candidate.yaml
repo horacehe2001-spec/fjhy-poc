@@ -1,0 +1,130 @@
+# ============================================================================
+# L1 研判 Agent · 流程候选（流程本体）
+# ----------------------------------------------------------------------------
+# 职责：从真实审批记录里数出节点与迁移，和流程本体比对，产出候选。确定性。
+#
+# **流程本体的唯一事实来源是审批记录，不是设计。** 实测 368 条记录里：
+#   节点名 9 个 → 5 个对上（含 1 个靠别名：「开始」= N01 提单）
+#                4 个没对上，其中 3 个（综合部分管领导/总经理/分管领导）
+#                **EN16 枚举里有而节点层没有 —— 本体内部两层口径不一致**
+#   迁移 23 条 → 只有 3 条在本体的迁移表里
+#
+# 这类东西人工读 924 行 YAML 几乎看不出来，而它一旦存在，
+# 「按节点统计」和「按枚举统计」会给出两套数，谁也说不清哪套对。
+#
+# **三条实测逼出来的硬规则：**
+#
+# 一、**比对要连别名和唯一前缀一起比。** 「开始」是 N01 的别名，
+#    「部门负责人」是「部门负责人审批」的前缀。不比这两样，103 次和 67 次出现
+#    会被报成「本体里找不到这个节点」——假红。而假红看多了真红也不会有人看。
+#
+# 二、**同一套比对规则必须用在节点和迁移两处。** 一度迁移只按名字+别名解析，
+#    于是「开始→部门负责人」这条实际走过 60 次的边被报成「有一端钉不到」。
+#    同一件事两处两套规则，必然在其中一处报假账。
+#
+# 三、**一个名字对上多个节点时不猜。** 「共享审核」出现 125 次，本体里有
+#    「共享审核·初审」和「共享审核·复审」两个节点——选哪个是口径决策，不是技术判断。
+#    系统只报「判不出是哪一个」，并把 125 次这个量摆出来让人知道它有多重要。
+# ============================================================================
+
+agent_id: fj_l1_05_process_candidate
+agent_version: "0.1.0"
+layer: L1
+name: 流程候选
+description: 从审批记录数出节点与迁移，与流程本体比对；别名与唯一前缀都算对上，判不出不猜
+execution_strategy: batch
+
+triggers:
+  message:
+    enabled: true
+    channels: [fjhy_onto_build_requested]
+    why: 素材感知报出差额后醒来，和字段候选同一条信号
+  heartbeat:
+    enabled: true
+    interval_seconds: 240
+    why: 兜 NOTIFY 丢通知；新导入一批审批记录时也要重算
+  subscribe:
+    enabled: false
+
+sense:
+  tables:
+    - approval_record
+    - process_node
+    - process_transition
+    - ontology_enum_value
+  select: |
+    审批记录里每个节点名的出现次数与涉及单据数；同一张单上相邻两步构成的边
+    及其出现次数；流程本体的节点（**含 alias**）与迁移；
+    EN16「审批节点」的枚举取值（用来判层间不一致）。
+  snapshot: false
+
+decide:
+  kind: 节点与迁移比对
+  match_by: [精确名, 别名, 唯一前缀]
+  conclusion_values: [建议新增, 层间不一致, 已在本体]
+  pending_counts_as: 层间不一致
+  pending_why: |
+    判不出是「该补节点」还是「枚举当初写多了」时落「层间不一致」，
+    不落「建议新增」。后者等于替人定了方向——而这两个方向改的是不同的层，
+    改错一层会让另一层更不一致。
+  no_guess_on_ambiguity: true
+  no_guess_why: |
+    一个实测名字对上多个本体节点（共享审核 → 初审/复审）时只报「判不出」。
+    替客户选一个的后果：125 次出现全部记到错的节点上，
+    而流程图上看起来完全正常。
+
+act:
+  writes: [onto_candidate, agent_signal, agent_signal_log]
+  signal:
+    channel: fjhy_onto_cand_ready
+    kind: onto_cand_ready
+  idempotency: "{approval_count}:{onto_version}"
+  idempotency_why: |
+    审批记录条数 + 本体版本进键。记录没变、本体没重装，候选就不会变。
+  never_writes_yaml: true
+  never_writes_yaml_why: |
+    **Agent 不许碰 本体_v0.1.yaml。** 新增一个流程节点会改变审核链的形状，
+    而链的形状决定哪些规则在哪个节点生效。这种改动只能是人的动作。
+
+feedback:
+  metrics:
+    - name: false_positive
+      desc: 报了「本体里没有」但其实对得上的条数（别名或前缀没比到）。实测修过一次 113 次 → 10 次
+      source: onto_candidate
+    - name: false_negative
+      desc: 人工发现的、系统没报出来的缺节点/缺迁移条数
+      source: onto_candidate
+    - name: ambiguous_names
+      desc: 对上多个节点、判不出的名字数。实测 1 个（共享审核，125 次）
+      source: process_node
+    - name: transition_coverage
+      desc: 实测迁移里能在本体迁移表里找到的比例。实测 3/23——这个数低说明本体的边没补全
+      source: process_transition
+  separate_fp_fn: true
+  separate_why: |
+    **误报与漏报必须分开计。**
+    误报=把本体里有的节点报成缺失（103 次出现的「开始」被报成找不到），
+    人查一圈发现本来就有，下次就不再认真看这张表；
+    漏报=真缺的节点没报出来，于是审批记录里走过的路在本体里不存在，
+    而流程图看起来完整。
+
+improve:
+  params:
+    max_pairs_per_cycle:
+      default: 200
+      bounds: [20, 2000]
+      why: 相邻对的数量随单据数涨，要有上限
+    min_occurrence:
+      default: 1
+      bounds: [1, 20]
+      why: |
+        出现次数低于这个数的边不报。**默认 1（全报）**：
+        只走过一次的边也可能是真路径，调高它等于主动漏报，
+        所以上限也只给到 20。
+  forbidden:
+    - 规则内容
+    - 阈值
+    - 控制类型（禁止/警告）
+    - 本体源文件（整条链都不许写 本体_v0.1.yaml）
+    - 节点名的映射口径（实测名 ↔ 本体名 的对应关系是口径决策）
+    - 「判不出就不猜」这条

@@ -1,0 +1,85 @@
+# 福建海运集团POC · 服务器部署（演示数据版）
+#
+# 这台服务器（192.168.106.141）是多租户共享机器，跑着福建港口集团
+# sdafi/kingsware 等其他项目的容器。本 compose 项目名、容器名、网络名、
+# 卷名都带 fjhy-poc 前缀，自成一个 docker 网络，不碰别人的容器/网络/卷
+# （全局纪律第 12 条：一眼可辨、事后好清理）。
+#
+# **只装载演示数据，不含客户 40 张真实报销单明细**——那批数据在
+# app/demo/seed.py 里，entrypoint.sh 刻意不调用它。这是跟用户确认过的
+# data-governance 决策，不是遗漏。
+#
+# db 和 backend 不绑宿主机端口，只在本项目的 docker 网络内通信；
+# 只有 frontend 对外，绑 8900（该端口在部署前核对过，服务器上原本空闲）。
+#
+# 起：docker compose --env-file .env.server -f docker-compose.server.yml up -d --build
+# 停：docker compose --env-file .env.server -f docker-compose.server.yml down
+# 清：docker compose --env-file .env.server -f docker-compose.server.yml down -v   # 连数据卷一起删
+name: fjhy-poc
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: fjhy-poc-pg
+    environment:
+      POSTGRES_DB: fjhy_poc
+      POSTGRES_USER: fjhy
+      POSTGRES_PASSWORD: ${FJHY_PG_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: Asia/Shanghai
+    volumes:
+      - fjhy_poc_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fjhy -d fjhy_poc"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_preload_libraries=timescaledb
+      - -c
+      - timezone=Asia/Shanghai
+      - -c
+      - log_min_duration_statement=500
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ..
+      dockerfile: 部署/Dockerfile.backend
+    container_name: fjhy-poc-backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      FJHY_PG_HOST: db
+      FJHY_PG_PORT: "5432"
+      FJHY_PG_DB: fjhy_poc
+      FJHY_PG_USER: fjhy
+      FJHY_PG_PASSWORD: ${FJHY_PG_PASSWORD}
+      FJHY_LLM_KEY_SECRET: ${FJHY_LLM_KEY_SECRET}
+      FJHY_CONTRACT_MODE: fail_fast
+      FJHY_MASK_MODE: "on"
+    volumes:
+      - fjhy_poc_backend_var:/app/服务端/var
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: 部署/Dockerfile.frontend
+    container_name: fjhy-poc-frontend
+    depends_on:
+      - backend
+    ports:
+      - "8900:80"
+    restart: unless-stopped
+
+volumes:
+  fjhy_poc_pgdata:
+    name: fjhy-poc-pgdata
+  fjhy_poc_backend_var:
+    name: fjhy-poc-backend-var

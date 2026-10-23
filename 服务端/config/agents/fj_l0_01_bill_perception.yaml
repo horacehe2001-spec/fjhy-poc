@@ -1,0 +1,99 @@
+# ============================================================================
+# L0 感知 Agent · 报账单感知
+# ----------------------------------------------------------------------------
+# 职责：盯住报账单表，发现「需要审核但还没审核过」的单据，往数据池投信号。
+# **它不做判断**，只负责「看见」和「喊一声」。
+#
+# 为什么感知要单独一个 Agent，不和审核合在一起：
+#   合在一起就没法分别回答两个问题——
+#   「为什么这张单没被审」（感知没看见？还是审核失败？）
+#   「为什么审了两遍」（感知投了两次？还是审核重试？）
+#   分开之后，agent_signal 表就是两者的分界线，对不上就知道断在哪一侧。
+# ============================================================================
+
+agent_id: fj_l0_01_bill_perception
+agent_version: "0.1.0"
+layer: L0                      # L0 感知 / L1 研判 / L2 协同
+name: 报账单感知
+description: 扫描 expense_bill，为未审核的单据投递 review_requested 信号
+
+# ── 触发 ────────────────────────────────────────────────────────────────────
+# 三种触发都配上，但各有分工，不是冗余：
+#   heartbeat 是兜底。LISTEN/NOTIFY 是「尽力而为」的——连接断开期间发出的通知
+#             收不到，而且不报错。只靠 NOTIFY 会在重连窗口静默丢任务。
+#   subscribe 是正常路径，延迟秒级。
+#   message   本 Agent 不用：它是源头，没有上游给它发消息。
+triggers:
+  heartbeat:
+    enabled: true
+    interval_seconds: 30
+    why: 兜住 LISTEN/NOTIFY 在重连窗口的静默丢失
+  subscribe:
+    enabled: true
+    channels: [fjhy_bill_changed]
+    # 这个通道由**数据库触发器**发送（见迁移 0013），不是任何 Agent 发的。
+    # 事实的源头是表本身，由表来通知最直接；而且触发器在事务内执行，
+    # 事务回滚则通知不发——应用层做不到这一点。
+    emitted_by: db_trigger
+    emitter: "expense_bill 上的 tr_notify_bill_changed"
+    channel_sources:
+      fjhy_bill_changed: db_trigger
+  message:
+    enabled: false
+
+# ── S 阶段读什么（只读，纯 IO）────────────────────────────────────────────────
+sense:
+  tables: [expense_bill, review_run]
+  # 只看「没有成功审核记录」的单。不是「没有审核记录」——
+  # 失败的审核记录留着是为了可追溯，但不能因此认为这张单审过了。
+  select: 待审核单据（无 status=ok 的 review_run）
+  max_batch: 50
+
+# ── D 阶段判什么（不碰库）────────────────────────────────────────────────────
+decide:
+  kind: 感知型
+  output: 要投递的信号列表
+  rules: []                    # 感知 Agent 不跑规则
+
+# ── A 阶段写什么（唯一允许写库的阶段）────────────────────────────────────────
+act:
+  writes: [agent_signal, agent_signal_log]
+  signal:
+    channel: fjhy_review_requested
+    kind: review_requested
+    to_agent: fj_l1_01_travel_review
+  # 幂等键 = 单据号 + 规则集版本。规则集换版时同一张单要重审，
+  # 所以版本必须进键；只用单据号会让换版后的重审被当成重复投递而丢掉。
+  idempotency: "{subject_id}:{rule_set_version}"
+
+# ── F 阶段量化什么 ──────────────────────────────────────────────────────────
+feedback:
+  metrics:
+    - name: perception_lag_seconds
+      desc: 单据创建到被感知的延迟
+    - name: missed_bills
+      desc: 心跳发现而订阅没发现的单据数（>0 说明 NOTIFY 丢过通知）
+
+# ── I 阶段能调什么（只能调自己的内部参数）────────────────────────────────────
+improve:
+  params:
+    max_batch:
+      default: 50
+      bounds: [10, 200]
+      why: 一次扫太多会让单次周期变长，心跳就赶不上；太少则积压
+    interval_seconds:
+      default: 30
+      bounds: [10, 300]
+      why: 白皮书给的心跳量级是 30 秒~5 分
+  forbidden:
+    - 规则内容
+    - 阈值
+    - 控制类型（禁止/警告）
+    - 任何业务口径
+  forbidden_why: |
+    规则是制度的投影，改规则是业务决策，要走发布管理的版本化流程并留人工签字。
+    Agent 自优化只能动「自己跑多快、一次吃多少」这类运行参数。
+    越界的调参请求记成 improve_log(rejected=TRUE)，不是直接丢掉——
+    被拒绝的尝试同样是审计证据。
+
+execution_strategy: batch       # per_station | batch

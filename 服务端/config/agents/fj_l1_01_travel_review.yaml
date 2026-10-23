@@ -1,0 +1,124 @@
+# ============================================================================
+# L1 研判 Agent · 差旅费审核
+# ----------------------------------------------------------------------------
+# 职责：对一张报账单跑规则集，产出审核结论与逐条证据。
+#
+# **它的结论不阻断流程。** 实测：FJPG-BX2610130821 在 2026-10-13 17:25:03
+# 得到「AI审核不通过」，17:35:41 仍进入共享审核并由人工给出退回理由。
+# 所以本 Agent 的 A 阶段写的是 review_run / review_finding，
+# 而流程闸门在 manual_review——那是人的动作，不是 Agent 的。
+# ============================================================================
+
+agent_id: fj_l1_01_travel_review
+agent_version: "0.1.0"
+layer: L1
+name: 差旅费审核
+description: 对单张报账单跑规则集，输出结论与逐条证据，不阻断流程
+
+triggers:
+  message:
+    enabled: true
+    channels: [fjhy_review_requested]
+    why: 正常路径。感知 Agent 投信号后毫秒~秒级醒来
+  heartbeat:
+    enabled: true
+    interval_seconds: 60
+    why: |
+      兜两件事：一是 NOTIFY 丢通知；
+      二是**回收孤儿信号**——claimed 了但处理进程崩掉的信号，
+      超过 claim_timeout 还没 done 就放回 pending。
+      没有这一条，一次崩溃就会让那张单永久卡在 claimed 状态，
+      而且没有任何报错。
+  subscribe:
+    enabled: false
+
+sense:
+  tables:
+    - expense_bill
+    - expense_detail
+    - approval_record
+    - attachment
+    - bill_traveler
+    - trip_application
+    - invoice
+    - employee
+    - org
+    - standard_limit
+    - rank_tier_map
+    - lookup_table
+    - lookup_row
+  select: 单张报账单的全部事实（app/perception/reader.snapshot_fact）
+  snapshot: true
+  snapshot_must_be_masked: true
+  snapshot_why: |
+    快照会被审计接口、调试查询、导出文件读到，这些都是旁路出口。
+    指望每个出口各自去脱敏，总有一条路会漏，所以**入库前就脱**。
+    data_pool_snapshot.masked 为 FALSE 的行不允许出现在生产。
+
+decide:
+  kind: 规则研判
+  rule_set: current            # 取 release_current 指向的那一版
+  rule_scope: 演示可执行集      # demo_executable = TRUE 的那些
+  excluded_must_be_logged: true
+  excluded_why: |
+    被契约校验剔出执行集的规则必须逐条记进 cycle_log.rule_excluded，
+    并在审核报告上单列一节。审核岗看到「本次执行 12 条」时，
+    必须同时看到「另有 70 条因缺字段未执行」，
+    否则他会以为 82 条都查过了——那就是让 AI 声称复核了它读不到的数据。
+  conclusion_values: [pass, review, reject]
+  pending_counts_as: review
+  pending_why: |
+    「判不了」必须落到 review，不能算 pass。
+    算进 pass，报告上就会出现「本单规则全部通过」，
+    而实际上有十几条根本没跑。
+
+act:
+  writes: [review_run, review_finding, agent_signal_log, agent_signal]
+  signal:
+    channel: fjhy_review_done
+    kind: review_done
+  idempotency: "{subject_id}:{rule_set_version}:{snapshot_hash}"
+  idempotency_why: |
+    快照指纹进键：同一张单内容没变就不该重复产出结论；
+    内容变了（比如补了说明）就应该重审。
+    只用单据号会让补件后的重审被当成重复而丢掉。
+
+feedback:
+  metrics:
+    - name: conclusion_vs_human
+      desc: 本引擎结论与人工最终意见的一致性
+      source: v_review_deviation
+    - name: false_positive
+      desc: 人工明确不认可的命中条数（manual_review.disagree_with）
+    - name: false_negative
+      desc: 人工退回而本引擎放行的单据数
+    - name: pending_ratio
+      desc: 待人工占比。这个数高不一定是坏事，但一直不降说明缺口没在补
+  separate_fp_fn: true
+  separate_why: |
+    **误报与漏报必须分开计，不许合成一个「准确率」。**
+    漏报放过风险；误报把正常单据判成问题件，审核岗很快就不再信任这套系统。
+    合成一个数会把误报的代价藏起来。
+
+improve:
+  params:
+    max_concurrent:
+      default: 3
+      bounds: [1, 8]
+      why: 并发太高会让单次周期的 P90 变差，而审核是有时限的
+    claim_timeout_seconds:
+      default: 600
+      bounds: [120, 3600]
+      why: 太短会把还在跑的信号误判成孤儿而重复处理；太长则崩溃后恢复慢
+    llm_confidence_threshold:
+      default: 0.70
+      bounds: [0.50, 0.95]
+      why: 软规则低于此门限一律转人工。调高更保守，调低更激进
+  forbidden:
+    - 规则内容
+    - 阈值
+    - 控制类型（禁止/警告）
+    - 规则集版本的切换
+  forbidden_why: 同 L0。规则集切换属于发布管理，必须人工签字（ck_release_signed）。
+
+execution_strategy: per_station    # 一张单一个周期，便于逐单追溯

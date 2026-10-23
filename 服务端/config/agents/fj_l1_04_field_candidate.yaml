@@ -1,0 +1,131 @@
+# ============================================================================
+# L1 研判 Agent · 字段与枚举候选（业务本体）
+# ----------------------------------------------------------------------------
+# 职责：从单据明细表的列头抽候选概念，从真实取值与材料正文抽枚举取值的印证。
+#       **确定性，不出网不计费。**
+#
+# 为什么这一步不上大模型（2026-10-19 用户选的「全部确定性」）：
+#   列头在不在本体里、某个枚举取值在正文里出现几次，都是**能复核的硬事实**。
+#   让模型从条款里"抽名词"当候选，会给出一批看起来很像本体元素的词，
+#   而误报要人逐条剥——而本体里多一个错概念的代价很具体：
+#   它会被规则引用，然后同一个字段有了两套口径，两边都「有出处」。
+#
+# **两条实测逼出来的硬规则：**
+#
+# 一、**比对必须连别名一起比。** 概念带 alias（C0107 核算主体 ↔ 明细表里的
+#    「报账人公司」、C0202 费用小类 ↔「费用明细」）。不比别名，这两列会被报成
+#    「本体里没有」，照着去新增就长出重复概念。
+#    装载脚本一度把 alias 整个丢掉（0024 补的），那一版报出 8 条候选里有 3 条是假的。
+#
+# 二、**「在比对范围之外」不等于「不存在」。** 枚举取值的印证一度只在 185 条
+#    切好的条款里搜，于是 32 个取值报「制度里 0 次」；换成搜 14 份文件的整份正文后
+#    降到 23 条。剩下的也不许写成「可疑」——它们的出处可能正落在那几页
+#    OCR 读不出的表格里。**三种可能并列摆出来，方向交给人判。**
+# ============================================================================
+
+agent_id: fj_l1_04_field_candidate
+agent_version: "0.1.0"
+layer: L1
+name: 字段与枚举候选
+description: 从单据列头抽候选概念、从真实取值与正文抽枚举印证；确定性，不出网
+execution_strategy: batch
+
+triggers:
+  message:
+    enabled: true
+    channels: [fjhy_onto_build_requested]
+    why: 素材感知报出差额后醒来
+  heartbeat:
+    enabled: true
+    interval_seconds: 240
+    why: 兜 NOTIFY 丢通知；另外文件库重扫后列头可能变，心跳能兜住
+  subscribe:
+    enabled: false
+
+sense:
+  tables:
+    - doc_lib_file
+    - doclib_clause
+    - ontology_entity
+    - ontology_concept
+    - ontology_enum
+    - ontology_enum_value
+    - enum_value_current
+  select: |
+    单据明细表的路径（**从文件库取，不写死目录**——文件库那一栏才是
+    「材料在哪」的唯一来源），每个工作表第一行的列头；
+    本体的实体/概念名**与别名**；枚举取值；以及业务表里枚举列的真实取值分布
+    （列与枚举的对应关系从复合外键 (xxx_enum, xxx) → enum_value_current 推出来，
+    不手写映射表——手写一份就一定会和库里不一致）。
+  snapshot: false
+
+decide:
+  kind: 列头与取值比对
+  match_by: [精确名, 别名]
+  conclusion_values: [建议新增, 已在本体, 读不出]
+  pending_counts_as: 读不出
+  pending_why: |
+    打不开一份单据时落「读不出」，**不许落「建议新增」**。
+    前者是「没查成」，后者是「查了，本体里没有」——
+    混成一档会把一次读取失败变成一条「本体缺概念」的结论，
+    而人照着它去新增概念。
+  entity_binding: 工作表名唯一命中实体名/别名才绑定，并列或未命中一律留空待人选
+  entity_binding_why: |
+    挂错实体会让这个概念的语义归属整个错位，而页面上照样显示「有出处」。
+    实测 6 个工作表全部唯一命中（1差旅费报账单→E01、1费用明细→E02、
+    1报销附件→E13），但规则必须按「判不出就不猜」写，否则换一批材料就会猜错。
+
+act:
+  writes: [onto_candidate, agent_signal, agent_signal_log]
+  signal:
+    channel: fjhy_onto_cand_ready
+    kind: onto_cand_ready
+  idempotency: "{file_fingerprint_set}:{onto_version}"
+  idempotency_why: |
+    素材指纹集合 + 本体版本一起进键：材料换了要重算，本体重装了也要重算
+    （新采纳了一个概念，原来的候选就不该再报「本体里没有」）。
+  never_writes_yaml: true
+  never_writes_yaml_why: |
+    **Agent 不许碰 本体_v0.1.yaml。** 它是人手写的源文件，
+    唯一的写入口是人工采纳（带备份、带 safe_load 校验、带回滚）。
+    Agent 能写源文件，就等于有一条「系统自己改本体」的路，
+    而本体一改，所有在跑的规则的字段口径就跟着变。
+
+feedback:
+  metrics:
+    - name: false_positive
+      desc: 报了「建议新增」但人工发现本体里本来就有的条数（多半是别名没比到）
+      source: onto_candidate
+    - name: false_negative
+      desc: 人工发现的、系统没报出来的缺概念条数
+      source: onto_candidate
+    - name: alias_hit
+      desc: 靠别名才对上的列头数。这个数证明「连别名一起比」这条规则在起作用
+      source: ontology_concept
+    - name: unverified_enum_values
+      desc: 样本与正文都没检索到的枚举取值数。实测 23 个，不等于 23 个错值
+      source: ontology_enum_value
+  separate_fp_fn: true
+  separate_why: |
+    **误报与漏报必须分开计。**
+    误报=把已有概念（或其别名）报成缺失，人照着新增就产生重复概念，
+    而重复概念比缺概念更糟：同一个字段两套口径，两边都「有出处」；
+    漏报=真缺的概念没报出来，规则写到那个字段时才发现本体里没有。
+
+improve:
+  params:
+    max_sheets_per_cycle:
+      default: 20
+      bounds: [2, 100]
+      why: 一次读多少个工作表。xlsx 读取是 IO 密集的，要有上限
+    max_candidates:
+      default: 300
+      bounds: [20, 2000]
+      why: 候选上限。清单长到人不看，就等于没有清单
+  forbidden:
+    - 规则内容
+    - 阈值
+    - 控制类型（禁止/警告）
+    - 本体源文件（整条链都不许写 本体_v0.1.yaml）
+    - 「连别名一起比」这条（去掉它会立刻产出重复概念）
+    - 「读不出 ≠ 建议新增」这条分档

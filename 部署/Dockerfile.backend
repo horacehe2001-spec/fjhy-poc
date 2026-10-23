@@ -1,0 +1,25 @@
+# 构建上下文必须是项目根目录（不是 部署/），因为 config.py 用
+# PROJECT_ROOT/本体_v0.1.yaml 等根级文件，必须保持与仓库一致的相对位置。
+FROM python:3.12-slim
+
+# tesseract-ocr 只提供引擎；中文语言包用项目自带的 服务端/vendor/tessdata
+# （ocr.py 优先探测 vendor 目录，装系统语言包反而是多余的，不装）。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY 部署/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+COPY 本体_v0.1.yaml 规则清单_v0.1.json 规则绑定_v0.1.json 事实模型_v0.1.json ./
+COPY 规则资产/ ./规则资产/
+COPY 服务端/ ./服务端/
+COPY 部署/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+WORKDIR /app/服务端
+
+EXPOSE 8000
+ENTRYPOINT ["/app/entrypoint.sh"]

@@ -1,0 +1,103 @@
+# ============================================================================
+# L0 感知 Agent · 文件库变更感知
+# ----------------------------------------------------------------------------
+# 职责：盯住只读文件库，发现「该抽取了」的文件，往数据池投信号。
+# **它不做判断、不切条款、不调模型**，只负责「看见」和「喊一声」。
+#
+# 为什么感知要单独一个 Agent：
+#   和切条款合在一起，就没法分别回答两个问题——
+#   「为什么这份制度没被抽」（感知没看见？还是切分失败？）
+#   「为什么抽了两遍」（感知投了两次？还是切分重试？）
+#   agent_signal 表是两者的分界线，对不上就知道断在哪一侧。
+#   这和报账单那条链上 L0/L1 分开是同一个道理。
+#
+# 为什么只用心跳，不订阅通道：
+#   文件库的变化来自**人点扫描**，不是后台持续产生的事件流。
+#   为它架一条 LISTEN/NOTIFY 通道，要加数据库触发器、要处理重连窗口丢通知，
+#   换来的只是把「最多等 60 秒」变成「秒级」——而人点完扫描本来就要看结果。
+#   **能用简单办法达到够用的效果时，不引入要维护的基础设施。**
+# ============================================================================
+
+agent_id: fj_l0_02_doclib_perception
+agent_version: "0.1.0"
+layer: L0
+name: 文件库变更感知
+description: 扫描 doc_lib_file，为需要抽取的文件投递 extract_requested 信号
+execution_strategy: batch
+
+triggers:
+  heartbeat:
+    enabled: true
+    interval_seconds: 60
+    why: |
+      文件库的变化由人点扫描产生，不是持续事件流。
+      60 秒足够，而且**心跳是这条链唯一的驱动**——
+      没有它，扫描完就没人往下推了。
+  subscribe:
+    enabled: false
+    why: 见文件头，不为低频人工动作架 NOTIFY 通道
+  message:
+    enabled: false
+    why: 它是这条链的源头，没有上游给它发消息
+
+# ── S 阶段读什么（只读，纯 IO）────────────────────────────────────────────────
+sense:
+  tables: [doc_lib_file, doc_lib_change, doc_lib_root]
+  select: |
+    需要抽取的文件：未标记为消失、且
+      (从未抽取过  OR  抽取后文件又被改过（extract_fingerprint ≠ fingerprint）)
+    并且取得到内容（parse_state='已解析'，或 ocr_state='已OCR' 且 OCR 没过期）。
+    **单据类文件排除**：报账单明细表里是业务数据，不是制度来源。
+  max_batch: 20
+
+# ── D 阶段判什么（不碰库）────────────────────────────────────────────────────
+decide:
+  kind: 感知型
+  output: 要投递的信号列表
+  rules: []
+  note: |
+    感知 Agent 不跑规则、不判「这份文件该不该抽」。
+    「单据不抽」那条是**文件类别**决定的，在 S 阶段的筛选条件里，
+    不是 D 阶段的判断——类别是文件库那一栏算好的事实，这里只是照着用。
+
+# ── A 阶段写什么（唯一允许写库的阶段）────────────────────────────────────────
+act:
+  writes: [agent_signal, agent_signal_log]
+  signal:
+    channel: fjhy_extract_requested
+    kind: extract_requested
+  idempotency: "{file_id}:{fingerprint}"
+  idempotency_why: |
+    指纹进键：同一份文件内容没变就不该重复投信号；
+    内容变了就应该重新抽。只用 file_id 会让改过的文件被当成重复而丢掉，
+    于是规则悄悄停留在旧版制度上——这种错误没有任何报错。
+
+feedback:
+  metrics:
+    - name: signal_lag_seconds
+      desc: 文件变化到信号投递的延迟。心跳 60 秒，这个数常态应在 60 秒内
+      source: agent_signal_log
+    - name: missed_files
+      desc: 已就绪却连续多个周期没被投递的文件数。持续 >0 说明筛选条件写漏了
+      source: doc_lib_file
+  separate_fp_fn: false
+  separate_why: |
+    L0 只回答「看见没看见」，没有误报漏报之分——
+    多投一次由幂等键挡掉，少投一次由 missed_files 兜住。
+
+improve:
+  params:
+    heartbeat_interval_seconds:
+      default: 60
+      bounds: [30, 300]
+      why: 太短会让空扫描频繁打库；太长则人点完扫描要等很久才看到抽取动起来
+    max_batch:
+      default: 20
+      bounds: [1, 100]
+      why: 一次投太多会让下游单周期变长，而抽取是按文件串行的
+  forbidden:
+    - 规则内容
+    - 阈值
+    - 控制类型（禁止/警告）
+    - 文件类别判定（制度/范本/单据的口径属于文件库那一栏）
+    - 「哪些文件算制度来源」的口径
