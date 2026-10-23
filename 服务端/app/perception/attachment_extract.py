@@ -356,9 +356,15 @@ def status(instance_id=None):
     # **这不是故障，是需要重跑一次抽取**——但如果不报出来，
     # 页面上会显示「40 张单全都没有附件」，看着和缺口 G-29 一模一样，
     # 而那个结论刚刚才被推翻过。
+    # **只数真实抽取的那棵树。** 演示单的合成示意图也落在 ATTACH_DIR 下
+    # （config.ATTACH_DEMO_SUBDIR 子目录），但它们不是「抽取出来的」，
+    # 和 in_db（只统计 source_kind='xlsx内嵌'）不是一个口径。一起数进来的话
+    # orphan_files 会立刻报「磁盘 273 / 库里 219，差 54 条」——一条纯假警，
+    # 而且它给出的排查方向（重跑过装载器）完全是错的。
     on_disk = 0
     if os.path.isdir(config.ATTACH_DIR):
-        for _, _, fs in os.walk(config.ATTACH_DIR):
+        for _root, dirs, fs in os.walk(config.ATTACH_DIR):
+            dirs[:] = [d for d in dirs if d != config.ATTACH_DEMO_SUBDIR]
             on_disk += len(fs)
     in_db = sum(r["extracted"] for r in real)
     typed = db.scalar("SELECT count(*) FROM attachment "
@@ -401,5 +407,14 @@ def status(instance_id=None):
             "附件类型已判 %d / %d 条（还差 %d 条），**TR-D6-01 仍然不能开**——"
             "它要求**一张单的全部必要附件都判出类型**才能判断「齐不齐」，"
             "只判了一部分的单据，缺的那几张到底是「真的没附件」还是「附件还没判」"
-            "分不清，开了等于对未判完的单报缺件" % (typed, typed + untyped, untyped)),
+            "分不清，开了等于对未判完的单报缺件" % (typed, typed + untyped, untyped)
+            if untyped else
+            # 全判完之后：**门槛满足 ≠ 规则已开**，这两件事必须分开说。
+            # 上一版只有两个分支，untyped=0 时落进上面那句，于是出现
+            # 「已判 219/219（还差 0 条）…只判了一部分的单据」——前后自相矛盾。
+            "附件类型**已全部判完**（%d / %d 条）。**TR-D6-01 的数据门槛已经满足**，"
+            "但它**目前仍未开启**：这是待定的项目决策，**不是数据不够**。"
+            "开它就会开始对 40 张真实单报「缺件」，而必要附件决策表按费用类型要求"
+            "不同的附件组合，口径要先定下来。**不要把「未开启」读成「还缺数据」**——"
+            "那正是上一版文案造成的误读。" % (typed, typed + untyped)),
     }

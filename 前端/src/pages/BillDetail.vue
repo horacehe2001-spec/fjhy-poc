@@ -274,7 +274,14 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
           </div>
           <div>
             <b>{{ (data as any).attach_count ?? 0 }}</b>
-            <span>实际附件数（xlsx 内嵌图）</span>
+            <span>真实原图（xlsx 内嵌）</span>
+          </div>
+          <!-- 演示合成单独一格，只在有的时候出现。
+               原来只摆一个「实际附件数」，演示单于是头部写「附件（2 个）」、
+               指标卡写「0」，同一个页面两个数对不上。 -->
+          <div v-if="(data as any).attach_demo_count">
+            <b>{{ (data as any).attach_demo_count }}</b>
+            <span>演示合成（示意图）</span>
           </div>
         </div>
         <div v-if="(data as any)._attach_metrics_note" class="note">
@@ -323,13 +330,13 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
               <tr>
                 <td class="num">{{ a.seq ?? i + 1 }}</td>
                 <td>
-                  <img v-if="a.id && a.source_kind === 'xlsx内嵌'" class="thumb"
+                  <img v-if="a.id && a.has_file" class="thumb"
                        :src="fileUrl(a.id)" :alt="a.file_name"
                        @click="toggle(a.id)" />
                   <span v-else class="muted" style="font-size: 11px">无原图</span>
                 </td>
                 <td>
-                  <a v-if="a.id && a.source_kind === 'xlsx内嵌'" href="#"
+                  <a v-if="a.id && a.has_file" href="#"
                      @click.prevent="toggle(a.id)">{{ a.file_name }}</a>
                   <span v-else>{{ a.file_name }}</span>
                 </td>
@@ -363,7 +370,7 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
               <!-- 读图结果：判不出 / 把握不够 时依据必须看得见，
                    否则使用者不知道「为什么没写入类型」。 -->
               <tr v-if="lastResult[a.id]">
-                <td colspan="7" class="muted" style="font-size: 11px; background: #fafcfe">
+                <td colspan="8" class="muted" style="font-size: 11px; background: #fafcfe">
                   模型 {{ lastResult[a.id].model }} ·
                   {{ lastResult[a.id].ok
                     ? (lastResult[a.id].type_code
@@ -377,7 +384,7 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
               </tr>
               <!-- 大图。附件是扫描件，缩略图上看不清票面，而审核岗要看的正是票面 -->
               <tr v-if="openAtt === a.id">
-                <td colspan="7" style="background: #fafcfe">
+                <td colspan="8" style="background: #fafcfe">
                   <img :src="fileUrl(a.id)" :alt="a.file_name" class="full" />
                   <div class="muted" style="font-size: 11px; margin-top: 6px">
                     {{ a.file_name }}（{{ kb(a.byte_size) }}）·

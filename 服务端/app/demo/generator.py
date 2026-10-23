@@ -410,6 +410,8 @@ def _add_attachments(cur, bill_no, case, day):
     tag = case["id"]
     upload_base = datetime.datetime.combine(day, datetime.time(8, 30))
 
+    seq_box = [0]          # ins 是闭包，用可变容器累加序号
+
     def ins(attach_type, suffix, is_required, pages):
         # type_enum 是生成列（由 attach_type 自动推导），不能手动写入
         # source_kind 必须**显式**写「演示合成」。
@@ -418,14 +420,35 @@ def _add_attachments(cur, bill_no, case, day):
         # 跑完一轮测试之后 attachment 表 273 行全成了「xlsx内嵌」。
         # 演示数据必须一眼可辨（全局纪律第 12 条），而「一眼可辨」不能依赖
         # 另一个文件里的默认值。
+        seq_box[0] += 1
+        seq = seq_box[0]
+        # 文件名扩展名跟实际内容走：画出来的是 PNG 就叫 .png。
+        # 原来叫 .pdf 而内容是空的，配了图之后再叫 .pdf 就是新的误导。
+        file_name = "【演示】%s-%s.png" % (tag, suffix)
+        # 合成示意图。**画不出来也绝不让 seed 挂掉**——Pillow 缺失、容器里没有
+        # CJK 字体、磁盘只读都可能发生。那时这条退回「只有类型没有图」的老样子，
+        # 页面上的 _attachment_note 会如实说出来，而不是静默留一个 404。
+        stored_path = content_type = byte_size = None
+        try:
+            from . import demo_attachment_image as dai
+            r = dai.render(
+                os.path.join(config.ATTACH_DEMO_DIR, bill_no,
+                             "%02d_%s.png" % (seq, suffix)),
+                bill_no, attach_type, seq)
+            stored_path = r["path"]
+            content_type = r["content_type"]
+            byte_size = r["byte_size"]
+        except Exception as e:
+            print("  !! 演示附件示意图没画成（%s: %s），这条只留类型不留图"
+                  % (type(e).__name__, e))
         cur.execute("""INSERT INTO attachment
             (bill_no, attach_type, file_name, is_required, pages, uploaded_at,
-             source_kind)
-            VALUES (%s,%s,%s,%s,%s,%s,'演示合成')""",
-            (bill_no, attach_type,
-             "【演示】%s-%s.pdf" % (tag, suffix),
+             source_kind, seq, stored_path, content_type, byte_size)
+            VALUES (%s,%s,%s,%s,%s,%s,'演示合成',%s,%s,%s,%s)""",
+            (bill_no, attach_type, file_name,
              is_required, pages,
-             upload_base + datetime.timedelta(minutes=pages * 2)))
+             upload_base + datetime.timedelta(minutes=pages * 2),
+             seq, stored_path, content_type, byte_size))
 
     # 1. 出差审批单/差旅费明细表（每张单必须有）
     ins("出差审批单/差旅费明细表", "出差审批单", True, 1)
