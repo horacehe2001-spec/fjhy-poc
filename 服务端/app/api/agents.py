@@ -140,7 +140,10 @@ def overview():
              "why": "有状态行的是常驻编排那条链上的 Agent。另外那些在**手工启动的作业链**上，"
                     "参数取契约默认值，不落 agent_state——"
                     "**这不是缺数据**，是两种编排方式的差别。"},
-            {"fact": "心跳全部没跳过（last_beat_at 空 %d 个）" % (len(items) - len(beats)),
+            # 措辞按页面口径走（2026-10-24）：**「不适用」不是「没跳过」**。
+            # 「没跳过」读起来像「该跳而没跳」，是个故障描述；而 POC 里压根
+            # 没有常驻调度器在跑，这一项对这些 Agent 本来就不成立。
+            {"fact": "心跳不适用（last_beat_at 空 %d 个）" % (len(items) - len(beats)),
              "why": "心跳是契约的必填项（yaml_loader 强制：LISTEN/NOTIFY 是尽力而为的，"
                     "断连期间的通知收不到且不报错）。但 POC 里**没有常驻调度器在跑**，"
                     "唯一的常驻编排 app/runtime/orchestrator.py:serve() 要单独启动。"

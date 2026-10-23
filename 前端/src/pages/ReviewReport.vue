@@ -81,6 +81,55 @@ function evidenceRows(f: Finding): [string, string][] {
         <router-link :to="`/review/trace/${data.run.bill_no}`">看审计追溯</router-link>
       </div>
 
+      <!-- 人工复核闸门。**放在页首，不放页底。**
+           它原先排在「结论 / 命中 / 待人工 / 未执行 / 通过折叠」五块之后，
+           要滚过整页才看得见——而这页存在的理由就是让人做这个决定。
+           AI 结论和两个计数一并显示在面板里：不先滚下去也知道在审什么。
+
+           勾选「我不认可这条命中」**仍留在命中区每条证据旁边**，没有一起搬上来：
+           那个勾选必须挨着证据看，搬到顶上就变成凭记忆勾。两处靠下面的
+           已勾计数和锚点链接连起来。 -->
+      <div class="panel panel-gate" id="gate">
+        <h3>
+          人工复核（这里才是闸门）
+          <span class="muted" style="font-size: 12px; font-weight: normal">
+            · AI 结论
+            <span
+              class="tag"
+              :class="{ pass: 't-pass', review: 't-pend', reject: 't-hit' }[data.run.conclusion] || 't-na'"
+            >{{ { pass: '通过', review: '待复核', reject: '不通过' }[data.run.conclusion] }}</span>
+            仅供参考 · 命中 {{ data.coverage.hit }} · 待人工 {{ data.coverage.pending }}
+          </span>
+        </h3>
+        <div class="row">
+          <input v-model="reviewer" placeholder="复核人" style="width: 140px" />
+          <select v-model="decision">
+            <option value="agree">同意</option>
+            <option value="agree_with_note">同意并备注</option>
+            <option value="return">退回</option>
+          </select>
+          <input
+            v-model="reason"
+            :placeholder="decision === 'return' ? '退回理由（必填）' : '备注（可选）'"
+            style="flex: 1; min-width: 240px"
+          />
+          <button :disabled="submitting" @click="submit(reload)">
+            {{ submitting ? '提交中…' : '提交' }}
+          </button>
+        </div>
+        <div v-if="disagree.length" class="note">
+          标记为「不认可」的命中：<code>{{ disagree.join(', ') }}</code>
+          —— 提交后会回流成 feedback_log(false_positive)，用于量化误报。
+        </div>
+        <div v-else-if="data.findings.hit.length" class="note" style="font-size: 12px">
+          有 {{ data.findings.hit.length }} 条命中。觉得哪条是误报，在
+          <a href="#hits">下方命中区</a>逐条勾「我不认可」，再回这里提交——
+          勾选挨着证据，不凭记忆。
+        </div>
+        <div v-if="submitErr" class="err">{{ submitErr }}</div>
+        <div v-if="submitMsg" class="note">{{ submitMsg }}</div>
+      </div>
+
       <div class="panel">
         <h3>
           结论
@@ -107,7 +156,7 @@ function evidenceRows(f: Finding): [string, string][] {
         <div class="note"><MarkText :text="data.coverage.note" /></div>
       </div>
 
-      <div v-if="data.findings.hit.length" class="panel">
+      <div v-if="data.findings.hit.length" class="panel" id="hits">
         <h3 style="color: var(--hit)">命中（{{ data.findings.hit.length }} 条）</h3>
         <div v-for="f in data.findings.hit" :key="f.rule_id" style="margin-bottom: 14px">
           <div>
@@ -134,6 +183,12 @@ function evidenceRows(f: Finding): [string, string][] {
             <input type="checkbox" :checked="disagree.includes(f.rule_id)" @change="toggle(f.rule_id)" />
             我不认可这条命中（会回流成误报）
           </label>
+        </div>
+        <!-- 勾完要能回去提交。闸门在页首，勾选在这里，不给这条链接
+             就得自己往上滚——勾了几条也看不见。 -->
+        <div v-if="disagree.length" class="note">
+          已勾 <b>{{ disagree.length }}</b> 条不认可 ·
+          <a href="#gate">回到页首提交 ↑</a>
         </div>
       </div>
 
@@ -206,31 +261,16 @@ function evidenceRows(f: Finding): [string, string][] {
         </table>
       </details>
 
-      <div class="panel">
-        <h3>人工复核（这里才是闸门）</h3>
-        <div class="row">
-          <input v-model="reviewer" placeholder="复核人" style="width: 140px" />
-          <select v-model="decision">
-            <option value="agree">同意</option>
-            <option value="agree_with_note">同意并备注</option>
-            <option value="return">退回</option>
-          </select>
-          <input
-            v-model="reason"
-            :placeholder="decision === 'return' ? '退回理由（必填）' : '备注（可选）'"
-            style="flex: 1; min-width: 240px"
-          />
-          <button :disabled="submitting" @click="submit(reload)">
-            {{ submitting ? '提交中…' : '提交' }}
-          </button>
-        </div>
-        <div v-if="disagree.length" class="note">
-          标记为「不认可」的命中：<code>{{ disagree.join(', ') }}</code>
-          —— 提交后会回流成 feedback_log(false_positive)，用于量化误报。
-        </div>
-        <div v-if="submitErr" class="err">{{ submitErr }}</div>
-        <div v-if="submitMsg" class="note">{{ submitMsg }}</div>
-      </div>
     </template>
   </Async>
 </template>
+
+<style scoped>
+/* 人工复核面板。左侧一条强调边，和 BillDetail 的 .panel-violations /
+   .panel-pending 同一套写法——这页五个 panel 长得一样，不给它一条边，
+   移到页首也还是会被当成「又一块说明文字」滑过去。
+   用品牌色而不是警示色：它是**要你做的动作**，不是一条警告。 */
+.panel-gate {
+  border-left: 3px solid var(--brand, #1668dc);
+}
+</style>

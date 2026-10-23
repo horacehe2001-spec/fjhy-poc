@@ -37,7 +37,6 @@ const checks = ref<{ items: { check: string; ok: boolean; detail: string }[]
 const showAllChecks = ref(false)
 const showYaml = ref(false)
 const sig = ref<Awaited<ReturnType<typeof api.agentSignals>> | null>(null)
-const cyc = ref<Awaited<ReturnType<typeof api.agentCycles>> | null>(null)
 const chains = ref<AgentChain[]>([])
 const chainNote = ref('')
 const store = ref<{ items: StorageRow[]; note: string } | null>(null)
@@ -82,7 +81,6 @@ function pickTab(t: Tab) {
     openAgent(ov.value.items[0].agent_id)
   if (t === 'bus' && !sig.value) {
     run('s', async () => { sig.value = await api.agentSignals(50) })
-    run('c', async () => { cyc.value = await api.agentCycles(50) })
   }
   if (t === 'run' && !chains.value.length) loadChains()
   if (t === 'store' && !store.value)
@@ -199,7 +197,6 @@ onMounted(loadOv)
             <th style="width: 70px">状态行</th>
             <th style="width: 80px">上次心跳</th>
             <th class="num" style="width: 46px">信号</th>
-            <th class="num" style="width: 46px">周期</th>
           </tr>
         </thead>
         <tbody>
@@ -226,10 +223,12 @@ onMounted(loadOv)
               <span v-else class="tag t-na">无</span>
             </td>
             <td class="muted" style="font-size: 11px">
-              {{ a.last_beat_at ? a.last_beat_at.toString().slice(5, 16) : '没跳过' }}
+              <!-- 空显示「不适用」而不是「没跳过」：POC 里没有常驻调度器在跑，
+                   心跳本来就不该跳。「没跳过」读起来像「该跳而没跳」，是个故障描述；
+                   「不适用」才是实情——这一栏对这些 Agent 不成立。 -->
+              {{ a.last_beat_at ? a.last_beat_at.toString().slice(5, 16) : '不适用' }}
             </td>
             <td class="num" :class="{ muted: !a.signals }">{{ a.signals || '—' }}</td>
-            <td class="num" :class="{ muted: !a.cycles }">{{ a.cycles || '—' }}</td>
           </tr>
         </tbody>
       </table>
@@ -291,7 +290,7 @@ onMounted(loadOv)
           </span>
           <b>上次心跳</b>
           <span>
-            {{ det.state.last_beat_at || '没跳过' }}
+            {{ det.state.last_beat_at || '不适用' }}
             <span v-if="!det.state.last_beat_at" class="muted" style="font-size: 12px">
               —— POC 里没有常驻调度器在跑,**空不等于坏,等于没开**
             </span>
@@ -540,52 +539,6 @@ onMounted(loadOv)
       </table>
     </div>
 
-    <div v-if="cyc" class="panel">
-      <h3>周期（{{ cyc.by_agent.reduce((n, x) => n + x.n, 0) }} 次）</h3>
-      <div class="sub"><MarkText :text="cyc.note" /></div>
-      <table v-if="cyc.by_agent.length">
-        <thead><tr><th style="width: 260px">智能体</th><th class="num" style="width: 60px">周期</th>
-          <th class="num" style="width: 60px">非 ok</th><th>最近</th></tr></thead>
-        <tbody>
-          <tr v-for="a in cyc.by_agent" :key="a.agent_id">
-            <td class="mono" style="font-size: 12px">{{ a.agent_id }}</td>
-            <td class="num">{{ a.n }}</td>
-            <td class="num" :class="{ warn: a.bad }">{{ a.bad }}</td>
-            <td class="muted mono" style="font-size: 11px">
-              {{ a.last?.toString().slice(0, 19) }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <table v-if="cyc.items.length">
-        <thead>
-          <tr>
-            <th style="width: 120px">开始</th><th style="width: 100px">触发</th>
-            <th style="width: 110px">主体</th><th style="width: 70px">结论</th>
-            <th style="width: 56px">状态</th><th style="width: 100px">规则集</th>
-            <th>各阶段毫秒</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="c in cyc.items" :key="c.cycle_id">
-            <td class="mono" style="font-size: 11px">
-              {{ c.started_at.toString().slice(5, 19) }}
-            </td>
-            <td style="font-size: 11px">{{ c.trigger_kind }}</td>
-            <td class="mono" style="font-size: 11px">{{ c.subject_id }}</td>
-            <td style="font-size: 12px">{{ c.decision || '—' }}</td>
-            <td>
-              <span class="tag" :class="c.status === 'ok' ? 't-pass' : 't-hit'">
-                {{ c.status }}</span>
-            </td>
-            <td class="mono muted" style="font-size: 11px">{{ c.rule_set_version }}</td>
-            <td class="mono muted" style="font-size: 10px">
-              {{ c.phase_timings_ms ? JSON.stringify(c.phase_timings_ms) : '—' }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
   </template>
 
   <!-- ④ 运行 ---------------------------------------------------------------->
@@ -627,7 +580,6 @@ onMounted(loadOv)
         <span v-if="c.signals !== undefined">台账 {{ c.signals }} 条信号</span>
         <span v-if="c.signals_in_job !== undefined">
           （本次作业 {{ c.signals_in_job }} 条）</span>
-        <span v-if="c.cycles !== undefined"> · 周期 {{ c.cycles }} 次</span>
         <span v-if="c.elapsed"> · 上次用时 {{ c.elapsed }} 秒</span>
         <span v-if="c.job_id"> · 作业 {{ c.job_id }}</span>
       </div>

@@ -911,7 +911,7 @@ export interface Bill {
 /**
  * 单据附件。**attach_type 为 null 表示「还没判」，不是「没有类型」**——
  * 从一张 PNG 判它是出差审批单还是住宿费发票必须读图
- * （必要附件决策表 11 种类型里 5 种 ocr_needed）。
+ * （必要附件决策表 15 种细类里 7 种 ocr_needed）。
  */
 export interface Attachment {
   id: number
@@ -930,6 +930,13 @@ export interface Attachment {
   type_source: string | null
   /** 高 | 中 | 低。**只有「高」会回写 attach_type** */
   type_conf: string | null
+  /**
+   * 有没有图可取（后端由 stored_path 是否为空推导，不回绝对路径）。
+   * **要判「能不能点开」一律用这个，不要用 source_kind。**
+   * 踩过：缩略图条件写成 `source_kind === 'xlsx内嵌'`，等演示单配上合成示意图
+   * 之后页面照旧显示「无原图」——条件写死在来源上就跟不上数据变化。
+   */
+  has_file: boolean
 }
 /** 一次读图判类型的结果。可能是台账留痕但没有采信（applied=false）。 */
 export interface AttachmentClassifyItem {
@@ -970,6 +977,61 @@ export interface AttachmentClassifyStatus {
   read_but_unresolved: number
   type_menu: { code: string; label: string; en17: string; ocr_needed: boolean }[]
   note: string
+}
+
+/** 抽字段台账的进度与成本。判类型之后的第二步，**范围比判类型小**（只四类进）。 */
+export interface AttachmentExtractStatus {
+  eligible: number
+  extracted: number
+  applied: number
+  pending: number
+  calls: number
+  calls_failed: number
+  prompt_tokens: number
+  completion_tokens: number
+  by_confidence: { confidence: string; n: number }[]
+  note: string
+}
+/** 一条失败记录。`later_ok` 是关键一列：这张图后来重试成了没。 */
+export interface PerceptionFailureRow {
+  id: number
+  attachment_id: number
+  bill_no: string | null
+  file_name: string | null
+  attempt: number
+  err_kind: string | null
+  message: string | null
+  latency_ms: number | null
+  model_name: string | null
+  created_at: string
+  later_ok: boolean
+}
+/**
+ * 一步读图的失败视图。
+ *
+ * **`calls_failed` 和 `lost_imgs` 是两个数，不许只显示前一个。**
+ * 前者是花过的钱（失败的调用也计费），后者才是待办。实测两步加起来
+ * 49 次失败、0 张丢图——只报 49 会让人去重跑一轮已经跑完的读图。
+ */
+export interface PerceptionFailures {
+  stage: string
+  table: string
+  calls_failed: number
+  by_kind: { err_kind: string | null; n: number; sample: string | null }[]
+  failed_imgs: number
+  recovered_imgs: number
+  lost_imgs: number
+  all_network: boolean
+  recent: PerceptionFailureRow[]
+  note: string
+}
+export interface AttachmentPerception {
+  classify: AttachmentClassifyStatus
+  extract: AttachmentExtractStatus
+  classify_failures: PerceptionFailures
+  extract_failures: PerceptionFailures
+  chain_note: string
+  cost_note: string
 }
 
 export interface Finding {
@@ -1203,6 +1265,13 @@ export const api = {
     request<AttachmentClassifyResult>('/api/attachments/classify',
       { method: 'POST', body: JSON.stringify(body) }),
   attClassifyStatus: () => request<AttachmentClassifyStatus>('/api/attachments/classify/status'),
+  /**
+   * 附件感知链路：判类型 + 抽字段的进度、成本、失败，一次拉全。
+   * **只读，不出网、不计费**——和 attClassify / attExtract 那两个会真花钱的
+   * 动作区分开，这个可以随页面自由加载。
+   */
+  attPerception: (failures = 50) =>
+    request<AttachmentPerception>(`/api/attachments/perception${qs({ failures })}`),
   billReviews: (no: string) =>
     request<{ items: Record<string, unknown>[] }>(`/api/bills/${encodeURIComponent(no)}/reviews`),
   review: (runId: string) =>
@@ -1215,13 +1284,33 @@ export const api = {
   deviation: () => request<Record<string, unknown>>('/api/deviation'),
 
   // ── AI 智能审核 ────────────────────────────────────────────────────────────
-  aiReviewBatch: () =>
+  /**
+   * 跑一轮演示审核。**这一下真出网、真计费。**
+   *
+   * 后端对模型补判设了单轮预算（时间 + 条数，见 config.AI_REVIEW_LLM_*），
+   * 所以这个请求是**有时间上界**的，不会再像以前那样一挂二十几分钟。
+   * 补判可续跑：`llm.remaining > 0` 时再点一次接着跑。
+   *
+   * `signal` 用来挂 AbortController。**取消只是不等了，服务端那一条还会跑完**——
+   * 这是同步接口，客户端断开不会回滚已经落库的补判结果。
+   */
+  aiReviewBatch: (signal?: AbortSignal) =>
     request<{ ok: boolean; error?: string
               stats: { total: number; reject: number; review: number
                        pass: number; failed: number; skipped: number }
-              llm?: Record<string, unknown>
+              llm?: {
+                called?: number; ok?: number; failed?: number
+                /** 还剩多少条没补判。> 0 就该再点一次 */
+                remaining?: number
+                /** done | budget | max_calls | no_config */
+                stopped_by?: string
+                elapsed_s?: number; budget_s?: number; max_calls?: number
+                progress_note?: string
+                errors?: string[]
+                [k: string]: unknown
+              }
               results: Record<string, unknown>[] }>(
-      '/api/ai-review/batch', { method: 'POST', body: '{}' }),
+      '/api/ai-review/batch', { method: 'POST', body: '{}', signal }),
   aiReviewStatus: () =>
     request<{ total: number; reviewed: number; reject: number; review: number
               pass: number; llm_assisted: number

@@ -12,11 +12,8 @@
  * 不合格单（结论 reject / review）自动出现在审核岗工作台的过滤视图里，
  * 不需要额外推送——工作台按 conclusion 筛选，审核完即可见。
  */
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
-
-const router = useRouter()
 
 type HitRow = {
   run_id: string
@@ -47,10 +44,38 @@ type StatusData = {
   review: number
   pass: number
   llm_assisted: number
-  // 库里的累计口径（后端从 llm_call_log 统计）。页面刷新后 lastLlm 为空，
-  // 靠这个还能说明「模型到底调过没有」。
+  // 库里的累计口径（后端从 llm_call_log 统计）。页面已不再展示它
+  // （「大模型辅助」面板 2026-10-24 按要求去掉），但字段留着：
+  // 后端照旧返回，删掉类型只会让下次要用的人以为接口没给。
   llm_summary?: LlmSummary
+  /** 三个比率。**分母一律是「已审」**，口径由后端 review_rates 定，前端不另算。 */
+  rates?: ReviewRates
+  /** 时效。口径由后端 review_timing 定，含「这段时间里有没有模型」。 */
+  timing?: ReviewTiming
   bills: BillRow[]
+}
+
+type ReviewRates = {
+  denominator: number
+  /** 还没有审核结论时三个都是 null，**不是 0**——算不出来和「0%」是两回事 */
+  pass_rate: number | null
+  review_rate: number | null
+  reject_rate: number | null
+  note: string
+}
+
+type ReviewTiming = {
+  bills: number
+  /** finished_at 早于 started_at 的异常行，**排除了多少条要报出来** */
+  excluded_nonpositive: number
+  p50_ms: number | null
+  p90_ms: number | null
+  min_ms: number | null
+  max_ms: number | null
+  llm_involved_findings: number
+  /** 这批结论里模型有没有介入。量级差两个数量级，卡片上必须标出来 */
+  includes_llm: boolean
+  scope: string
 }
 
 type LlmSummary = {
@@ -72,39 +97,64 @@ type LlmSummary = {
 const status = ref<StatusData | null>(null)
 const busy = ref(false)
 const err = ref('')
-const lastStats = ref<Record<string, number> | null>(null)
 
-// 本次调用大模型的统计。**和 lastStats 分开存**：混进同一组数字里，
-// 会让人以为「通过/不通过」那几个数也是模型给的——实际结论全由规则引擎
-// 确定性判定，模型只对 pending 出辅助说明，不改结论。
-// 后端 /api/ai-review/batch 的 llm 段有两种形态：没调成（called=0 带 note）
-// 和调过（带 ok/failed/token/时延）。两种都要显示：调用失败不影响审核结论，
-// 但失败必须看得见。
-type LlmStat = {
-  called: number
-  ok: number
-  failed: number
-  model?: string | null
-  config_id?: string | null
-  prompt_tokens?: number
-  completion_tokens?: number
-  latency_p50_ms?: number | null
-  latency_max_ms?: number | null
-  latency_note?: string
-  note?: string
-  errors?: string[]
+// ── 跑一轮的进度与中断 ───────────────────────────────────────────────────────
+// 之前这里什么都没有：按钮变成「审核中…」，然后就没有然后了。
+// 实测一次点击挂了 25 分钟还没返回（模型补判串行 + 失败要等满 timeout），
+// 而裸 fetch 不带超时，所以页面会一直停在那三个字上——**看起来和卡死一模一样**。
+//
+// 现在三样东西一起给：**已经等了多久**、**跑完还剩多少**、**能不能不等了**。
+/** 本轮已等秒数，每秒自己走，让人看得出它在动而不是挂了 */
+const elapsed = ref(0)
+let tick: ReturnType<typeof setInterval> | null = null
+/** 本轮的中断器。取消只是「不等了」，不回滚已经落库的补判 */
+let aborter: AbortController | null = null
+/** 上一轮的补判进度文案（续跑提示就靠它） */
+const lastProgress = ref('')
+/** 上一轮结束后还剩多少条没补判。> 0 时按钮上要显示「接着跑」 */
+const remaining = ref(0)
+/** 本轮是被用户取消的。和「失败」分开——取消不是错误 */
+const canceled = ref(false)
+
+function stopTick() {
+  if (tick) { clearInterval(tick); tick = null }
 }
-const lastLlm = ref<LlmStat | null>(null)
 
-// 本次有就显示本次，没有（刷新页面、换页回来）就退到库里的累计口径。
-// **两种口径必须在页面上标出来是哪一种**：把累计数当本次数看，
-// 会得出「这一轮调了 100 次模型」这种错结论。
-const llmView = computed<{ scope: string; s: LlmStat | LlmSummary } | null>(() => {
-  if (lastLlm.value && lastLlm.value.called) return { scope: '本次', s: lastLlm.value }
-  const sum = status.value?.llm_summary
-  if (sum && sum.called) return { scope: '累计', s: sum }
-  return null
-})
+function cancelRun() {
+  // **只中断等待，不中断服务端。** 这是同步接口，客户端断开之后
+  // 服务端那一条仍会跑完并落库——说成「已停止审核」就是假话。
+  canceled.value = true
+  aborter?.abort()
+}
+
+function hhmmss(s: number) {
+  const m = Math.floor(s / 60)
+  return m ? `${m} 分 ${s % 60} 秒` : `${s} 秒`
+}
+
+// 「大模型辅助」面板 2026-10-24 按要求整块去掉了，连带删掉的还有
+// lastLlm（本次调用统计）和 llmView（本次/累计两种口径的取舍）。
+//
+// **页面上仍然看得出模型有没有介入**：上面汇总那一排留着「模型辅助条数」
+// （status.llm_assisted），每份审核报告里也仍然标明哪一条来自模型辅助。
+// 去掉的是调用次数/时延/token 这组运维口径的数字，不是模型的痕迹。
+//
+// 接口侧没动：/api/ai-review/batch 照旧返回 llm 段、/status 照旧返回
+// llm_summary，要查调用情况直接看接口或 llm_call_log。
+
+/**
+ * 比率显示。**算不出来显示「—」，不显示 0%。**
+ * 没审过的时候写 0%，等于说「一张都没通过」——那是个结论，而实际情况是没结论。
+ */
+function rate(v: number | null | undefined) {
+  return v == null ? '—' : (v * 100).toFixed(1) + '%'
+}
+
+/** 耗时显示。毫秒级和秒级都要能读——模型一介入会从几十毫秒跳到十几秒。 */
+function ms(v: number | null | undefined) {
+  if (v == null) return '—'
+  return v >= 1000 ? (v / 1000).toFixed(1) + 's' : Math.round(v) + 'ms'
+}
 
 const CONCL: Record<string, { label: string; cls: string }> = {
   pass:   { label: '通过',   cls: 't-pass' },
@@ -124,28 +174,41 @@ async function runReview() {
   if (busy.value) return
   busy.value = true
   err.value = ''
-  lastStats.value = null
-  lastLlm.value = null
+  canceled.value = false
+  lastProgress.value = ''
+  elapsed.value = 0
+  stopTick()
+  tick = setInterval(() => { elapsed.value += 1 }, 1000)
+  aborter = new AbortController()
   try {
-    const res = await api.aiReviewBatch()
+    const res = await api.aiReviewBatch(aborter.signal)
     if (!res.ok) {
       err.value = res.error || '审核失败'
       return
     }
-    lastStats.value = res.stats as Record<string, number>
-    lastLlm.value = (res.llm ?? null) as LlmStat | null
+    // 补判可能没跑完（单轮有时间/条数预算）。**跑完和没跑完必须说清楚**，
+    // 否则使用者不知道还该不该再点一次。
+    remaining.value = res.llm?.remaining ?? 0
+    lastProgress.value = res.llm?.progress_note || ''
     await loadStatus()
   } catch (e) {
-    err.value = e instanceof Error ? e.message : String(e)
+    if (canceled.value) {
+      // 取消不是错误，别往 err 里塞。但要说清楚服务端没停——
+      // 否则使用者以为自己把它掐了，实际那一条还在跑、还在计费。
+      lastProgress.value = '已停止等待。**服务端当前这一条仍会跑完并落库**，'
+        + '刷新页面就能看到它的结果；补判可续跑，再点一次接着往下跑。'
+      await loadStatus()
+    } else {
+      err.value = e instanceof Error ? e.message : String(e)
+    }
   } finally {
+    stopTick()
+    aborter = null
     busy.value = false
   }
 }
 
-function goWorkbench(conclusion?: string) {
-  // 带 conclusion 参数跳转到工作台（工作台支持 query 过滤）
-  router.push(conclusion ? `/review/bills?conclusion=${conclusion}` : '/review/bills')
-}
+onUnmounted(stopTick)
 
 onMounted(loadStatus)
 </script>
@@ -153,131 +216,89 @@ onMounted(loadStatus)
 <template>
   <h2>AI 智能审核</h2>
 
-  <!-- 审核结果汇总。**数取自 /status（库里现存的结论），不是组件内存。**
-       原先这一整块只在 lastStats 有值时渲染，而 lastStats 是组件内的 ref：
-       刷新页面或切走再回来就为空，KPI 整块消失——看页面的人会以为审核结果丢了。
-       实测连跑两轮 /batch，返回完全一致（29 单 · 不通过 9 / 待复核 14 / 通过 6，
-       模型 25/25 全成功），后端一个数都没丢，丢的只是前端这份内存状态。 -->
+  <!-- 审核结果汇总。**数一律取自 /status（库里现存的结论），不取组件内存。**
+       曾经栽过：这一整块只在「本次运行」的内存状态有值时才渲染，于是刷新页面
+       或切走再回来 KPI 整块消失——看页面的人会以为审核结果丢了。
+       实测连跑两轮 /batch 返回完全一致，后端一个数都没丢，丢的只是那份内存状态。 -->
   <!-- **这个面板一律渲染，不按「有没有审过」来判。**
        「智能审核」按钮就在这一排里，面板一旦不渲染，按钮跟着消失——
        而没审过的时候恰恰最需要这个按钮。所以数用 ?? 0 兜底，面板不藏。 -->
   <div class="panel" style="margin-top: 16px">
     <h3>审核结果汇总</h3>
+    <!-- KPI 改成**比率 + 时效**（客户关注的两项），原始条数降成副标——
+         条数一个都没丢，只是不再占主位：「通过 6」要和「已审 29」一起看
+         才有意义，而占主位的数会被单独记住。
+
+         三个比率的分母一律是**已审**，口径由后端 review_rates 算，前端不另算一份。
+         「待人工」单列一张卡，**不并进通过也不并进不通过**——它是判不了。 -->
     <div class="stat-row">
-      <div class="stat-box">
-        <div class="stat-n">{{ status?.total ?? 0 }}</div>
-        <div class="stat-lbl muted">演示单</div>
-      </div>
       <div class="stat-box">
         <div class="stat-n">{{ status?.reviewed ?? 0 }}</div>
         <div class="stat-lbl muted">已审</div>
+        <div class="stat-sub">共 {{ status?.total ?? 0 }} 张</div>
       </div>
       <div class="stat-box t-pass-bg">
-        <div class="stat-n">{{ status?.pass ?? 0 }}</div>
-        <div class="stat-lbl">通过</div>
+        <div class="stat-n">{{ rate(status?.rates?.pass_rate) }}</div>
+        <div class="stat-lbl">通过率</div>
+        <div class="stat-sub">通过 {{ status?.pass ?? 0 }}</div>
       </div>
       <div class="stat-box t-pend-bg">
-        <div class="stat-n">{{ status?.review ?? 0 }}</div>
-        <div class="stat-lbl">待复核</div>
+        <div class="stat-n">{{ rate(status?.rates?.review_rate) }}</div>
+        <div class="stat-lbl">待人工率</div>
+        <div class="stat-sub">待复核 {{ status?.review ?? 0 }}</div>
       </div>
       <div class="stat-box t-hit-bg">
-        <div class="stat-n">{{ status?.reject ?? 0 }}</div>
-        <div class="stat-lbl">不通过</div>
+        <div class="stat-n">{{ rate(status?.rates?.reject_rate) }}</div>
+        <div class="stat-lbl">不通过率</div>
+        <div class="stat-sub">不通过 {{ status?.reject ?? 0 }}</div>
+      </div>
+      <!-- 时效。**副标必须写「不含模型」**：实测不含模型整条链路 p50 75ms，
+           而模型研判单次 p50 约 12 秒——模型一介入这个数翻一百多倍，
+           不标的话看过旧数的人会以为系统变慢了。 -->
+      <div class="stat-box">
+        <div class="stat-n">{{ ms(status?.timing?.p50_ms) }}</div>
+        <div class="stat-lbl">单均耗时</div>
+        <div class="stat-sub">
+          p90 {{ ms(status?.timing?.p90_ms) }}<template
+            v-if="status?.timing && !status.timing.includes_llm"> · 不含模型</template>
+        </div>
       </div>
       <div class="stat-box">
-        <div class="stat-n">{{ status?.llm_assisted ?? 0 }}</div>
-        <div class="stat-lbl muted">模型辅助条数</div>
+        <div class="stat-n">{{ ms(status?.timing?.max_ms) }}</div>
+        <div class="stat-lbl muted">最慢一张</div>
+        <div class="stat-sub">最快 {{ ms(status?.timing?.min_ms) }}</div>
       </div>
 
       <!-- 触发按钮并进这一排的最右端：它原先自己占一个 panel 一整排，
            而它只是一个动作，不值一排。 -->
       <button :disabled="busy" @click="runReview" class="btn-primary stat-btn">
-        {{ busy ? '审核中…' : '智能审核' }}
+        <!-- 按钮上带计时：**「审核中…」不动的那三个字和卡死长得一样。**
+             上一轮没跑完时改口叫「接着跑」——还剩多少就写多少，
+             不写的话使用者不知道该再点一次。 -->
+        <template v-if="busy">审核中 {{ elapsed }}s</template>
+        <template v-else-if="remaining">接着跑（还剩 {{ remaining }} 条）</template>
+        <template v-else>智能审核</template>
       </button>
     </div>
 
-    <!-- 三条提示合成一行：原先「本次/库中现存」和「不合格单流入」各占一条，
-         加上数字卡一共竖着堆三层，一屏里真正的信息密度很低。
-         合并时**不删信息**，只把两句接成一行，用 · 分隔。 -->
+    <!-- 跑的过程中：等了多久 + 可以不等了。
+         取消**只停等待，不停服务端**，文案上必须说清楚，不能让人以为掐掉了。 -->
+    <div v-if="busy" class="run-bar">
+      <span class="spin" />
+      <span>已等 <b>{{ hhmmss(elapsed) }}</b></span>
+      <span class="muted" style="font-size: 12px">
+        规则引擎毫秒级；慢的是「待人工」那部分的模型补判，单轮有时间上限
+      </span>
+      <button class="mini" @click="cancelRun">不等了</button>
+    </div>
+
+    <!-- 说明解释的整段文字 2026-10-24 按要求去掉。
+         **错误提示留着**：那不是解释，是「这一轮没跑成」，藏了就只剩一排旧数字。 -->
     <div v-if="err" class="err">{{ err }}</div>
-    <div class="note one-line">
-      <template v-if="busy">正在生成演示数据并执行三层审核，请稍候——一轮约 5 分钟（含模型调用）</template>
-      <template v-else-if="lastStats">
-        本次运行：审核 {{ lastStats['total'] }} 张 ·
-        不通过 {{ lastStats['reject'] }} · 待复核 {{ lastStats['review'] }} ·
-        通过 {{ lastStats['pass'] }}<template
-          v-if="lastStats['skipped']"> · 幂等跳过 {{ lastStats['skipped'] }}</template><template
-          v-if="lastStats['failed']"> · 失败 {{ lastStats['failed'] }}</template>
-      </template>
-      <template v-else-if="status && status.reviewed">库中现存的审核结论，刷新后仍在；点「智能审核」重新生成演示数据并重审一轮</template>
-      <template v-else>还没有审核结论。点右侧「智能审核」生成演示数据并跑一轮完整审核</template>
-      <template v-if="!busy && status && status.reject + status.review > 0">
-        · 不合格单已流入 <a href="#" @click.prevent="goWorkbench('reject')">审核岗工作台</a>，
-        可按「不通过」「待复核」筛选
-      </template>
+    <!-- 续跑提示。**跑完和没跑完必须看得出区别。** -->
+    <div v-if="!busy && lastProgress" class="note">
+      <MarkText :text="lastProgress" />
     </div>
-  </div>
-
-  <!-- 大模型辅助：调了几次、成几次、花了多少 token、慢不慢。
-       这一段原先只在接口返回里有，页面一个字都不显示，于是模型明明在调，
-       看页面的人只看得见规则引擎的结论，会以为模型没接上。 -->
-  <div v-if="llmView || (status && status.llm_summary)" class="panel">
-    <h3>大模型辅助<span v-if="llmView" class="muted" style="font-size: 12px">
-      （{{ llmView.scope }}口径）</span></h3>
-
-    <div v-if="!llmView" class="note">
-      还没有模型调用记录。<template v-if="status && status.llm_summary && !status.llm_summary.configured">
-      「规则研判」用途还没有启用的配置，去「系统 → 大模型配置」里设一条默认。</template>
-      <template v-else-if="status && status.llm_summary">
-      当前「规则研判」模型 {{ status.llm_summary.model }}，点「智能审核」后会在待人工的结论上介入。</template>
-    </div>
-
-    <template v-else>
-      <div class="stat-row">
-        <div class="stat-box">
-          <div class="stat-n">{{ llmView.s.called }}</div>
-          <div class="stat-lbl muted">调用次数</div>
-        </div>
-        <div class="stat-box t-pass-bg">
-          <div class="stat-n">{{ llmView.s.ok }}</div>
-          <div class="stat-lbl">成功</div>
-        </div>
-        <div class="stat-box" :class="llmView.s.failed ? 't-hit-bg' : ''">
-          <div class="stat-n">{{ llmView.s.failed }}</div>
-          <div class="stat-lbl" :class="llmView.s.failed ? '' : 'muted'">失败</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-n">{{ llmView.s.latency_p50_ms != null
-            ? (llmView.s.latency_p50_ms / 1000).toFixed(1) + 's' : '—' }}</div>
-          <div class="stat-lbl muted">时延 p50</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-n">{{ llmView.s.latency_max_ms != null
-            ? (llmView.s.latency_max_ms / 1000).toFixed(1) + 's' : '—' }}</div>
-          <div class="stat-lbl muted">时延 max</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-n">{{ (llmView.s.prompt_tokens ?? 0) + (llmView.s.completion_tokens ?? 0) }}</div>
-          <div class="stat-lbl muted">token 合计</div>
-        </div>
-      </div>
-
-      <div class="note" style="margin-top: 8px">
-        模型 <span class="mono">{{ llmView.s.model || '—' }}</span>
-        <template v-if="llmView.s.config_id">（配置 <span class="mono">{{ llmView.s.config_id }}</span>）</template>
-        · 用途「规则研判」。模型只对规则引擎判「待人工」的结论出辅助说明，
-        不改引擎的判定；审核报告里会标明哪条来自模型辅助。
-        <template v-if="llmView.s.note">（{{ llmView.s.note }}）</template>
-        <template v-else-if="llmView.s.latency_note">（{{ llmView.s.latency_note }}）</template>
-      </div>
-
-      <div v-if="lastLlm && lastLlm.errors && lastLlm.errors.length" class="llm-err">
-        <div class="llm-err-t">本次失败原因（最多列 5 条）</div>
-        <ul>
-          <li v-for="(e, i) in lastLlm.errors" :key="i">{{ e }}</li>
-        </ul>
-      </div>
-    </template>
   </div>
 
   <!-- 演示单列表 -->
@@ -392,6 +413,16 @@ onMounted(loadStatus)
   margin-top: 1px;
   white-space: nowrap;
 }
+/* 副标：原始条数和口径标注。**比主标小、比主标淡**——
+   它是「这个比率是拿什么算的」，不该和比率本身抢注意力。 */
+.stat-sub {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+  line-height: 1.4;
+  /* **不设 nowrap**：卡片最宽 140px，而「p90 90ms · 不含模型」这类副标
+     放不下时该换行，不该溢出到隔壁卡片上去。 */
+}
 /* 提示行：一行放不下时正常换行，不裁切文字 */
 .one-line {
   margin-top: 8px;
@@ -405,22 +436,6 @@ onMounted(loadStatus)
 .t-hit-bg  .stat-n  { color: var(--hit, #c0392b); }
 .mono {
   font-family: monospace;
-  font-size: 12px;
-}
-.llm-err {
-  margin-top: 10px;
-  padding: 8px 12px;
-  border: 1px solid var(--hit, #c0392b);
-  border-radius: 6px;
-}
-.llm-err-t {
-  font-size: 12px;
-  color: var(--hit, #c0392b);
-  margin-bottom: 4px;
-}
-.llm-err ul {
-  margin: 0;
-  padding-left: 18px;
   font-size: 12px;
 }
 /* 按钮并进数字卡那一排：不参与 flex 均分（卡片是 flex:1），
@@ -445,4 +460,42 @@ onMounted(loadStatus)
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* 跑的过程中那一条。**转圈是为了证明它在动**——
+   一个不动的「审核中…」和卡死在页面上没有区别。 */
+.run-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line, #e3e8ef);
+  border-left: 3px solid var(--brand, #1668dc);
+  border-radius: 6px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.spin {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--line, #e3e8ef);
+  border-top-color: var(--brand, #1668dc);
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+/* .mini 在 AgentHub.vue 里是 scoped 的，别的页面拿不到，所以这里自己写一份。
+   （BillDetail.vue 的「判类型」按钮也用了 .mini，同样没生效——另记） */
+button.mini {
+  padding: 2px 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+/* 跟随系统「减少动态效果」设置：转圈换成静止的高亮边，不闪 */
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+}
+
+
 </style>
