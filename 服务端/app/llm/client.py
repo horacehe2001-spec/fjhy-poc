@@ -105,6 +105,16 @@ def _classify_transport(exc):
         return "tls", "TLS 握手失败。常见于公司代理做了中间人，或地址的证书不匹配"
     if "getaddrinfo" in s or "name or service not known" in s or "nodename" in s:
         return "dns", "域名解析不了。地址可能拼错，或这台机器上不了外网"
+    # **「断开」要排在「连不上」前面判。** `disconnected` 里含 `connect`，
+    # 落到下面那条就会被说成「连不上这个地址，端口/路径可能不对」——
+    # 而实际是连上了、请求也发出去了，对端中途把连接掐了。
+    # 这两种的下一步完全不同：一个去查地址配置，一个去查网络/代理/限流。
+    # 实测把人带偏过：rule_judge 的失败全被报成「服务没起（私有化部署常见）」，
+    # 而那是公有云 dashscope。
+    if "disconnect" in s or "connection reset" in s or "aborted" in s \
+            or "10053" in s or "10054" in s:
+        return "http", ("连接已建立但中途被断开（请求可能已经发出去了）。"
+                        "多见于网络抖动、代理超时或对端限流——不是地址配错")
     if "refused" in s or "connect" in s:
         return "http", "连不上这个地址。端口/路径可能不对，或服务没起（私有化部署常见）"
     return "http", "网络层失败"
@@ -377,6 +387,15 @@ def chat_vision(cfg, system, user, image_path, max_tokens=4000):
 # 传输层重试次数（含首次）。只用于 chat_json 这条业务链路，见函数内注释。
 TRANSPORT_TRIES = 4
 
+# 可以重试的异常：**全都发生在请求发出之前**，所以不消耗 token、不计费。
+#   ConnectError    连不上（TLS 握手失败也归这一类，httpx 把 ssl 错误包成它）
+#   ConnectTimeout  连接阶段超时（受 Timeout(connect=6.0) 约束，几秒就抛）
+#   PoolTimeout     等连接池，根本没出网
+# **刻意不含 ReadTimeout / WriteTimeout / ReadError / RemoteProtocolError**：
+# 那些发生在请求发出之后，模型可能已经在生成（计费），而且 ReadTimeout 要
+# 等满 timeout_s 才抛——重试一次就是再等一个 timeout_s。
+RETRYABLE = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
 
 def chat_json(cfg, system, user, max_tokens=1500):
     """通用对话，要求模型只回 JSON。供「制度抽取」用。
@@ -417,12 +436,28 @@ def chat_json(cfg, system, user, max_tokens=1500):
     fallback_note = ""
     retry_note = ""
 
+    # 实际试了几次。**不能拿 TRANSPORT_TRIES 当「试了几次」用**——
+    # 收口重试范围之后，不可重试的失败只试 1 次，而文案照着常量写就是
+    # 「连试 4 次都没通」，那是假话，还会让人以为网络烂到重试四次都不行。
+    tried_box = [0]
+
     def _post(payload, c):
-        """**只对传输层失败重试**：连不上、TLS 握手失败、连接超时。
+        """**只对「请求发出之前」的失败重试**：连不上、TLS 握手失败、连接池超时。
 
         实测依据（2026-10-21，本机→dashscope）：curl 裸连 6 次成 3 次；
         连发 25 次业务调用成 8 次，TCP 10ms 就连上了，卡在 TLS 握手。
         这类失败发生在请求发出之前，**不消耗 token、不花钱**，重试是纯赚。
+
+        ── 2026-10-24 收口：原来这里 `except Exception` 全retry，而上面那条
+        「不消耗 token」的理由**只对连接阶段成立**。请求发出之后的失败
+        （ReadTimeout、已建立的连接被中止）模型很可能已经在生成了，
+        **那是计费的**，重试等于重复付钱；更要命的是 ReadTimeout 要等满
+        `timeout_s` 才抛，而「规则研判」那条配置的 timeout_s = 240 秒——
+        4 次重试就是 16 分钟卡在一条 finding 上。
+        实测 AI 审核一轮 25 条 pending，跑了 25 分钟没跑完，根因就在这里。
+
+        所以重试集合收成显式三种，**其余一律不重试，照实返回失败**。
+        宁可报一次失败让人看见，也不要把钱和时间悄悄翻四倍。
 
         HTTP 4xx/5xx 一律**不重试**——那是厂商给的真实回答（鉴权错、型号不存在、
         限流），重试只会把一个明确的错误拖成一串，还可能重复计费。
@@ -431,12 +466,17 @@ def chat_json(cfg, system, user, max_tokens=1500):
         """
         last = None
         for i in range(TRANSPORT_TRIES):
+            tried_box[0] = i + 1      # 实际试到第几次，给失败文案用
             try:
                 return c.post(base + "/chat/completions", json=payload), i
-            except Exception as exc:                          # noqa: BLE001
+            except RETRYABLE as exc:
+                # 请求还没发出去：重试是纯赚
                 last = exc
                 if i + 1 < TRANSPORT_TRIES:
                     time.sleep(0.4 * (i + 1))
+            except Exception:                                 # noqa: BLE001
+                # 请求已经发出去了（或无法判断）：**原样抛出，不重试**
+                raise
         raise last
 
     try:
@@ -452,8 +492,12 @@ def chat_json(cfg, system, user, max_tokens=1500):
         kind, msg = _classify_transport(exc)
         return (Result("chat", False, latency_ms=int((time.time() - t0) * 1000),
                        err_kind=kind,
-                       message=_scrub("连试 %d 次都没通。%s：%s"
-                                      % (TRANSPORT_TRIES, msg, exc), key)), "")
+                       message=_scrub(
+                           ("连试 %d 次都没通。%s：%s" % (tried_box[0], msg, exc))
+                           if tried_box[0] > 1 else
+                           ("没通（这类失败发生在请求发出之后，**不重试**——"
+                            "模型可能已经在生成，重试等于重复计费）。%s：%s"
+                            % (msg, exc)), key)), "")
     ms = int((time.time() - t0) * 1000)
 
     if r.status_code // 100 != 2:

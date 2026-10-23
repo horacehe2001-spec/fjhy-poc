@@ -16,10 +16,11 @@
 「不合格」筛选里——工作台那边已经按 conclusion 过滤，这里不需要额外推送。
 """
 import json
+import time
 
 from fastapi import APIRouter
 
-from .. import db
+from .. import config, db
 from ..demo import generator
 from ..rules import engine
 from ..perception import reader
@@ -158,6 +159,9 @@ def _llm_supplement():
                               ORDER BY updated_at DESC LIMIT 1""")
     if not cfg:
         return {"called": 0, "ok": 0, "failed": 0,
+                "remaining": 0, "stopped_by": "no_config",
+                "progress_note": "没有启用的「规则研判」用途配置，这一轮跳过模型补判。"
+                                 "规则引擎的结论不受影响。",
                 "note": "没有启用的「规则研判」用途配置，跳过 LLM 辅助"}
 
     from ..llm import client as llmc
@@ -174,12 +178,32 @@ def _llm_supplement():
     """)
     if not rows:
         return {"called": 0, "ok": 0, "failed": 0, "model": cfg.get("model_name"),
+                "remaining": 0, "stopped_by": "done",
+                "progress_note": "没有待人工的结论需要模型补判，这一轮不调模型。",
                 "note": "没有待人工的结论需要模型补充判断"}
 
     stat = {"called": 0, "ok": 0, "failed": 0, "model": cfg.get("model_name"),
             "config_id": cfg.get("config_id"), "latency_ms": [],
             "prompt_tokens": 0, "completion_tokens": 0, "errors": []}
+
+    # ── 单轮预算 ────────────────────────────────────────────────────────────
+    # **这是个同步接口，必须有时间上界。** 挑单的 SQL 带 NOT llm_involved，
+    # 补判是可中断可续跑的——这一轮停下来不等于白跑，再点一次接着跑。
+    # 两道闸一起用：模型快时按条数收，模型慢时按时间收。
+    budget_s = config.AI_REVIEW_LLM_BUDGET_S
+    max_calls = config.AI_REVIEW_LLM_MAX_CALLS
+    t_start = time.time()
+    stopped_by = "done"
+    done_ids = set()
+
     for row in rows:
+        # **在调用之前判停，不在之后。** 之后判等于总会多跑一条，
+        # 而「多跑的那一条」正是最慢那种情况里最贵的一条。
+        hit = should_stop(stat["called"], time.time() - t_start, budget_s, max_calls)
+        if hit:
+            stopped_by = hit
+            break
+        done_ids.add(row["id"])
         bill = db.query_one("SELECT biz_type, amount, summary FROM expense_bill "
                             "WHERE bill_no = %s", (row["bill_no"],))
         if not bill:
@@ -255,7 +279,58 @@ def _llm_supplement():
     stat["latency_p50_ms"] = lat[len(lat) // 2] if lat else None
     stat["latency_max_ms"] = lat[-1] if lat else None
     stat["latency_note"] = "只含成功调用；失败的是握手失败/超时，不计入"
+
+    # **「还剩多少」要如实报。** 剩下的 = 本来要补判的 − 这一轮动过的。
+    # 不报的话，一轮跑不完和一轮跑完了在页面上长得一模一样，
+    # 使用者不会知道还该再点一次。
+    stat["elapsed_s"] = round(time.time() - t_start, 1)
+    stat["stopped_by"] = stopped_by
+    stat["budget_s"] = budget_s
+    stat["max_calls"] = max_calls
+    stat["remaining"], stat["progress_note"] = supplement_progress(
+        len(rows), len(done_ids), stat["ok"], stat["failed"],
+        stopped_by, budget_s, max_calls)
     return stat
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 单轮预算的判停与进度文案
+# ─────────────────────────────────────────────────────────────────────────────
+# **抽成纯函数是为了能测。** 直接测 _llm_supplement 的循环要连库，而它挑的是
+# 「全部演示单的 pending findings」——mock 只拦得住出网的那个函数，拦不住
+# 这个范围，假结果会写进真实的演示数据里（本项目在附件分类上已经栽过一次，
+# 12 条真实客户附件被污染）。所以判停和文案放这儿，喂参数测。
+def should_stop(called, elapsed_s, budget_s, max_calls):
+    """还能不能再调一次。返回停的原因，能继续就返回 None。
+
+    **两道闸都要**：模型快时按条数收（否则一轮把钱花在上百条上），
+    模型慢时按时间收（否则一轮仍然可能几十分钟）。
+    """
+    if max_calls is not None and called >= max_calls:
+        return "max_calls"
+    if budget_s is not None and elapsed_s >= budget_s:
+        return "budget"
+    return None
+
+
+def supplement_progress(n_rows, done, ok, failed, stopped_by, budget_s, max_calls):
+    """(还剩多少, 说明文案)。
+
+    **「跑完了」和「没跑完」这两句话结论相反，不能混。**
+    没跑完而说成跑完了，使用者不会再点第二次，剩下的条目就永远停在那儿，
+    而页面上看不出任何异常——这种错不会报错，只会悄悄少做事。
+    """
+    remaining = n_rows - done
+    if stopped_by == "done":
+        return remaining, (
+            "本轮把 %d 条待人工的结论全过了一遍（成 %d / 败 %d），没有剩余。"
+            % (n_rows, ok, failed))
+    why = ("到了单轮时间预算 %s 秒" % budget_s if stopped_by == "budget"
+           else "到了单轮条数上限 %s 次" % max_calls)
+    return remaining, (
+        "%s，本轮补判 %d 条（成 %d / 败 %d），**还剩 %d 条没补判**。"
+        "补判是可续跑的——已经补成的不会再调模型，**再点一次「智能审核」接着跑**。"
+        % (why, done, ok, failed, remaining))
 
 
 @router.get("/status")
@@ -346,5 +421,103 @@ def get_status():
         "pass": passed,
         "llm_assisted": llm_count,
         "llm_summary": llm_summary,
+        "rates": review_rates(reviewed, passed, review, reject),
+        "timing": review_timing(llm_assisted=llm_count),
         "bills": rows,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 通过率与时效 —— 客户关注的两个 KPI
+# ─────────────────────────────────────────────────────────────────────────────
+def review_rates(reviewed, passed, review, reject):
+    """三个比率。**分母一律是「已审」，不是「全部单据」。**
+
+    这是个口径决定，不是算法：没审过的单既不算通过也不算不通过，
+    把它们放进分母，通过率会随着「还没审的有多少」而变——
+    那个数衡量的是审核进度，不是审核结果。
+
+    **「待人工」单列一个比率，不许并进通过或不通过。** 它是「判不了」，
+    两头都不是；归到通过就等于声称复核了没复核的东西，归到不通过
+    就等于把一张可能完全合规的单记成问题件。
+    """
+    if not reviewed:
+        return {"denominator": 0, "pass_rate": None, "review_rate": None,
+                "reject_rate": None,
+                "note": "还没有审核结论，三个比率都算不出来——**不是 0%**。"}
+    r4 = lambda n: round(n / reviewed, 4)          # noqa: E731
+    return {
+        "denominator": reviewed,
+        "pass_rate": r4(passed),
+        "review_rate": r4(review),
+        "reject_rate": r4(reject),
+        "note": "分母是已审 %d 张（不是全部单据）。「待人工」单列，"
+                "**既不算通过也不算不通过**——它是判不了，不是查过了。" % reviewed,
+    }
+
+
+def timing_stats(ms_list):
+    """一组毫秒数 → 条数、分位数、被排除的非正值条数。
+
+    **抽成纯函数是为了能测「非正值被排除」这一条。** 库里当前那批最近周期
+    恰好一条非正值都没有，于是「去掉 > 0 过滤」这个改动在带库的测试里
+    什么都不变——断言 min_ms > 0 照样绿。用探针验过。
+    这跟 perception.summarize_failures 抽出来的理由是同一个。
+    """
+    good = sorted(float(v) for v in ms_list if v is not None and float(v) > 0)
+    dropped = sum(1 for v in ms_list if v is None or float(v) <= 0)
+
+    def q(p):
+        if not good:
+            return None
+        return round(good[min(int(p * len(good)), len(good) - 1)])
+
+    return {
+        "n": len(good),
+        "excluded_nonpositive": dropped,
+        "p50_ms": q(0.5), "p90_ms": q(0.9),
+        "min_ms": round(good[0]) if good else None,
+        "max_ms": round(good[-1]) if good else None,
+    }
+
+
+def review_timing(llm_assisted=0):
+    """审核链路的墙钟时效，**按每单最近一次周期取**。
+
+    为什么不用 review_run 的 started_at/finished_at：那两列写的是同一个
+    now()，相减恒等于 0（实测 69 张单全是 0.00 秒）——**那不是「快」，
+    是没测**。真正记了时间的是 cycle_log 的一对时间戳。
+
+    为什么不用 review_run.duration_ms：实测 0–2ms，那只是规则引擎在内存
+    快照上跑的那一段，不含取数建快照和落库。拿它当「审核耗时」会给出
+    一个谁也没经历过的数。
+
+    **非正值要排除并报出条数。** 实测 cycle_log 全量 1226 行里有 4 行
+    finished_at 早于 started_at 约 175 秒（真实异常，成因未查），
+    静默算进去会把 p50 拉歪，静默丢掉又会让人以为数据是干净的。
+    """
+    rows = db.query("""
+        SELECT DISTINCT ON (cl.subject_id) cl.subject_id,
+               EXTRACT(EPOCH FROM (cl.finished_at - cl.started_at)) * 1000 AS ms
+        FROM cycle_log cl
+        JOIN expense_bill eb ON eb.bill_no = cl.subject_id
+        WHERE eb.is_demo AND cl.finished_at IS NOT NULL
+        ORDER BY cl.subject_id, cl.started_at DESC
+    """)
+    stats = timing_stats([r["ms"] for r in rows])
+
+    return {
+        "bills": stats["n"],
+        "excluded_nonpositive": stats["excluded_nonpositive"],
+        "p50_ms": stats["p50_ms"], "p90_ms": stats["p90_ms"],
+        "min_ms": stats["min_ms"],
+        "max_ms": stats["max_ms"],
+        # **这段时间里有没有模型，量级差两个数量级。** 实测模型研判
+        # 单次时延 p50 约 12 秒，而不含模型的整条链路 p50 只有 75 毫秒。
+        # 不标这一句，模型一介入这个数翻一百多倍，看过旧数的人会以为系统变慢了。
+        "llm_involved_findings": llm_assisted,
+        "includes_llm": bool(llm_assisted),
+        "scope": ("取数建快照 → 规则引擎 → 结论落库的墙钟时间，按每单最近一次周期取"
+                  + ("；**含模型研判**" if llm_assisted else
+                     "；当前这批结论里模型辅助 0 条，**所以不含模型研判时延**")),
     }

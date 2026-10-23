@@ -44,6 +44,13 @@ DOCLIB_DIR = os.path.join(SERVER_DIR, "var", "doclib")
 # 「规则是从哪堆资料里抽的」就再也说不清，而制度文件库的文件数、
 # 「待抽取」、溯源统计也会被几百张发票图稀释。
 ATTACH_DIR = os.path.join(SERVER_DIR, "var", "attachments")
+# 演示单的合成示意图也落在 ATTACH_DIR 之下（文件出口强制校验路径在 ATTACH_DIR 内，
+# 放到外面会被 400 拒绝），但**单独一个子目录**，和真实抽取的 {domain}/{instance}/
+# 两级树分开。下划线前缀保证不会和任何 domain_id 撞。
+# **这个名字必须只有一处定义**：attachment_extract.status() 要靠它把演示图从
+# 「磁盘文件数」里排除掉，两边各写一个字符串迟早会对不上。
+ATTACH_DEMO_SUBDIR = "_demo"
+ATTACH_DEMO_DIR = os.path.join(ATTACH_DIR, ATTACH_DEMO_SUBDIR)
 
 
 def _env(key, default):
@@ -61,6 +68,26 @@ MAX_UPLOAD_BYTES = int(_env("FJHY_MAX_UPLOAD_BYTES", str(200 << 20)))
 # 单次份数上限。整个文件夹拖进来时一次几百份是常态，但没有上限的话
 # 一次拖一整个盘能把服务拖死。
 MAX_UPLOAD_FILES = int(_env("FJHY_MAX_UPLOAD_FILES", "200"))
+
+
+# ── AI 审核的模型补判预算 ────────────────────────────────────────────────────
+# **「智能审核」是一个同步接口，所以它必须有时间上界。**
+# 实测（2026-10-24）：25 条 pending findings 串行调模型，跑了 25 分钟没跑完，
+# HTTP 请求一直挂着；前端是裸 fetch 没有超时，按钮就停在「审核中…」，
+# 看页面的人只能判断成「卡死了」。
+#
+# 补判本身是**可中断、可续跑**的：挑单的 SQL 带 `AND NOT llm_involved`，
+# 已经补判成功的不会再调，所以「这一轮跑不完」不等于「白跑」——
+# 再点一次就接着上次往下跑。既然如此，就该给单轮设一个让人等得起的上界，
+# 而不是让人等一个不知道多久的东西。
+#
+# 180 秒的取法：实测单次成功调用 p50 约 21 秒，180 秒能稳稳补判 8 条上下，
+# 一轮点击有肉眼可见的进展，又不至于让人盯着转圈。要一次跑完就调大它。
+AI_REVIEW_LLM_BUDGET_S = int(_env("FJHY_AI_REVIEW_LLM_BUDGET_S", "180"))
+# 条数上限是第二道闸：模型很快时按条数收，模型很慢时按时间收，**两道都要**。
+# 只设时间，模型快的时候一轮会把钱花在 100 条上；只设条数，模型慢的时候
+# 一轮仍然可能几十分钟。
+AI_REVIEW_LLM_MAX_CALLS = int(_env("FJHY_AI_REVIEW_LLM_MAX_CALLS", "30"))
 
 
 # ── 数据库 ───────────────────────────────────────────────────────────────────
