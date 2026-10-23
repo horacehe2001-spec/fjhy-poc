@@ -65,10 +65,23 @@ def get_bill(bill_no: str):
     # 的哪一行哪个 media」，是事后回查原件的唯一入口。
     b["attachments"] = db.query(
         """SELECT id, attach_type, file_name, pages, seq, byte_size, content_type,
-                  source_kind, source_ref, type_code, type_source, type_conf
+                  source_kind, source_ref, type_code, type_source, type_conf,
+                  -- 有没有图可取。**前端要按这个判，不要按 source_kind 判**：
+                  -- 原来缩略图写的是 `source_kind === 'xlsx内嵌'`，于是演示单配了
+                  -- 合成示意图之后，页面照旧显示「无原图」——条件写死在来源上，
+                  -- 就跟不上数据的变化。stored_path 本身不回（那是服务器绝对路径）。
+                  (stored_path IS NOT NULL) AS has_file
              FROM attachment WHERE bill_no=%s
             ORDER BY (source_kind <> 'xlsx内嵌'), seq NULLS LAST, id""", (bill_no,))
+    # 附件数**两个口径并列**，页面分两行显示，谁也不覆盖谁。
+    #   attach_count      真实原图数（xlsx 内嵌，点得开）。**语义不变**——
+    #                     _attach_metrics_note 与「申报张数」的对比都指它。
+    #   attach_demo_count 演示合成数（类型是生成器给的，图是带水印的示意图）
+    # 实测踩过：只摆一个口径且标签写「实际附件数」，演示单于是出现
+    # 「头部写『附件（2 个）』、指标卡写『实际附件数 0』」同页两个数对不上。
     b["attach_count"] = sum(1 for a in b["attachments"] if a["source_kind"] == "xlsx内嵌")
+    b["attach_demo_count"] = sum(1 for a in b["attachments"]
+                                 if a["source_kind"] == "演示合成")
     # 「申报张数」与「实际附件数」是**两个指标**，页面并列显示，谁也不覆盖谁。
     # 实测 34/40 张单两者不等，而那不等于「申报不实」（见迁移 0035 的列注释）。
     b["_attach_metrics_note"] = (
@@ -79,17 +92,49 @@ def get_bill(bill_no: str):
         "所以**没有**把不等做成规则：在口径搞清楚之前，那会是一条 32/40 命中的误报机。"
         % (b.get("attach_pages") if b.get("attach_pages") is not None else "未填",
            b["attach_count"]))
-    if b["attachments"] and b["attach_count"]:
-        b["_attachment_note"] = (
-            "附件类型（attach_type）**全部为空，是「还没判」不是「没有类型」**。"
-            "从一张 PNG 判它是出差审批单还是住宿费发票必须读图"
-            "（必要附件决策表 11 种类型里 5 种标着 ocr_needed）。"
-            "所以 **TR-D6-01（必要附件完整性）仍然不能开**——它要的是类型，不是张数。")
-    elif not b["attachments"]:
+    # **这段文案必须跟 attach_type 的实测值走，一个字都不许写死。**
+    # 实测踩过（2026-10-23 修）：原文在 `if attachments and attach_count` 下
+    # **无条件**断言「附件类型全部为空、TR-D6-01 仍然不能开」——那是 0/219 已判时
+    # 写的真话；等 attachment_classify.py 把 219 条全判完之后，它变成了每张真实单上
+    # 都加粗显示的**假告警**，使用者读到的结论是「附件没弄好」，于是来问
+    # 「怎么真实数据和模拟数据都没有附件」。**假话比没有这句话更危险。**
+    # 同一次还修掉了演示单落进 if/elif 空档（attachments 非空而 attach_count=0，
+    # 两个分支都不进，_attachment_note 压根没赋值）导致的「零解释」。
+    real_atts = [a for a in b["attachments"] if a["source_kind"] == "xlsx内嵌"]
+    demo_atts = [a for a in b["attachments"] if a["source_kind"] == "演示合成"]
+    untyped = [a for a in real_atts if not a["attach_type"]]
+    # 合成图是否已生成，也按实测判：库里 content_type 有值才算有图。
+    # 不写死「演示单有图」——seed.py 的 clear() 会清表重建，重建后又会变成没图。
+    demo_with_img = [a for a in demo_atts if a["content_type"]]
+    if not b["attachments"]:
         b["_attachment_note"] = (
             "本单没有附件记录。注意区分两件事：真实单的附件已于 2026-10-21 从 xlsx "
-            "内嵌图片抽取入库（219 张，覆盖 40 张真实单）；**演示单（is_demo）的附件是合成的**，"
-            "没有原图。这一单两者都没有。")
+            "内嵌图片抽取入库（219 张，覆盖 40 张真实单）；**演示单（is_demo）的附件是合成的**。"
+            "这一单两者都没有。")
+    elif real_atts and untyped:
+        b["_attachment_note"] = (
+            "本单 %d 张真实附件里**还有 %d 张没判类型**——「没判」不是「没有类型」。"
+            "从一张 PNG 判它是出差审批单还是住宿费发票必须读图"
+            "（必要附件决策表 15 种细类里 7 种标着 ocr_needed）。未判完之前"
+            "**TR-D6-01（必要附件完整性）不能开**：缺的那几张到底是「真的没附件」"
+            "还是「还没判」，分不清。" % (len(real_atts), len(untyped)))
+    elif real_atts:
+        b["_attachment_note"] = (
+            "本单 %d 张真实附件的类型**已全部判出**（读图判定，原图点得开）。"
+            "**TR-D6-01（必要附件完整性）目前仍未开启**——这是待定的项目决策，"
+            "**不是数据不够**：全库 219 张真实附件已全部判完。"
+            "开它就会开始对真实单报「缺件」，口径要先定。" % len(real_atts))
+    elif demo_with_img and len(demo_with_img) == len(demo_atts):
+        b["_attachment_note"] = (
+            "本单 %d 条附件**全部是演示合成的**：类型和文件名由生成器给定，"
+            "图是带「演示数据」水印的合成示意图，**不是真实凭证**——"
+            "不要拿它验证识别效果。真实单的附件是从客户 xlsx 内嵌图片抽出来的真图。"
+            % len(demo_atts))
+    else:
+        b["_attachment_note"] = (
+            "本单 %d 条附件是**演示合成**的，而且其中 %d 条连合成示意图都还没生成"
+            "（只有类型和文件名，点开会是 404）。真实单的附件不受影响。"
+            % (len(demo_atts), len(demo_atts) - len(demo_with_img)))
     # 最近一次审核结论 + 违规规则（供单据详情页展示「违规了哪些制度」）
     # rule_name 不叫 name，避免脱敏模块按字段名把规则名打成星号（踩坑三次）
     latest_run = db.query_one("""
@@ -352,6 +397,43 @@ def attachment_extract(body: dict = Body(None)):
 def attachment_extract_status():
     """抽取进度、费用留痕。"""
     return aex.status()
+
+
+@router.get("/attachments/perception")
+def attachment_perception(failures: int = Query(50, ge=0, le=500)):
+    """附件感知链路一次看全：判类型 + 抽字段的进度、成本、失败。
+
+    **做成一个合并接口而不是让前端打四次**：这四个数必须同时出现在一屏上
+    才有意义。分四次拉，中间任何一次失败都会让页面显示一个「进度 219/219
+    但成本空白」的半截状态，而那看起来像「没花钱」。
+
+    失败明细**默认带上**（最近 50 条）。读图是真出网真计费的动作，
+    把失败藏在另一个要点一下才展开的接口里，等于默认不给看——
+    实测 49 次失败在改这一版之前页面上一个字都没有。
+    """
+    from .. import perception
+    clf = acx.status()
+    ext = aex.status()
+    clf_f = perception.ledger_failures("attachment_vision", failures)
+    ext_f = perception.ledger_failures("attachment_extract", failures)
+    return {
+        "classify": clf,
+        "extract": ext,
+        "classify_failures": clf_f,
+        "extract_failures": ext_f,
+        # 链路口径：两步是**串行依赖**，而且第二步的范围比第一步小。
+        # 不写这一句，看到「判类型 219 / 抽字段 197」会以为少了 22 张。
+        "chain_note": (
+            "两步串行：先判类型（全部 %d 张真实附件），再按类型抽字段"
+            "（只有 A01/A03/A04/A05 四类进抽取范围，共 %d 张）。"
+            "**抽字段的分母比判类型小不是漏了**——出差审批单、交通费凭证、"
+            "住宿费发票、其他差旅费发票之外的类型这一轮不抽字段。"
+            % (clf.get("total") or 0, ext.get("eligible") or 0)),
+        "cost_note": (
+            "token 是累计口径（两张台账全量，含失败的调用）。"
+            "**失败的调用也花钱**，所以成本要算在一起看；"
+            "但失败次数不等于待办，见各步的失败说明。"),
+    }
 
 
 @router.get("/deviation")
