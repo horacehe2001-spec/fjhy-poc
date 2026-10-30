@@ -5,9 +5,11 @@
 # 卷名都带 fjhy-poc 前缀，自成一个 docker 网络，不碰别人的容器/网络/卷
 # （全局纪律第 12 条：一眼可辨、事后好清理）。
 #
-# **只装载演示数据，不含客户 40 张真实报销单明细**——那批数据在
-# app/demo/seed.py 里，entrypoint.sh 刻意不调用它。这是跟用户确认过的
-# data-governance 决策，不是遗漏。
+# **装载演示数据 + 客户 40 张真实报销单（含 219 张真实附件图）**。
+# 原先刻意不跑 app/demo/seed.py，是因为这台机器多租户共享；
+# 2026-10-24 用户明确改口径：真实单和真实附件图都要上服务器。
+# 注意暴露面：文本字段的接口出口有脱敏（FJHY_MASK_MODE=on），
+# 但**附件原图不经脱敏**——/api/attachments/{id}/file 返回的是原始发票图。
 #
 # db 和 backend 不绑宿主机端口，只在本项目的 docker 网络内通信；
 # 只有 frontend 对外，绑 8900（该端口在部署前核对过，服务器上原本空闲）。
@@ -65,6 +67,11 @@ services:
       FJHY_MASK_MODE: "on"
     volumes:
       - fjhy_poc_backend_var:/app/服务端/var
+      # 客户交付物（两份 xlsx + 三份审批意见 PDF，约 41MB）。
+      # **绑挂而不是 Dockerfile COPY**：镜像层能被 docker save 整个带走，
+      # 客户真实姓名/金额/车次和 219 张真实发票图不该烙进镜像。
+      # 只读挂载——材料/ 是证据不是工作区（attachment_extract.py 的纪律 1）。
+      - ../材料:/app/材料:ro
     restart: unless-stopped
 
   frontend:

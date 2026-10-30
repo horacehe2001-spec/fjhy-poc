@@ -4,8 +4,13 @@ FROM python:3.12-slim
 
 # tesseract-ocr 只提供引擎；中文语言包用项目自带的 服务端/vendor/tessdata
 # （ocr.py 优先探测 vendor 目录，装系统语言包反而是多余的，不装）。
+#
+# fonts-wqy-zenhei 装的是 /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc，
+# 正是 demo/demo_attachment_image.py 的 _FONT_CANDIDATES 里列的那条。
+# 不装它，演示附件示意图会降级成英文文案，而「附件类型」那一格的中文值
+# 仍然画成豆腐块——演示现场看到的是一张花图。15MB 换一张能看的图。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr \
+    && apt-get install -y --no-install-recommends tesseract-ocr fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
