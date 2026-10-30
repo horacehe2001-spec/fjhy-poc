@@ -31,6 +31,8 @@ const props = defineProps<{
   startLabel: string
   runningLabel: string
   disabled?: boolean
+  /** 调用方自己画了启动按钮时置 true，这里就不再画一个。默认画。 */
+  hideStart?: boolean
   /**
    * 是否画「S→D→A→F→I」那列卡片。默认画。
    * 规则抽取那一页关掉了：那一页要留给「规则明细」，
@@ -68,9 +70,14 @@ function fmt(s?: number | null) {
 <template>
   <div class="panel">
     <div class="row" style="margin-bottom: 10px">
-      <button :disabled="jobStatus === 'running' || disabled" @click="$emit('start')">
+      <!-- hideStart：调用方自己画了启动按钮时把这个关掉。
+           规则抽取那一页有「全量 / 新增」两个按钮，这里再画一个就是第三个，
+           而三个按钮里有两个行为相同、一个不同，是最容易点错的那种界面。 -->
+      <button v-if="!hideStart" :disabled="jobStatus === 'running' || disabled"
+              @click="$emit('start')">
         {{ jobStatus === 'running' ? runningLabel : startLabel }}
       </button>
+      <span v-else-if="jobStatus === 'running'" class="tag t-pend">{{ runningLabel }}</span>
       <span class="muted" style="font-size: 12px"><slot name="hint" /></span>
     </div>
 

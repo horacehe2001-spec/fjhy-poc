@@ -24,5 +24,8 @@
     "vite": "6.0.7",
     "vitest": "3.2.4",
     "vue-tsc": "2.1.10"
+  },
+  "overrides": {
+    "rollup": "npm:@rollup/wasm-node@4.64.9"
   }
 }

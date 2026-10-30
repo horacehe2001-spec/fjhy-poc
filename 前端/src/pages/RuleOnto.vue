@@ -281,11 +281,32 @@ onUnmounted(stopPoll)
           <code class="muted" style="font-size: 11px">{{ c.conflict_id }}</code>
         </div>
         <div style="font-size: 12px; margin: 4px 0"><MarkText :text="c.detail" /></div>
-        <div v-if="c.state === '待裁决'" class="row" style="margin: 0">
-          <input v-model="form['r_' + c.conflict_id]" placeholder="裁决结论（已裁决时必填）"
+        <!-- 按钮是**动作**，不是状态。原来两个按钮叫「已裁决」「忽略」——
+             「已裁决」是 doclib_conflict.state 的取值，点之前它还没裁决，
+             拿状态词当按钮，看的人只能猜这一下到底会发生什么
+             （实测被问到「已裁决是啥意思？采纳还是拒绝？」）。
+             库里的状态取值不动（已裁决 / 已忽略），动的只是按钮上的字。
+
+             **也没有改成「采纳/驳回」去和候选区统一**：那两个词的宾语是
+             「一条建议」，接受或拒绝；而冲突没有建议可接受——裁决结论是人
+             自己写的文本，不是在 A/B 里选一个。套上去会让人以为是二选一，
+             那是比用词不一致更深的误导。 -->
+        <div v-if="c.state === '待裁决'" class="cfact">
+          <input v-model="form['r_' + c.conflict_id]"
+                 placeholder="裁决结论：按哪一方的口径算，为什么（提交裁决必填）"
                  style="flex: 1" />
-          <button :disabled="!!busy" @click="resolveConflict(c, '已裁决')">已裁决</button>
-          <button :disabled="!!busy" @click="resolveConflict(c, '已忽略')">忽略</button>
+          <button :disabled="!!busy" @click="resolveConflict(c, '已裁决')"
+                  title="把结论写进本体：这条冲突会落成规则关系，后续按你写的口径算">
+            提交裁决</button>
+          <button :disabled="!!busy" @click="resolveConflict(c, '已忽略')"
+                  title="不写结论，也不再提示这条——重算口径时它不会复活">
+            忽略此条</button>
+        </div>
+        <!-- 两个按钮的后果差别要写在手边，不能只写在 title 里：
+             title 要悬停才看得见，而这是个一次性、会写进本体的决定。 -->
+        <div v-if="c.state === '待裁决'" class="muted cfhint">
+          <b>提交裁决</b>＝结论写进本体（落成规则关系，后续按它算）·
+          <b>忽略此条</b>＝不写结论、重算后也不再提示
         </div>
         <div v-else class="muted" style="font-size: 12px">
           {{ c.resolved_by }} · {{ c.resolution || '（忽略，未写结论）' }}
@@ -718,6 +739,10 @@ button.on { background: var(--brand); color: #fff; border-color: var(--brand); }
 .two h4 { margin: 6px 0 4px; font-size: 13px; }
 .cf { border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; margin-top: 8px; }
 .cf.待裁决 { border-color: var(--hit); background: #fffafa; }
+.cfact { display: flex; gap: 6px; align-items: center; margin: 0; }
+/* 后果说明贴着按钮下方：这是个一次性、会写进本体的决定，
+   把差别只放在 title 里等于要悬停才看得见。 */
+.cfhint { font-size: 11px; margin-top: 4px; line-height: 1.5; }
 .formcell { background: #fafbfc; }
 .srcs { margin: 6px 0; }
 .src { border-left: 2px solid var(--line); padding: 2px 0 2px 8px; margin-bottom: 5px; }

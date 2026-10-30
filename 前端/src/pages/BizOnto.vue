@@ -26,7 +26,8 @@
  * **边界也要写在页面上，不含糊**：这条链能从素材里数出有硬证据的东西，
  * 但替代不了人读制度划实体、定概念语义。产出叫候选，采纳是人的动作。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import AgentRuntime from '../components/AgentRuntime.vue'
 import OntoLoadSteps from '../components/OntoLoadSteps.vue'
 import Async from '../components/Async.vue'
@@ -37,6 +38,7 @@ import type {
 } from '../api'
 
 type Tab = 'build' | 'show' | 'rel' | 'graph'
+const route = useRoute()
 const tab = ref<Tab>('build')
 
 const prog = ref<ExProgress | null>(null)
@@ -183,11 +185,38 @@ const REL_COLOR: Record<string, string> = {
   包含: '#2f6fb5', 关联: '#7a9ec4', 流转: '#2e8b57', 归属: '#8e6fb5',
 }
 
+/**
+ * 被高亮的那条候选（从别的页面带 ?cand= 跳过来的）。
+ *
+ * **为什么要有这个**：采纳会真的改 本体_v0.1.yaml，所以采纳 UI（插入目标 +
+ * 补丁预览）只做了这一份、只在这一页。流程本体那页看的是同一批候选的
+ * 流程切片，它那里没有采纳按钮——于是「看得到已采纳状态，却没有采纳按钮」。
+ * 那页现在给「去采纳 →」直达链接，这里负责接住：切到建立页、清掉判定过滤
+ * （否则目标可能被过滤掉，跳过来是一片空白）、展开它、滚到它、高亮两秒。
+ */
+const highlight = ref('')
+
+async function focusCand(id: string) {
+  const c = cands.value.find((x) => x.cand_id === id)
+  if (!c) return
+  tab.value = 'build'
+  verdictFilter.value = ''          // 不清过滤的话，跳过来可能根本看不到这一行
+  highlight.value = id
+  await nextTick()
+  document.getElementById('cand-' + id)
+    ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  if (openCand.value !== id) openPreview(c)
+  // 高亮只是「我在这儿」，不是状态，所以过一会儿自己退掉
+  setTimeout(() => { if (highlight.value === id) highlight.value = '' }, 2500)
+}
+
 onMounted(async () => {
   meta.value = await api.ontoBuildMeta().catch(() => null)
   await poll()
   if (prog.value?.status === 'running') startPoll()
   await reload()
+  const id = route.query.cand
+  if (typeof id === 'string' && id) await focusCand(id)
 })
 onUnmounted(stopPoll)
 </script>
@@ -242,7 +271,7 @@ onUnmounted(stopPoll)
         </thead>
         <tbody>
           <template v-for="c in shown" :key="c.cand_id">
-            <tr :class="{ dim: c.verdict === '已在本体' }">
+            <tr :id="'cand-' + c.cand_id" :class="{ dim: c.verdict === '已在本体', hl: c.cand_id === highlight }">
               <td><span class="tag t-na">{{ c.kind }}</span></td>
               <td><b>{{ c.cand_name }}</b></td>
               <td><span class="tag" :class="vTag(c.verdict)">{{ c.verdict }}</span></td>
@@ -483,6 +512,15 @@ onUnmounted(stopPoll)
 </template>
 
 <style scoped>
+/* 从流程本体「去采纳」跳过来时高亮那一行。**只是「我在这儿」，不是状态**，
+   所以两秒多之后自己退掉——留着会被当成某种标记。 */
+tr.hl td {
+  background: #fffbe6;
+  box-shadow: inset 0 0 0 1px var(--pend, #d48806);
+}
+@media (prefers-reduced-motion: reduce) {
+  tr.hl td { box-shadow: inset 0 0 0 2px var(--pend, #d48806); }
+}
 button.on { background: var(--brand); color: #fff; border-color: var(--brand); }
 button.mini { padding: 2px 7px; font-size: 12px; }
 tr.dim td { opacity: .62; }

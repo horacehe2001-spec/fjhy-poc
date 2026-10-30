@@ -75,10 +75,15 @@ onMounted(async () => {
         </div>
       </nav>
       <main class="main">
-        <!-- 当前实例徽标：只在领域知识资产这一组的页面上出现。
-             **各栏目页看到的资产属于哪个实例，要在页面上写死**，
-             否则切换之后看的还是同一堆数字，没人分得清是哪个实例的。 -->
-        <div v-if="route.path.startsWith('/asset')" class="scopebar">
+        <!-- 当前实例徽标：**全站都显示，不再只在 /asset 那一组**。
+             原来限定在 /asset 是因为那时只有一个实例，别处显示它没有信息量。
+             2026-10-29 做完按实例隔离之后，切实例会真的改变**审核工作台、
+             报账单、AI 审核、发布管理**这些页面上的数据——
+             而切换是全局单例、不需要重新登录也不刷新别人的页面。
+             徽标只挂在 /asset 上，就会出现"在审核工作台看了半天别的实例的单据"
+             这种事，而页面上没有任何地方能看出来。
+             唯一不显示的是没有领域概念的页面（登录/启动自检那类还没有 route 的）。 -->
+        <div class="scopebar">
           <span class="scopetag">{{ domainLabel(curDomain) }}</span>
           <router-link v-if="route.path !== '/asset'" to="/asset" class="scopelink">切换</router-link>
         </div>

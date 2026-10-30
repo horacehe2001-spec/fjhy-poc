@@ -457,6 +457,25 @@ export interface ExIncremental {
   /** 取不到正文的文件：抽取覆盖不到它们，和「增量」是两件事 */
   blocked: { parse_state: string; n: number }[]
   blocked_total: number
+  /** 全量口径：in_lib = total(待抽取) + extracted(已抽取) + blocked_total(够不着)。
+   *  只显示「待抽取」会让人以为那就是全部，差额必须当场交代清楚。 */
+  in_lib: number
+  extracted: number
+  coverage_note: string
+  /** 在库每一份文件一行。页面用这张清单代替一排数字：
+   *  「在库 12 / 待抽取 0 / 够不着 5」解释不了差额去哪了，清单不用解释。 */
+  inventory: {
+    file_id: string; file_name: string; rel_path: string; ext: string
+    text_chars: number; parse_state: string; origin: string
+    /** 原生文本 | OCR | 读图 | null（取不到正文） */
+    text_source: string | null
+    /** 待抽取 | 已抽取 | 够不着 */
+    state: string
+    why: string
+    clauses: number
+    vision_pages: number | null
+    vision_unreadable: number | null
+  }[]
   ai_batch_limit: number
   /** 已有条款的那几份里的候选数。**这是下限**，见 candidates_unknown_files */
   candidates_known: number
@@ -1703,4 +1722,14 @@ export const api = {
               current_release: string | null; current_release_why: string
               rule_set_version: string | null; onto_version: string | null
               scope_note: string }>('/api/domain/overview'),
+  // 新增实例。**建出来就是空的，也不会自动切过去**——后端口径，不是前端省事：
+  // 点「添加」是建一个东西，不是「我要开始用它」；而当前实例是全局单例，
+  // 自动切过去会影响所有正在看页面的人。
+  domainAddInstance: (domainId: string, label: string, note?: string) =>
+    request<{ ok: boolean; instance_id: string; label: string
+              domain_id: string; domain_label: string
+              is_default: boolean; note: string }>(
+      '/api/domain/instances',
+      { method: 'POST',
+        body: JSON.stringify({ domain_id: domainId, label, note }) }),
 }

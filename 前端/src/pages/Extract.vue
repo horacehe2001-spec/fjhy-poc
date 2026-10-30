@@ -54,6 +54,13 @@ const fMapped = ref('')
 const fTag = ref('')
 const fQ = ref('')
 const who = ref('')
+/** 署名框的引用。没署名时下面每行的提示点一下就跳到它，省得自己找。 */
+const whoInput = ref<HTMLInputElement | null>(null)
+function focusWho() {
+  whoInput.value?.focus()
+  // 跳过去还要看得见：表格可能已经滚出去很远了
+  whoInput.value?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+}
 const openMap = ref('')
 const tagDraft = ref<{ id: string; tag: string; why: string } | null>(null)
 
@@ -62,7 +69,6 @@ const err = ref('')
 const msg = ref('')
 const debugOpen = ref(false)
 const clausesOpen = ref(false)   // 条款底账，单步调试里的二级折叠
-const draftsOpen = ref(false)    // AI 草稿台账，同上
 
 /** 展开时才去取条款。**模板里不写语句**——Vue 的内联表达式不支持 if。 */
 function toggleClauses() {
@@ -123,52 +129,91 @@ const inc = ref<ExIncremental | null>(null)
 // 两段确认：最后一步是 AI 草稿，**真出网、真计费**。
 // 第一下只是把要花的钱摆出来，第二下才真跑。
 // 这里不做成 confirm() 弹窗：那个会被浏览器拦，而且拦了之后什么都不会发生。
-const armed = ref(false)
-const fullRerun = ref(false)
+/** 只看可成规则。默认不勾——**不可成的那些也要看得见**：
+ *  模型说「这条做不成规则」本身就是结论，藏起来等于把它当成没抽过。 */
+const onlyRulable = ref(false)
+
+/** 草稿 → 规则清单的一行。
+ *
+ * 模型返回的是中文键（规则名称/审核维度/…），这里拍平成列，
+ * **拍平在这一处做**：模板里到处写 d.draft['规则名称'] 的话，
+ * 哪天模型换个键名要改十几处，而漏改的地方只会显示空白，不报错。
+ */
+const ruleRows = computed(() => drafts.value.map((d) => {
+  const g = (k: string) => {
+    const v = (d.draft as Record<string, unknown>)?.[k]
+    return v == null || v === '' ? null : String(v)
+  }
+  return {
+    draft_id: d.draft_id,
+    rulable: d.rulable !== false,
+    name: g('规则名称'),
+    dim: g('审核维度'),
+    cls: g('规则类型'),
+    ctrl: g('处置动作'),
+    risk: g('风险等级'),
+    logic: g('判定逻辑'),
+    gap: g('缺口'),
+    scope: g('适用范围'),
+    except: g('例外情形'),
+    file_name: d.file_name,
+    clause_no: d.clause_no,
+    review_state: d.review_state,
+    truncated: d.truncated,
+    model: d.model,
+    sent_chars: d.sent_chars,
+    suspect: d.number_check?.ok === false ? (d.number_check.suspect || []) : [],
+  }
+}))
+const ruleRowsShown = computed(() =>
+  onlyRulable.value ? ruleRows.value.filter(r => r.rulable) : ruleRows.value)
+const suspectRows = computed(() => ruleRows.value.filter(r => r.suspect.length))
+const truncRows = computed(() => ruleRows.value.filter(r => r.truncated))
+
+/** 上膛的是哪一种。null = 没上膛。
+ *
+ * **按模式分开记，不能用一个布尔。** 两个按钮共用一个 armed 的话，
+ * 点「全量」上膛之后再点「新增」会直接跑成全量——而那一下是真花钱的。
+ */
+const armedMode = ref<null | 'full' | 'inc'>(null)
+
+/** 清单里三种状态的配色。够不着要显眼：它是「这份制度没进来」。 */
+const STATE_CLS: Record<string, string> = {
+  待抽取: 't-pend', 已抽取: 't-pass', 够不着: 't-hit',
+}
 
 const loadInc = () =>
   run('inc', async () => { inc.value = await api.exIncremental() })
 
-/** 按钮文案。**份数和「会不会花钱」必须写在按钮上**，不能只写在说明里。 */
-const startLabel = computed(() => {
-  if (fullRerun.value) {
-    return armed.value
-      ? '确认全量重跑（忽略增量判断，含 AI 草稿 · 出网计费）'
-      : '全量重跑（改过切分策略之后用）'
-  }
-  const n = inc.value?.total
-  if (n === 0) return '无增量可抽（没有新文件，也没有哪份被改过）'
-  if (armed.value) {
-    const k = inc.value?.will_call_model ?? 0
-    return k > 0
-      ? `确认：抽 ${n} 份，并对最多 ${k} 条候选调模型（出网计费）`
-      : `确认：抽 ${n} 份（本批没有要调模型的候选）`
-  }
-  return n == null ? '增量抽取' : `增量抽取（${n} 份 · 含 AI 草稿，出网计费）`
-})
-
-const startJob = () =>
+const startJob = (full: boolean) =>
   run('run', async () => {
-    // 增量为 0 且不是全量重跑 → 不发请求。发了也只是四步空跑，
+    const mode = full ? 'full' : 'inc'
+    // 新增为 0 → 不发请求。发了也只是四步空跑，
     // 但那会在台账里留下一次没有意义的作业记录。
-    if (!fullRerun.value && inc.value?.total === 0) {
-      msg.value = '增量为 0 份：没有新文件，也没有哪份文件在上次抽取之后被改过。'
-        + '要对库里积压的候选跑草稿，用下面「单步调试」里的「只跑 AI 草稿」；'
-        + '改过切分策略要全量重切，勾上「全量重跑」。'
+    if (!full && inc.value?.total === 0) {
+      msg.value = '没有新增：没有新文件，也没有哪份文件在上次抽取之后被改过。'
+        + '改过切分策略要重切，用「全量抽取」。'
       return
     }
-    if (!armed.value) {
-      armed.value = true      // 第一下只是上膛，把要花的钱摆出来
+    // 两段确认。最后一步是 AI 草稿，**真出网、真计费**，
+    // 第一下只把要花的钱摆出来。不用 confirm()：那个会被浏览器拦，
+    // 而拦了之后什么都不会发生。
+    if (armedMode.value !== mode) {
+      armedMode.value = mode
+      const k = inc.value?.will_call_model ?? 0
+      const money = k > 0 ? `，并对最多 ${k} 条候选调模型（**出网计费**）` : ''
+      msg.value = full
+        ? `再点一次「全量抽取」才真跑：会对所有能取到正文的文件重切条款${money}。`
+        : `再点一次「新增抽取」才真跑：处理 ${inc.value?.total} 份${money}。`
       return
     }
-    armed.value = false
-    const r = await api.exRun({ only_changed: !fullRerun.value })
+    armedMode.value = null
+    const r = await api.exRun({ only_changed: !full })
     if (!r.ok) {
       msg.value = r.reason || '已有作业在运行'
       return
     }
-    msg.value = (fullRerun.value ? '已启动**全量**协同作业 ' : '已启动增量协同作业 ')
-      + r.job_id
+    msg.value = (full ? '已启动**全量**协同作业 ' : '已启动新增协同作业 ') + r.job_id
     await poll()
     startPoll()
   })
@@ -229,12 +274,6 @@ const addTag = () =>
     await loadDetails()
   })
 
-/** 展开时才去取草稿台账。和条款底账同一个道理：没人看的时候不花这个请求。 */
-function toggleDrafts() {
-  draftsOpen.value = !draftsOpen.value
-  if (draftsOpen.value && !drafts.value.length) loadDrafts()
-}
-
 const stepOcr = () =>
   run('ocr', async () => {
     const r = await api.dlOcr({ limit: 5 })
@@ -251,7 +290,7 @@ const stepAi = () =>
     const r = await api.exAi({ limit: 8 })
     msg.value = 'AI 草稿：成稿 ' + r.drafted + ' / 试 ' + r.tried
       + '（草稿要进规则明细，再点一次「只跑规则明细」）'
-    if (draftsOpen.value) await loadDrafts()
+    await loadDrafts()      // 规则清单常驻在页面上，跑完直接刷新它
   })
 
 // 进度条、协同全景都在 AgentRuntime 组件里，四个页面共用一份
@@ -270,6 +309,9 @@ onMounted(async () => {
   // 增量范围进页面就取：按钮上要写份数，而「点了才知道有没有东西可抽」
   // 等于把一个会花钱的动作当探测用。
   await loadInc().catch(() => {})
+  // 规则清单进页面就取。它原来挂在「AI 草稿台账」那个折叠块里、点开才加载，
+  // 于是这一页最该被看见的东西（抽出来的规则到底有哪些）默认是看不见的。
+  await loadDrafts().catch(() => {})
   if (prog.value?.status === 'running') startPoll()
 })
 onUnmounted(stopPoll)
@@ -286,95 +328,179 @@ onUnmounted(stopPoll)
     <h3>增量范围</h3>
     <div v-if="!inc" class="muted">读取中…</div>
     <template v-else>
-      <div class="stat">
-        <div><b>{{ inc.total }}</b><span>待抽取文件</span></div>
-        <div>
-          <b>{{ inc.will_call_model }}{{ inc.candidates_unknown_files.length ? '+' : '' }}</b>
-          <span>本次将调模型的候选条款</span>
-        </div>
-        <div><b>{{ inc.blocked_total }}</b><span>取不到正文（抽取覆盖不到）</span></div>
-      </div>
-
-      <div class="row" style="margin-top: 12px">
-        <span v-for="w in inc.by_why" :key="w.why" class="tag"
-              :class="w.why === '从未抽取' ? 't-pass' : 't-pend'">
-          {{ w.why }} {{ w.n }} 份
+      <!-- **一张清单，不是一排数字。**
+           「在库 12 / 待抽取 0 / 够不着 5」解释不了差额去哪了，
+           而使用者想知道的本来就是「哪几份没进来、为什么」。清单不用解释。 -->
+      <div class="row" style="margin-bottom: 10px">
+        <button :disabled="!!busy" @click="startJob(true)">
+          {{ busy ? '运行中…' : '全量抽取' }}
+        </button>
+        <button :disabled="!!busy || !inc.total" @click="startJob(false)">
+          新增抽取{{ inc.total ? `（${inc.total} 份）` : '（无新增）' }}
+        </button>
+        <span class="muted">
+          全量 = 所有能取到正文的文件重切一遍；新增 = 只处理没抽过的和改过的。
+          <b v-if="inc.will_call_model">最后一步会对最多 {{ inc.will_call_model }} 条候选调模型（计费）。</b>
         </span>
-        <span v-if="!inc.total" class="tag t-na">没有新文件，也没有哪份被改过</span>
-        <label style="margin-left: auto">
-          <input v-model="fullRerun" type="checkbox" @change="armed = false" />
-          全量重跑
-        </label>
       </div>
 
-      <!-- 增量为 0 份时也要把话说全：那是正常结果，不是功能坏了 -->
-      <div :class="inc.will_call_model > 0 && !fullRerun ? 'err' : 'note'">
-        <MarkText :text="inc.cost_note" />
-      </div>
-      <div v-if="fullRerun" class="err">
-        <b>全量重跑</b>：忽略增量判断，对所有能取到正文的文件重切条款、重跑映射，
-        并对全库候选调模型。**改过切分策略或正则之后必须这样跑一次**——
-        否则文件没动、指纹没变，一份也跑不到，会得到「改了但看不出改了」的假象。
-      </div>
-
-      <table v-if="inc.files.length" style="margin-top: 8px">
+      <table>
         <thead>
           <tr>
-            <th>文件</th><th style="width: 70px">来源</th>
-            <th style="width: 150px">为什么在增量里</th>
-            <th class="num" style="width: 80px">正文字数</th>
-            <th style="width: 150px">变化时间</th>
+            <th>文件</th>
+            <th style="width: 76px">状态</th>
+            <th style="width: 76px">正文来源</th>
+            <th class="num" style="width: 64px">字数</th>
+            <th class="num" style="width: 56px">条款</th>
+            <th>说明</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="f in inc.files" :key="f.file_id">
+          <tr v-for="f in inc.inventory" :key="f.file_id">
             <td>
               {{ f.file_name }}
               <div class="muted mono" style="font-size: 11px">{{ f.rel_path }}</div>
             </td>
             <td>
-              <span class="tag" :class="f.origin === '上传' ? 't-pass' : 't-na'">
-                {{ f.origin }}
-              </span>
+              <span class="tag" :class="STATE_CLS[f.state] || 't-na'">{{ f.state }}</span>
             </td>
             <td>
-              <span class="tag" :class="f.why === '从未抽取' ? 't-pass' : 't-pend'">
-                {{ f.why }}
+              <span class="tag" :class="f.text_source === '读图' ? 't-demo'
+                                        : f.text_source ? 't-pass' : 't-hit'">
+                {{ f.text_source || '取不到' }}
               </span>
             </td>
-            <td class="num">{{ f.text_chars }}</td>
-            <td class="mono" style="font-size: 11px">
-              {{ f.changed_at ? String(f.changed_at).replace('T', ' ').slice(0, 19) : '—' }}
-            </td>
+            <td class="num">{{ f.text_source === '读图' ? '—' : f.text_chars }}</td>
+            <td class="num">{{ f.clauses }}</td>
+            <td class="muted" style="font-size: 12px">{{ f.why }}</td>
           </tr>
         </tbody>
       </table>
-
-      <div v-if="inc.candidates_unknown_files.length" class="note">
-        另有 <b>{{ inc.candidates_unknown_files.length }}</b> 份文件还没切过条款，
-        它们的候选数要切完才知道——所以上面那个数是<b>下限</b>，不是总数。
-        <span class="muted">（{{ inc.candidates_unknown_files.slice(0, 3).join('、')
-          }}{{ inc.candidates_unknown_files.length > 3 ? ' 等' : '' }}）</span>
+      <div class="note" style="margin-bottom: 0">
+        共 <b>{{ inc.inventory.length }}</b> 份：待抽取 {{ inc.total }} ·
+        已抽取 {{ inc.extracted }} ·
+        <b :style="inc.blocked_total ? 'color: var(--hit)' : ''">够不着 {{ inc.blocked_total }}</b>。
+        「读图」来源的字数列不显示原生字数——那一档的原生文字层本来就是残缺的，
+        显示出来会让人以为正文只有那么点。
       </div>
-      <div class="note" style="margin-bottom: 0"><MarkText :text="inc.note" /></div>
     </template>
   </div>
 
+  <!-- 启动按钮画在上面那块清单里（「全量抽取」「新增抽取」），
+       这里只留进度与协同全景，所以 hide-start。 -->
   <AgentRuntime :prog="prog" :meta="meta" :disabled="!!busy" :phase-cards="false"
-                :start-label="startLabel" running-label="协同进行中…" @start="startJob">
+                hide-start start-label="" running-label="协同进行中…" @start="() => {}">
     <template #hint>
-      <template v-if="armed">
-        <b>再点一次才真跑。</b>第一下只是把范围和要花的钱摆出来。
+      <template v-if="armedMode">
+        <b>再点一次那个按钮才真跑。</b>第一下只是把范围和要花的钱摆出来。
       </template>
-      <template v-else-if="fullRerun">全量重跑：忽略增量判断</template>
       <template v-else>
-        只处理增量：从没抽过的 + 抽过之后又被改过的
+        全量 = 所有能取到正文的文件重切一遍；新增 = 从没抽过的 + 抽过之后又被改过的
       </template>
     </template>
   </AgentRuntime>
 
   <div v-if="err" class="err">{{ err }}</div>
   <div v-if="msg" class="note">{{ msg }}</div>
+
+  <!-- ── 规则清单 ─────────────────────────────────────────────────────────
+       **一行一条规则**，默认展开、不折叠。
+       原来这一页上草稿只在「AI 草稿台账」里，默认收起、点开才加载，
+       而且是一条一个面板堆下去——97 条根本没法看，于是页面上
+       「抽出来的规则到底有哪些」这个最该看见的东西反而看不见。
+       台账那一块保留（它是唯一的出网留痕，审计要），但收到下面去。 -->
+  <div class="panel">
+    <div class="row">
+      <h3 style="margin: 0">规则清单</h3>
+      <span class="muted">模型从条款抽出来的规则草稿。<b>草稿不是规则</b>——
+        要进规则本体必须在下面「规则明细」里人工采纳，系统不自动落。</span>
+      <button style="margin-left: auto" :disabled="!!busy" @click="loadDrafts">
+        {{ busy === 'drafts' ? '读取中…' : '刷新' }}
+      </button>
+    </div>
+
+    <div v-if="!drafts.length" class="muted">
+      还没有草稿。先用上面的「全量抽取」或「新增抽取」跑一轮。
+    </div>
+    <template v-else>
+      <div class="row" style="margin-bottom: 6px">
+        <span class="tag t-pass">可成规则 {{ ruleRows.filter(r => r.rulable).length }}</span>
+        <span class="tag t-na">不可成 {{ ruleRows.filter(r => !r.rulable).length }}</span>
+        <span v-if="suspectRows.length" class="tag t-hit">
+          数值存疑 {{ suspectRows.length }}
+        </span>
+        <span v-if="truncRows.length" class="tag t-pend">
+          原文被截断 {{ truncRows.length }}
+        </span>
+        <label style="margin-left: auto">
+          <input v-model="onlyRulable" type="checkbox" /> 只看可成规则
+        </label>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 30px" class="num">#</th>
+            <th>规则名称</th>
+            <th style="width: 120px">审核维度</th>
+            <th style="width: 52px">类型</th>
+            <th style="width: 52px">处置</th>
+            <th style="width: 44px">风险</th>
+            <th>判定逻辑</th>
+            <th style="width: 190px">缺口（现在还判不了什么）</th>
+            <th style="width: 150px">出处</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(r, i) in ruleRowsShown" :key="r.draft_id">
+            <td class="num muted">{{ i + 1 }}</td>
+            <td>
+              <b v-if="r.rulable">{{ r.name || '（模型未给名称）' }}</b>
+              <span v-else class="muted">{{ r.name || '（判定不可规则化）' }}</span>
+              <div class="row" style="gap: 4px; margin: 2px 0 0">
+                <span v-if="!r.rulable" class="tag t-na">不可成规则</span>
+                <span v-if="r.suspect.length" class="tag t-hit"
+                      :title="r.suspect.map(s => s.field + '=' + s.value).join('；')">
+                  数值存疑
+                </span>
+                <span v-if="r.truncated" class="tag t-pend">原文被截断</span>
+                <span v-if="r.review_state !== '待审'" class="tag t-pass">
+                  {{ r.review_state }}
+                </span>
+              </div>
+            </td>
+            <td style="font-size: 12px">{{ r.dim || '—' }}</td>
+            <td><span class="tag" :class="r.cls === '硬' ? 't-pass'
+                                          : r.cls === '软' ? 't-na' : 't-demo'">
+              {{ r.cls || '—' }}</span></td>
+            <td><span class="tag" :class="r.ctrl === '禁止' ? 't-hit' : 't-pend'">
+              {{ r.ctrl || '—' }}</span></td>
+            <td style="font-size: 12px">{{ r.risk || '—' }}</td>
+            <td style="font-size: 12px">{{ r.logic || '—' }}</td>
+            <!-- 缺口这一栏不许省：它说的是「这条制度现在还判不了什么」。
+                 缺口没补，规则落下去也是空转，而判定逻辑看起来却很完整。 -->
+            <td style="font-size: 12px" class="muted">{{ r.gap || '—' }}</td>
+            <td style="font-size: 11px">
+              {{ r.file_name }}
+              <div class="mono muted">{{ r.clause_no }}</div>
+              <!-- 出网留痕：这一条原文离开过本系统，发了多少字、哪个型号。
+                   草稿台账那一块去掉之后，这是页面上唯一还说得出这件事的地方。 -->
+              <div class="muted" style="font-size: 10px">
+                {{ r.model || '—' }} · 发送 {{ r.sent_chars }} 字
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="note" style="margin-bottom: 0">
+        共 <b>{{ ruleRowsShown.length }}</b> 条{{ onlyRulable ? '（已过滤掉不可成规则的）' : '' }}。
+        <b v-if="suspectRows.length">「数值存疑」那 {{ suspectRows.length }} 条是
+        草稿里出现了条款原文里找不到的阈值——采纳前必须回查原文。</b>
+        <b v-if="truncRows.length">「原文被截断」那 {{ truncRows.length }} 条，
+        模型没看完整条原文，判定逻辑可能不全。</b>
+      </div>
+    </template>
+  </div>
 
   <!-- 规则明细：一行三块 —— 规则 / 出处 / 分类（标签）。**这一页的产物就是它** -->
   <div class="panel">
@@ -418,7 +544,15 @@ onUnmounted(stopPoll)
       <button :disabled="!!busy" @click="runDetail">
         {{ busy === 'detailrun' ? '映射中…' : '重跑列映射（不计费）' }}
       </button>
-      <input v-model="who" placeholder="审定署名" style="width: 110px" />
+      <!-- 署名空着，下面每一行的「采纳 / 驳回」就全是禁用态。
+           **这件事原来页面上一个字都没说**：按钮灰着、署名框在屏幕另一头，
+           看起来就是「功能坏了」。所以空的时候这里要显眼，
+           并且下面的行里给一条能点回来的提示。 -->
+      <input ref="whoInput" v-model="who"
+             :class="{ 'need-fill': !who }"
+             :placeholder="who ? '审定署名' : '审定署名（必填）'"
+             title="审定要留名：没有署名的审定在审计上等于没发生"
+             style="width: 130px" />
     </div>
     <table v-if="details.length">
       <thead>
@@ -508,10 +642,18 @@ onUnmounted(stopPoll)
                 {{ d.adopted_rule_id }}
               </div>
               <div v-if="d.review_state === '待审'" class="acts">
-                <button class="mini" :disabled="!!busy || !who"
-                        @click="reviewDetail(d, '采纳')">采纳</button>
-                <button class="mini" :disabled="!!busy || !who"
-                        @click="reviewDetail(d, '驳回')">驳回</button>
+                <!-- 没署名时**不给灰按钮，给一条能点的提示**。
+                     灰按钮不解释自己为什么灰，看起来和坏了一样；
+                     点这条直接跳到上面的署名框，不用自己找。 -->
+                <a v-if="!who" href="#" class="need-who" @click.prevent="focusWho">
+                  填「审定署名」后可采纳/驳回 ↑
+                </a>
+                <template v-else>
+                  <button class="mini" :disabled="!!busy"
+                          @click="reviewDetail(d, '采纳')">采纳</button>
+                  <button class="mini" :disabled="!!busy"
+                          @click="reviewDetail(d, '驳回')">驳回</button>
+                </template>
               </div>
             </td>
           </tr>
@@ -536,6 +678,10 @@ onUnmounted(stopPoll)
                        style="width: 330px" />
                 <button class="mini" :disabled="!!busy || !who || !tagDraft.tag
                   || !tagDraft.why" @click="addTag">保存</button>
+                <!-- 打标签同样要署名，同样给原因，别让人对着灰按钮猜 -->
+                <a v-if="!who" href="#" class="need-who" @click.prevent="focusWho">
+                  还要填「审定署名」↑
+                </a>
               </div>
             </td>
           </tr>
@@ -624,42 +770,12 @@ onUnmounted(stopPoll)
         所以增量为 0 份时想继续跑草稿，用的是这个按钮。
       </div>
 
-      <!-- AI 草稿台账。**唯一的出网台账**，所以不能删只能收。
-           规则明细看的是整理后的产物；这里看的是模型原样返回的八要素，
-           外加「哪一条原文离开过本系统、发了多少字、有没有被截断、
-           哪个型号、第几次抽、数值核对过没有」——审计要的是这些。 -->
-      <h3 style="cursor: pointer; margin-top: 14px" @click="toggleDrafts">
-        {{ draftsOpen ? '▾' : '▸' }} AI 草稿台账（{{ drafts.length || '未加载' }}）
-      </h3>
-      <template v-if="draftsOpen">
-      <div v-for="d in drafts" :key="d.draft_id" class="panel" style="margin-top: 8px">
-        <div class="row" style="margin-bottom: 4px">
-          <b>{{ d.file_name }} · {{ d.clause_no }}</b>
-          <span class="tag" :class="d.review_state === '采纳' ? 't-pass'
-            : d.review_state === '驳回' ? 't-hit' : 't-na'">{{ d.review_state }}</span>
-          <span v-if="d.rulable === false" class="tag t-na">模型判定：不可规则化</span>
-          <span v-if="d.number_check.ok === false" class="tag t-block">数值存疑</span>
-          <span class="muted" style="font-size: 11px">
-            {{ d.model }} · {{ d.latency_ms }}ms · 发送 {{ d.sent_chars }} 字
-          </span>
-        </div>
-        <div v-if="d.number_check.ok === false" class="err">
-          <b>数值存疑</b>（草稿里的这些数字在条款原文中找不到）：
-          <span v-for="s in d.number_check.suspect" :key="s.field + s.value">
-            <code>{{ s.field }} = {{ s.value }}</code>
-          </span>
-        </div>
-        <table>
-          <tbody>
-            <tr v-for="(v, k) in d.draft" :key="k">
-              <td style="width: 110px"><b>{{ k }}</b></td>
-              <td>{{ v === null ? '（模型未给）' : v }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-        <div v-if="!drafts.length" class="muted">还没有草稿</div>
-      </template>
+      <!-- AI 草稿台账（逐条面板）已按用户要求去掉，只保留上面那张「规则清单」。
+           **数据一行没删**：doclib_draft 照旧逐条留痕（型号、发送字数、
+           是否截断、数值核对、第几次抽），接口 /api/extract/drafts 也还在，
+           去掉的只是这一处渲染。出网留痕里最该被看见的三样
+           （数值存疑 / 原文被截断 / 型号与发送字数）已经搬进清单的行里，
+           不是连同台账一起消失了。 -->
 
       <!-- 条款底账。**不是产物，是证据链的落点。**
            报告里那句「依据：XX第十四条『……』」就是从这儿来的；
@@ -713,6 +829,18 @@ onUnmounted(stopPoll)
 </template>
 
 <style scoped>
+/* 必填但还没填。**用警示色不用错误色**——它不是「填错了」，是「还没填」。 */
+.need-fill {
+  border-color: var(--pend, #d48806);
+  background: #fffbe6;
+}
+/* 没署名时顶替灰按钮的那条提示。灰按钮不解释自己为什么灰，
+   看起来和功能坏了一样——这条既说清原因，又能点回去填。 */
+.need-who {
+  font-size: 11px;
+  color: var(--pend, #d48806);
+  white-space: nowrap;
+}
 button.on { background: var(--brand); color: #fff; border-color: var(--brand); }
 .detailcell { background: #fafbfc; }
 /* 序号刻意做淡：它是「第几行」，不是编号，不该抢 detail_id 和行号的位置 */

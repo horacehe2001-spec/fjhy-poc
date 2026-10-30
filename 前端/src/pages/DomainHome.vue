@@ -3,13 +3,17 @@
  * 领域知识资产 · 落地页。点菜单组名进来的那一页。
  *
  * 两件事：
- *   ① 选领域、选实例。选择是**全局单例**（库里一行，所有人共用，
- *      换浏览器也一样），不是存在本地的偏好。
+ *   ① 选领域、选实例，以及**添加实例**。选择是**全局单例**（库里一行，
+ *      所有人共用，换浏览器也一样），不是存在本地的偏好。
  *   ② 显示当前实例的资产概览，让人一眼看出「现在这套资产有多大」。
  *
- * **口径必须写在页面上**：本期做的是「归属 + 展示」，接口**尚未按实例过滤**。
- * 所以下面那些数字是全库数字。把它们默认当成「当前实例筛出来的」，
- * 等有了第二个实例就会发现对不上——而那时已经说不清是从哪天开始错的。
+ * **口径变了，这段话跟着改**：原来写的是「本期只做归属+展示，接口尚未按实例
+ * 过滤，所以下面是全库数字」。2026-10-29 审核领域加了第二个实例（822港航）之后
+ * 做了真实隔离（迁移 0040/0041 + 各接口加 WHERE instance_id），
+ * 所以**制度文件/条款/规则/单据这几个数现在是当前实例的数**。
+ * 唯一还没隔离的是本体（ontology_* 表还没有 instance_id，两个实例共用同一份
+ * 本体投影，因为本体的源头是单一文件 本体_v0.1.yaml）——
+ * 这一条由接口的 scope_note 原样说出来，页面不替它圆场。
  *
  * 选完**不自动跳转**到某个栏目：跳转会让人以为「选领域」是个向导的第一步，
  * 而它其实是个随时可改的开关。
@@ -46,6 +50,40 @@ async function pick(domainId: string, instanceId?: string | null) {
   try {
     await setCurrent(domainId, instanceId)
     await loadOverview()
+  } catch (e) {
+    err.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    busy.value = ''
+  }
+}
+
+// ── 添加实例 ────────────────────────────────────────────────────────────────
+// 加在哪个领域下：**用当前选中的领域，不给用户再选一次**。这一页上领域已经是
+// 选中状态了，再出一个下拉让他选一遍，两处不一致时谁说得清建到哪去了。
+const adding = ref(false)
+const newLabel = ref('')
+const newNote = ref('')
+const addedTip = ref('')
+
+async function submitInstance() {
+  const did = current.value?.domain_id
+  if (!did || !newLabel.value.trim() || busy.value) return
+  busy.value = 'add'
+  err.value = ''
+  addedTip.value = ''
+  try {
+    const r = await api.domainAddInstance(did, newLabel.value.trim(),
+                                          newNote.value.trim() || undefined)
+    // 重新拉领域树：新实例要出现在上面的实例列表里。
+    // **不自动切过去**（后端也不切），所以概览数字不动——那是对的，
+    // 当前实例没变。提示里把这件事说明白，否则用户会以为"建了但没生效"。
+    await load(true)
+    adding.value = false
+    newLabel.value = ''
+    newNote.value = ''
+    addedTip.value = `已建好「${r.label}」（${r.instance_id}）。` +
+      '它里面是空的：制度文件 0、规则 0、发布版本 0。' +
+      '当前实例**没有**自动切过去——要用它，点一下上面的实例按钮。'
   } catch (e) {
     err.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -102,13 +140,33 @@ onMounted(async () => {
             </button>
             <!-- 没有实例时如实说，不显示一个空白区域让人以为没加载出来 -->
             <span v-if="!d.instances.length" class="muted" style="font-size: 13px">
-              「{{ d.label }}」领域下还没有实例。它是占位：结构上支持多领域，
-              但这个领域目前没有任何资产。
+              「{{ d.label }}」领域下还没有实例。点下面的「添加实例」建一个。
             </span>
           </template>
         </template>
+
+        <!-- 添加实例：只往**当前选中的领域**里加，不另给一个领域下拉 -->
+        <button v-if="!adding && current?.domain_id" class="pick add"
+                :disabled="!!busy" @click="adding = true">+ 添加实例</button>
+        <div v-if="adding" class="addbox">
+          <input v-model="newLabel" maxlength="40" placeholder="实例名称，如 822港航"
+                 @keyup.enter="submitInstance" />
+          <input v-model="newNote" maxlength="200" placeholder="备注（可不填）" />
+          <div class="addact">
+            <button class="pick" :disabled="!newLabel.trim() || !!busy"
+                    @click="submitInstance">建到「{{ current?.domain_label }}」下</button>
+            <button class="pick" :disabled="!!busy"
+                    @click="adding = false; newLabel = ''; newNote = ''">取消</button>
+          </div>
+          <div class="muted" style="font-size: 12px">
+            新实例**是空的**：制度文件、规则、本体、发布版本都为 0，
+            需要切过去之后自己上传制度文件、走抽取与采纳建立。不会克隆现有实例的资产。
+          </div>
+        </div>
       </div>
     </div>
+
+    <div v-if="addedTip" class="note" style="margin-top: 10px">{{ addedTip }}</div>
 
     <div v-if="err" class="err">{{ err }}</div>
 
@@ -209,6 +267,28 @@ onMounted(async () => {
   font-weight: 600;
 }
 .pick:disabled { opacity: .5; cursor: not-allowed; }
+/* 「添加实例」是建东西的动作，和「选哪个实例」不是一类，所以用虚线框区分开：
+   实线=切换（会影响所有人看到的数据），虚线=新建（不影响当前选择）。 */
+.pick.add {
+  border-style: dashed;
+  color: var(--muted);
+}
+.addbox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px dashed var(--line, #e3e8ef);
+  border-radius: 6px;
+  max-width: 340px;
+}
+.addbox input {
+  padding: 6px 10px;
+  border: 1px solid var(--line, #e3e8ef);
+  border-radius: 4px;
+  font-size: 14px;
+}
+.addact { display: flex; gap: 6px; }
 .pick .n {
   font-size: 11px;
   color: var(--muted);

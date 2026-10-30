@@ -45,6 +45,51 @@ const dragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const dirInput = ref<HTMLInputElement | null>(null)
 
+/**
+ * 当前环境支不支持「按文件夹选」。
+ *
+ * **不支持时要禁用按钮并说明，不能留一个点了没反应的按钮。**
+ * 死按钮是最难查的一类故障：使用者无从判断是自己没点中、是页面卡了、
+ * 还是系统坏了，而界面什么线索都不给。宁可明说「这个浏览器做不到，
+ * 请用旁边那个」，也不要让人对着一个按钮反复点。
+ *
+ * webkitdirectory 是 Chrome/Edge/Firefox 都有的非标准属性，但部分内嵌
+ * 浏览器（办公软件自带的、WebView 壳子）把它摘掉了——那种环境下
+ * 属性探测为 false，正好能提前拦住。
+ */
+const canPickDir = typeof document !== 'undefined'
+  && 'webkitdirectory' in document.createElement('input')
+
+const dirHint = computed(() => canPickDir
+  ? '选中文件夹后，子目录里的文件会一起带上'
+  : '当前浏览器不支持按文件夹选择。请改用左边的「选择文件…」，'
+    + '或者把文件直接拖进来；文件已经在服务器上的话，用下面的「纳入服务器已有目录」更省事')
+
+/**
+ * 打开文件选择框。
+ *
+ * 原来这里写的是 `dirInput?.click()`。那个 `?.` 是个陷阱：ref 万一没拿到，
+ * 表达式安静地求值成 undefined，**界面上的表现就是「按钮点了没反应」**，
+ * 控制台也没有任何报错。失败必须说出来。
+ *
+ * 点之前再把 webkitdirectory 落到 DOM 属性上：模板里那个写法依赖框架
+ * 把静态属性翻译成 DOM 属性（Vue 对布尔属性确实是这么做的），
+ * 但这条翻译链不归我们管。直接设一次属性，结果就不依赖它了。
+ */
+function openPicker(el: HTMLInputElement | null, dir: boolean) {
+  if (!el) {
+    err.value = '文件选择框没能打开：页面可能没加载完整。刷新一次再试；'
+      + '如果刷新后还是这样，请把浏览器控制台（F12）里的红字发来'
+    return
+  }
+  if (dir) el.webkitdirectory = true
+  err.value = ''
+  el.click()
+}
+
+const pickFiles = () => openPicker(fileInput.value, false)
+const pickDir = () => openPicker(dirInput.value, true)
+
 /** 结果标签样式。七态各有各的颜色——合并颜色就等于合并了处置动作。 */
 const RESULT_CLS: Record<string, string> = {
   已入库: 't-pass',
@@ -139,24 +184,37 @@ async function send() {
          @dragover.prevent="dragging = true" @dragleave="dragging = false"
          @drop.prevent="drop">
       <div class="big">把制度文件拖到这里</div>
+      <!-- type="button" 是必需的：button 不写 type 时默认是 submit，
+           哪天这段被挪进 <form> 里，点一下会整页刷新而不是开选择框。 -->
       <div class="row" style="justify-content: center; margin: 10px 0 4px">
-        <button @click="fileInput?.click()">选择文件…</button>
-        <button @click="dirInput?.click()">选择整个文件夹…</button>
-        <button v-if="picked.length" @click="clearAll">清空待传</button>
+        <button type="button" @click="pickFiles">选择文件…</button>
+        <button type="button" :disabled="!canPickDir" :title="dirHint" @click="pickDir">
+          选择整个文件夹…
+        </button>
+        <button v-if="picked.length" type="button" @click="clearAll">清空待传</button>
       </div>
       <div class="muted" style="font-size: 12px">
-        选整个文件夹时，<b>子目录结构会一起保留</b>。
+        <template v-if="canPickDir">
+          选整个文件夹时，<b>子目录结构会一起保留</b>。
+        </template>
+        <b v-else style="color: var(--warn, #b45309)">{{ dirHint }}</b>
         <template v-if="limit">
           单份上限 <b>{{ limit.max_upload_bytes_text }}</b>，
           一次最多 <b>{{ limit.max_upload_files }}</b> 份。
         </template>
       </div>
-      <input ref="fileInput" type="file" multiple hidden
+      <!-- 这两个 input 用 .offscreen 挪出视口，**不用 hidden**：
+           display:none 的 file input 在部分内嵌浏览器里 .click() 不弹选择框，
+           而表现恰好是「按钮点了没反应」。挪到视口外则一直参与布局。 -->
+      <input ref="fileInput" class="offscreen" type="file" multiple tabindex="-1"
+             aria-hidden="true"
              @change="add(($event.target as HTMLInputElement).files);
                       ($event.target as HTMLInputElement).value = ''" />
       <!-- webkitdirectory：浏览器会给每个 File 一个 webkitRelativePath，
-           api.dlUpload 把它一并传给后端，于是子目录结构照样保留。 -->
-      <input ref="dirInput" type="file" multiple hidden webkitdirectory
+           api.dlUpload 把它一并传给后端，于是子目录结构照样保留。
+           属性在这里声明一次，openPicker() 点击前还会再设一次 DOM 属性。 -->
+      <input ref="dirInput" class="offscreen" type="file" multiple webkitdirectory
+             tabindex="-1" aria-hidden="true"
              @change="add(($event.target as HTMLInputElement).files);
                       ($event.target as HTMLInputElement).value = ''" />
     </div>
@@ -260,4 +318,16 @@ async function send() {
 }
 .drop.hot { border-color: var(--brand-light); background: #eef6ff; }
 .drop .big { font-size: 15px; font-weight: 600; color: var(--brand); }
+
+/* 代替 hidden：一个像素都不占，但**没有 display:none**。
+   见上面 input 那里的注释——display:none 的 file input 在某些内嵌浏览器里
+   .click() 不弹框，而那种失败在界面上和「按钮坏了」长得一模一样。 */
+.offscreen {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px; border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 </style>

@@ -206,8 +206,24 @@ onUnmounted(stopPoll)
             <td>
               <span v-if="c.last_action" class="tag t-na">已{{ c.last_action }}</span>
               <template v-else>
-                <button class="mini" :disabled="!!busy" @click="dispose(c, '暂缓')">暂缓</button>
-                <button class="mini" :disabled="!!busy" @click="dispose(c, '驳回')">驳回</button>
+                <!-- **采纳不在这一页做**，但入口要在这里。
+                     采纳会真的改 本体_v0.1.yaml，所以必须先看 YAML 补丁预览，
+                     而那套预览 UI 只有「业务本体 · 建立」那页有（两页读的是同一批
+                     候选，那页不带 kind 过滤，流程候选也在里面）。
+                     写两份采纳 UI 等于把一条会改源文件的写入路径复制一遍——不干。
+                     所以这里给直达链接，带上 cand_id 过去直接展开那一条，
+                     不用在 300 条里自己找。
+
+                     原来这事只写在表格上方一行小字里，一滚就看不见了，
+                     于是「有已采纳状态、却没有采纳按钮」看着就是功能缺了。 -->
+                <router-link :to="`/asset/biz?cand=${encodeURIComponent(c.cand_id)}`"
+                             class="goadopt" title="采纳要先看 YAML 补丁预览，在业务本体页做">
+                  去采纳 →
+                </router-link>
+                <div class="acts2">
+                  <button class="mini" :disabled="!!busy" @click="dispose(c, '暂缓')">暂缓</button>
+                  <button class="mini" :disabled="!!busy" @click="dispose(c, '驳回')">驳回</button>
+                </div>
               </template>
             </td>
           </tr>
@@ -373,6 +389,16 @@ onUnmounted(stopPoll)
 <style scoped>
 button.on { background: var(--brand); color: #fff; border-color: var(--brand); }
 button.mini { padding: 2px 7px; font-size: 12px; }
+/* 「去采纳」单独一行、排在暂缓/驳回上面：它是这一行最常要做的动作，
+   和两个处置按钮挤在一排会被当成第三个同级按钮。 */
+.goadopt {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+.acts2 { display: flex; gap: 4px; }
 tr.warn td { background: #fffafa; }
 .g { width: 100%; height: 360px; }
 .g .nid { font-size: 11px; text-anchor: middle; fill: var(--ink); font-weight: 600; }
