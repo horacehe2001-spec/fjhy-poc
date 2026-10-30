@@ -134,10 +134,22 @@ def _run_align(job, a, prev):
     # 否则下一个人会去调匹配算法，而该补的是规则清单的来源字段。
     und = fc.get("判不出", 0)
     unwritten = rc.get("来源未写明", 0)
-    a["note"] = ("判不出 %d 组、来源未写明 %d 条规则：规则清单的来源写的是类别代号"
-                 "（规则表/要点/制度…）而不是文件名，代号对不到唯一文件。"
-                 "**这是台账口径缺口，不是匹配算法的问题**" % (und, unwritten)) \
-        if (und or unwritten) else "两向都对齐，没有判不出的"
+    # 「来源未写明」里混了两类，**必须分开报**：一类是台账口径缺口（来源写成
+    # 类别代号，对不到文件），另一类是从人工驳回意见反向抽的规则——它们按设计
+    # 就没有制度出处，混在一起报等于把「做对的」也说成缺口，然后有人去「修」它。
+    non_policy = sum(1 for x in rev
+                     if x["state"] == "来源未写明"
+                     and "按设计没有制度条款出处" in (x["basis"] or ""))
+    gap = unwritten - non_policy
+    parts = []
+    if und or gap:
+        parts.append("判不出 %d 组、来源对不上 %d 条规则：规则清单的来源写的是"
+                     "类别代号（规则表/要点/制度…）而不是文件名，代号对不到唯一文件。"
+                     "**这是台账口径缺口，不是匹配算法的问题**" % (und, gap))
+    if non_policy:
+        parts.append("另有 %d 条规则来自人工驳回意见，**按设计没有制度出处**，"
+                     "不是缺口，不要去补条款号" % non_policy)
+    a["note"] = "；".join(parts) if parts else "两向都对齐，没有判不出的"
     _phase_done(a, "I", t0)
     a["cost"] = "规则引擎 · 不消耗"
     return {"forward": fc, "reverse": rc}

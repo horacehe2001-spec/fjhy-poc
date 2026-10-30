@@ -141,6 +141,13 @@ def align_forward(instance_id=None):
 
 
 # ── 规则 → 依据 ─────────────────────────────────────────────────────────────
+# source_clause.confidence 取这个值，表示这条规则**按设计没有制度条款出处**：
+# 它是从共享审核岗的真实人工驳回意见反向抽出来的。
+# 写进常量而不是在判断里写字面量，是为了让装载侧和对账侧共用同一个口径——
+# 两边各写一个字符串，改一边漏一边，台账就会悄悄说错话。
+NON_POLICY_SOURCE = "人工驳回"
+
+
 def align_reverse(instance_id=None):
     """→ [onto_rule_cover 行]。每条规则找不找得到制度出处。"""
     iid = _iid(instance_id)
@@ -161,13 +168,29 @@ def align_reverse(instance_id=None):
 
     out = []
     for r in db.query("""SELECT rule_id, version,
-                                source_clause->>'file'   AS src_file,
-                                source_clause->>'clause' AS src_clause
+                                source_clause->>'file'       AS src_file,
+                                source_clause->>'clause'     AS src_clause,
+                                source_clause->>'confidence' AS src_conf
                            FROM rule WHERE instance_id = %s AND version = 1
                            ORDER BY rule_id""", (iid,)):
         rid, code, cno = r["rule_id"], r["src_file"], r["src_clause"]
         hits = cited.get(rid) or []
-        if hits:
+        if r["src_conf"] == NON_POLICY_SOURCE:
+            # **这一支必须在前面**：从人工驳回意见反向抽出来的规则，来源
+            # 按设计就不是制度文件。走到下面任何一支都会写出一句假话
+            # （「来源写的是类别代号而不是文件名」——它写的是驳回意见编号，
+            # 代号这回事根本不存在），而 basis 是人要看的台账说明，
+            # 写错比不写更坏：它会让人去「修」一个本来就对的来源。
+            # state 仍用「来源未写明」是因为 ck_orc_state 只允许那五个值；
+            # 真正合适的是加第六个「非制度来源」，但那要改迁移、动发布闸的
+            # 口径，是项目决策，不在这里顺手做。
+            state = "来源未写明"
+            basis = ("来源是%s，**按设计没有制度条款出处**——"
+                     "它来自共享审核岗的真实驳回意见，不是从制度文字抽的。"
+                     "制度里没写但审核岗实际在拦的那些问题就归在这里，"
+                     "**不要去给它补条款号**。来源写的是：%s"
+                     % (code or "（未写）", cno or "（未写）"))
+        elif hits:
             only_table = all(h["split_strategy"] == "表格行" for h in hits)
             state = "仅规则表" if only_table else "有制度依据"
             basis = "%d 条条款引用了它：%s" % (

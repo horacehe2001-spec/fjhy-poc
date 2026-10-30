@@ -1,0 +1,509 @@
+{
+  "ok": true,
+  "merged": [
+    {
+      "name": "差旅行程地点一致性校验",
+      "dimension": "差旅",
+      "risk_class": "地点不符",
+      "rule_class": "mixed",
+      "control_type": "警告",
+      "scope": "差旅费报销单",
+      "logic": "比对出差日历、审批单回填内容及发票明细中的地点与日期信息，校验三者之间的一致性",
+      "need_fields": [
+        "出差日历",
+        "出差审批单",
+        "发票明细",
+        "审批单目的地",
+        "发票开具地点"
+      ],
+      "auto_judgeable": "partial",
+      "auto_blocker": "需依赖发票 OCR 识别及审批单文本解析能力以获取比对基准",
+      "merge_note": "因两版本均涉及非结构化单据解析，故保留 mixed 与 partial 保守判定，逻辑整合了日期与地点的双重校验要求",
+      "from_reasons": [
+        13,
+        14,
+        15,
+        21,
+        22,
+        27
+      ],
+      "_merged_from": [
+        "差旅行程信息一致性",
+        "差旅地点与日历一致性"
+      ]
+    },
+    {
+      "name": "票据报销完整性检查",
+      "dimension": "差旅",
+      "risk_class": "申报不全",
+      "rule_class": "soft",
+      "control_type": "警告",
+      "scope": "差旅报销单据",
+      "logic": "检查附件中的有效票据是否均已录入报销明细进行报销",
+      "need_fields": [
+        "附件清单",
+        "报销明细"
+      ],
+      "auto_judgeable": "no",
+      "auto_blocker": "无法自动关联附件票据与报销明细行",
+      "from_reasons": [
+        10
+      ],
+      "reason_quote": "动车票未报销",
+      "_batch": 1,
+      "merge_note": ""
+    },
+    {
+      "name": "差旅审批与票据时间匹配",
+      "dimension": "差旅",
+      "risk_class": "票单不符",
+      "rule_class": "mixed",
+      "control_type": "警告",
+      "scope": "差旅报销单",
+      "logic": "校验审批单出差日期范围是否与附件通知及发票明细日期一致",
+      "need_fields": [
+        "出差审批单日期",
+        "附件内容",
+        "发票明细日期"
+      ],
+      "auto_judgeable": "no",
+      "auto_blocker": "无法自动读取附件（如培训通知）中的具体日期范围",
+      "from_reasons": [
+        26
+      ],
+      "reason_quote": "按照培训通知体现出差时间应为 8.22-8.28",
+      "_batch": 3,
+      "merge_note": ""
+    },
+    {
+      "name": "差旅补充说明完整性",
+      "dimension": "差旅",
+      "risk_class": "说明不充分",
+      "rule_class": "soft",
+      "control_type": "警告",
+      "scope": "差旅报销单",
+      "logic": "检查特殊情形下补充说明区是否填写了必要信息（如住宿情况）",
+      "need_fields": [
+        "补充说明",
+        "出差天数"
+      ],
+      "auto_judgeable": "no",
+      "auto_blocker": "无法判断补充说明内容是否充分满足业务要求",
+      "from_reasons": [
+        26
+      ],
+      "reason_quote": "请在补充说明写明期间住宿情况",
+      "_batch": 3,
+      "merge_note": ""
+    },
+    {
+      "name": "代报授权合规性检查",
+      "dimension": "差旅",
+      "risk_class": "越权代办",
+      "rule_class": "mixed",
+      "control_type": "警告",
+      "scope": "代报差旅费单据",
+      "logic": "校验报销人与费用承担人是否一致，不一致时是否有授权",
+      "need_fields": [
+        "报销人",
+        "费用承担人",
+        "授权书"
+      ],
+      "auto_judgeable": "partial",
+      "auto_blocker": "缺少授权流程状态或授权书影像识别能力",
+      "from_reasons": [
+        25
+      ],
+      "reason_quote": "代报个人差旅费，请授权后代报",
+      "_batch": 3,
+      "merge_note": ""
+    },
+    {
+      "name": "差旅往返票据完整性",
+      "dimension": "差旅",
+      "risk_class": "附件缺失",
+      "rule_class": "mixed",
+      "control_type": "警告",
+      "scope": "差旅费报销单",
+      "logic": "若申报往返差旅，检查去程票据是否缺失，缺失时检查补充说明区是否有备注",
+      "need_fields": [
+        "票据附件",
+        "补充说明区"
+      ],
+      "auto_judgeable": "partial",
+      "auto_blocker": "缺少对补充说明区文本内容的语义分析能力",
+      "from_reasons": [
+        18
+      ],
+      "reason_quote": "差旅费仅有返程车票，无去程车票，请在补充说明区备注说明去程用车情况",
+      "_batch": 2,
+      "merge_note": ""
+    },
+    {
+      "name": "业务招待场所票面一致性",
+      "dimension": "接待",
+      "risk_class": "场所票面不一致",
+      "rule_class": "soft",
+      "control_type": "警告",
+      "scope": "业务招待费报销单",
+      "logic": "校验业务招待/接待清单上的场所名称与发票开票场所名称是否一致",
+      "need_fields": [
+        "业务招待清单",
+        "发票影像"
+      ],
+      "auto_judgeable": "partial",
+      "auto_blocker": "缺少发票及清单 OCR 识别能力",
+      "from_reasons": [
+        17,
+        20
+      ],
+      "reason_quote": "业务招待费清单场所要与发票开票场所一致，请修改",
+      "_batch": 2,
+      "merge_note": ""
+    },
+    {
+      "name": "接待明细填列规范性",
+      "dimension": "接待",
+      "risk_class": "明细录入不规范",
+      "rule_class": "mixed",
+      "control_type": "警告",
+      "scope": "接待报销单",
+      "logic": "校验招待明细是否按接待日期分开填列，未合并简餐",
+      "need_fields": [
+        "招待明细日期",
+        "发票日期"
+      ],
+      "auto_judgeable": "partial",
+      "auto_blocker": "需要人工确认简餐是否应按日期拆分",
+      "from_reasons": [
+        28
+      ],
+      "reason_quote": "简餐请按照接待日期，在招待明细区分开进行填列",
+      "_batch": 3,
+      "merge_note": ""
+    },
+    {
+      "name": "接待明细三方一致性",
+      "dimension": "接待",
+      "risk_class": "票单不符",
+      "rule_class": "soft",
+      "control_type": "警告",
+      "scope": "业务接待报销单据",
+      "logic": "核对系统招待明细区内容与审批单及附件清单三者信息是否一致",
+      "need_fields": [
+        "系统明细",
+        "审批单",
+        "附件清单"
+      ],
+      "auto_judgeable": "no",
+      "auto_blocker": "需人工比对系统数据与纸质单据内容",
+      "from_reasons": [
+        2
+      ],
+      "reason_quote": "请核对系统的招待明细区的内容与每张审批单及清单，三个地方一致再提单",
+      "_batch": 1,
+      "merge_note": ""
+    },
+    {
+      "name": "入账期间准确性校验",
+      "dimension": "通用",
+      "risk_class": "入账期间错误",
+      "rule_class": "mixed",
+      "control_type": "警告",
+      "scope": "所有报销单据",
+      "logic": "检查入账期间是否符合公司财务政策要求，并校验入账期间、付款用途月份与业务发生日期、发票日期或当前期间是否匹配",
+      "need_fields": [
+        "入账期间",
+        "业务发生日期",
+        "付款用途",
+        "发票日期"
+      ],
+      "auto_judgeable": "partial",
+      "auto_blocker": "缺少明确的入账期间判定标准（如是否允许跨月）",
+      "merge_note": "因版本 3 指出缺乏明确跨月判定标准需人工介入，故 rule_class 取 mixed，auto_judgeable 取 partial，逻辑合并了政策符合性及多日期字段匹配要求",
+      "from_reasons": [
+        9,
+        16,
+        17,
+        22,
+        23,
+        24,
+        25,
+        29
+      ],
+      "_merged_from": [
+        "入账期间准确性校验",
+        "入账期间与时间准确性",
+        "入账期间准确性校验"
+      ]
+    },
+    {
+      "name": "审批单关键要素完整性",
+      "dimension": "通用",
+      "risk_class": "审批单要素缺失",
+      "rule_class": "soft",
+      "control_type": "警告",
+      "scope": "差旅及接待类审批单",
+      "logic": "检查审批单图片中姓名、职务、签字、日期、用车用餐情况、酒水规格等字段是否填写完整",
+      "need_fields": [
+        "审批单图片",
+        "业务类型"
+      ],
+      "auto_judgeable": "no",
+      "auto_blocker": "需人工读取审批单图片文字内容",
+      "from_reasons": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "reason_quote": "出差审批单未体现 25 号的用餐情况及用车情况",
+      "_batch": 1,
+      "merge_note": ""
+    },
+    {
+      "name": "审批流程时效性检查",
+      "dimension": "通用",
+      "risk_class": "审批流程滞后",
+      "rule_class": "hard",
+      "control_type": "警告",
+      "scope": "所有报销单据",
+      "logic": "校验审批完成时间是否晚于提交时间或超过规定审批时限",
+      "need_fields": [
+        "审批完成时间",
+        "单据提交时间"
+      ],
+      "auto_judgeable": "yes",
+      "auto_blocker": "",
+      "from_reasons": [
+        20
+      ],
+      "reason_quote": "业务审批清单，审批流程滞后",
+      "_batch": 2,
+      "merge_note": ""
+    },
+    {
+      "name": "异常事项说明充分性",
+      "dimension": "通用",
+      "risk_class": "说明不充分",
+      "rule_class": "mixed",
+      "control_type": "警告",
+      "scope": "存在日期、主体或流程异常的单据",
+      "logic": "当发票与审批日期不一致、收付主体不一致或审批滞后时，检查补充说明栏是否有原因备注",
+      "need_fields": [
+        "发票日期",
+        "审批日期",
+        "报销人",
+        "收款人",
+        "审批时间",
+        "补充说明"
+      ],
+      "auto_judgeable": "partial",
+      "auto_blocker": "无法判断说明内容的合理性与真实性",
+      "from_reasons": [
+        1,
+        6,
+        7
+      ],
+      "reason_quote": "接待日期为 2.6 日，发票日期为 2.9 日，请说明不一致的原因",
+      "_batch": 1,
+      "merge_note": ""
+    },
+    {
+      "name": "附件缺失与完整性综合校验",
+      "dimension": "通用",
+      "risk_class": "附件缺失",
+      "rule_class": "mixed",
+      "control_type": "警告",
+      "scope": "所有报销单据及涉及附件上传的单据",
+      "logic": "根据业务类型或费用类型判断必传附件（如车票、审批单、通知、订单等）是否齐全，缺失则触发警告",
+      "need_fields": [
+        "附件清单",
+        "业务类型",
+        "费用类型"
+      ],
+      "auto_judgeable": "partial",
+      "auto_blocker": "无法自动识别附件内容是否与业务场景匹配，且依赖费用类型与必传附件类型的映射配置完整性",
+      "merge_note": "逻辑合并了按业务类型和费用类型判断必传附件的情形，rule_class 和 auto_judgeable 保持保守的 mixed/partial，因附件内容相关性需人工复核",
+      "from_reasons": [
+        3,
+        5,
+        6,
+        11,
+        12,
+        19
+      ],
+      "_merged_from": [
+        "附件缺失检查",
+        "附件资料完整性校验"
+      ]
+    }
+  ],
+  "reasons": [
+    {
+      "no": 1,
+      "bill_no": "FJPG-BX2603110060",
+      "text": "其他,1.业务接待审批单中场所为发票上的地点 2.业务接待清单中联系人要写职务；场所为发票上的地点；酒水明细中要写明多少毫升/瓶；陪餐人数要写明每人姓名、职务 3.接待日期为2.6日，发票日期为2.9日，请说明不一致的原因 4.事由最好完善下"
+    },
+    {
+      "no": 2,
+      "bill_no": "FJPG-BX2603230510",
+      "text": "其他,1、招待明细区，需按审批单上接待时间逐笔逐项录入，共9笔。陪同名单人员姓名不能为空。\n2、附件区简餐接待审批单，部分就餐对象没有写姓名的，要完善。不能只填单位3人。\n3、最后，请核对系统的招待明细区的内容与每张审批单及清单，三个地方一致再提单。"
+    },
+    {
+      "no": 3,
+      "bill_no": "FJPG-BX2603240507",
+      "text": "补充附件"
+    },
+    {
+      "no": 4,
+      "bill_no": "FJPG-BX2603270004",
+      "text": "1.出差审批单未体现25号的用餐情况及用车情况\n2.出差审批未体现出差人回填情况（签字及日期）"
+    },
+    {
+      "no": 5,
+      "bill_no": "FJPG-BX2603300348",
+      "text": "附件不全,补充去程动车票并确认支付区收款银行"
+    },
+    {
+      "no": 6,
+      "bill_no": "FJPG-BX2604070969",
+      "text": "附件不全,其他,1.烦请补充3.18用车情况 2.请在补充说明区说明报销人和收款人不一致的原因"
+    },
+    {
+      "no": 7,
+      "bill_no": "FJPG-BX2604160034",
+      "text": "其他,审批滞后，请在补充说明栏备注原因"
+    },
+    {
+      "no": 8,
+      "bill_no": "FJPG-BX2604240133",
+      "text": "其他,酒水请标注出规格"
+    },
+    {
+      "no": 9,
+      "bill_no": "FJPG-BX2604260325",
+      "text": "其他,请核实入账期间"
+    },
+    {
+      "no": 10,
+      "bill_no": "FJPG-BX2605060464",
+      "text": "其他,动车票未报销"
+    },
+    {
+      "no": 11,
+      "bill_no": "FJPG-BX2605190289",
+      "text": "附件不全,请补充上传活动通知"
+    },
+    {
+      "no": 12,
+      "bill_no": "FJPG-BX2606011481",
+      "text": "附件上传培训通知"
+    },
+    {
+      "no": 13,
+      "bill_no": "FJPG-BX2606050495",
+      "text": "其他,出差审批单需补充5.25日用餐与用车情况、且发票明细区地点都改为上海"
+    },
+    {
+      "no": 14,
+      "bill_no": "FJPG-BX2606050568",
+      "text": "其他,修改日历区最后一天出差地为上海"
+    },
+    {
+      "no": 15,
+      "bill_no": "FJPG-BX2606101698",
+      "text": "出差日历选莆田、补充审批单下面回填日期···"
+    },
+    {
+      "no": 16,
+      "bill_no": "FJPG-BX2606221801",
+      "text": "付款用途处月份错误，应修改为5月。"
+    },
+    {
+      "no": 17,
+      "bill_no": "FJPG-BX2606240151",
+      "text": "其他,（1）入账期间2026-07，请修改；\n（2）业务招待费清单场所要与发票开票场所一致，请修改"
+    },
+    {
+      "no": 18,
+      "bill_no": "FJPG-BX2607022137",
+      "text": "差旅费仅有返程车票，无去程车票，请在补充说明区备注说明去程用车情况。"
+    },
+    {
+      "no": 19,
+      "bill_no": "FJPG-BX2607162026",
+      "text": "附件不全,请提供机票订单信息。"
+    },
+    {
+      "no": 20,
+      "bill_no": "FJPG-BX2607162084",
+      "text": "2个问题1.接待清单场所应与发票抬头一致2.业务审批清单，审批流程滞后"
+    },
+    {
+      "no": 21,
+      "bill_no": "FJPG-BX2607240109",
+      "text": "其他,日历区7月23日地点改为厦门"
+    },
+    {
+      "no": 22,
+      "bill_no": "FJPG-BX2607280255",
+      "text": "其他,1.差旅往返起止地点不一致，请在补充说明区说明具体情况；2.请将入账期间修改为8月"
+    },
+    {
+      "no": 23,
+      "bill_no": "FJPG-BX2607310058",
+      "text": "其他,请修改入账期间到8月份"
+    },
+    {
+      "no": 24,
+      "bill_no": "FJPG-BX2608250106",
+      "text": "其他,入账期间修改为9月"
+    },
+    {
+      "no": 25,
+      "bill_no": "FJPG-BX2608272347",
+      "text": "其他,1.代报个人差旅费，请授权后代报；2.若明天修改提交，请修改入账期间为9月"
+    },
+    {
+      "no": 26,
+      "bill_no": "FJPG-BX2608311795",
+      "text": "其他,1.按照培训通知体现出差时间应为8.22-8.28，出差审批单仅体现8.22、8.28两天出差情况；2.单据内发票明细栏需对应体现8.22-8.28出差情况；3.请在补充说明写明期间住宿情况"
+    },
+    {
+      "no": 27,
+      "bill_no": "FJPG-BX2609140066",
+      "text": "其他,日历区9.11出差地点请选择出差地厦门"
+    },
+    {
+      "no": 28,
+      "bill_no": "FJPG-BX2609201921",
+      "text": "其他,简餐请按照接待日期，在招待明细区分开进行填列。"
+    },
+    {
+      "no": 29,
+      "bill_no": "FJPG-BX2609232894",
+      "text": "其他,请核实入账期间"
+    }
+  ],
+  "merge_seconds": [
+    48.0,
+    40.1,
+    28.8
+  ],
+  "model": "qwen3.5-122b-a10b",
+  "provenance": {
+    "抽取批次秒数": [
+      88.2,
+      78.3,
+      82.3
+    ],
+    "送出字数": 1775,
+    "合并秒数": [
+      48.0,
+      40.1,
+      28.8
+    ],
+    "原始条数": 18
+  }
+}
