@@ -103,7 +103,8 @@ def test_闭集合内部前缀重叠按长名优先():
     # 「岑柏舟」必须整体脱成「林**」，不能先被「岑柏」切成「林*禾」
     assert mask.mask_free_text("岑柏舟参加培训") == "林**参加培训"
     assert mask.mask_free_text("岑柏参加培训") == "林*参加培训"
-    mask.set_name_set(mask._SEED_NAMES)       # 还原，避免污染后续用例
+    mask.refresh_names()   # 还原成运行期真实名单；**不要还原成内置名单**
+    #                        （那会把后面所有用例钉在一个假的小集合上）
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -226,7 +227,7 @@ def test_斜杠复合格式两种顺序都要脱对姓名():
         c = mask.mask_name("aiAudit/null")           # 两侧都不是纯数字
         assert c.endswith("/null"), c
     finally:
-        mask.set_name_set(mask._SEED_NAMES)
+        mask.refresh_names()
 
 
 def test_标识里嵌了姓名时位置型规则不许漏():
@@ -243,7 +244,7 @@ def test_标识里嵌了姓名时位置型规则不许漏():
         leaks = mask.find_leaks(out)
         assert not leaks, "仍有泄露：%s（脱敏后 %s）" % (leaks, out)
     finally:
-        mask.set_name_set(mask._SEED_NAMES)
+        mask.refresh_names()
 
 
 def test_真实快照脱敏后不得有泄露():
@@ -296,6 +297,6 @@ def test_白名单字段不做数字模式检查但仍查姓名():
     try:
         assert mask.find_leaks({"bill_no": "BX-乐知行-001"})
     finally:
-        mask.set_name_set(mask._SEED_NAMES)
+        mask.refresh_names()
     # 非白名单字段里的长数字串照旧要报
     assert mask.find_leaks({"some_field": "6229081132553605"})

@@ -37,6 +37,7 @@ import io
 import json
 import re
 import threading
+import time
 
 from . import config
 
@@ -110,38 +111,192 @@ def mask_mobile(s):
 # ─────────────────────────────────────────────────────────────────────────────
 # M01 姓名（字段级）/ M06 自由文本里的姓名（闭集合）
 # ─────────────────────────────────────────────────────────────────────────────
-# 闭集合的来源优先级：
-#   1) 运行期从库里取（employee.name + expense_bill 的提单人/报账人 + 审批人）
-#   2) 取不到时用种子名单（来自 40 张样本，仅用于离线测试与演示）
 # **不做通用姓名模式匹配**：单位名「闽运长乐公交公司」「厦门海隆」都是中文短词，
 # 任何「2~3 个汉字的人名模式」都会把它们打掉。实测闭集合对 19 个单位名/部门名
 # 误伤 0 个。代价是闭集合要随数据更新——这个代价必须付。
+#
+# 闭集合怎么来，这里有两处口径是 2026-10-31 改掉的，改的原因写在下面，别改回去：
+#
+# 【改动一】原来写的是「优先从库里取，取不到用种子名单」，但**第 1 条从来没有
+#   实现**：set_name_set() 全项目只被 mask.py 自己用 _SEED_NAMES 调过一次，
+#   库里的真实姓名从未进过闭集合。后果是第二实例「822港航」14 个员工姓名在
+#   所有出口原样输出；而 find_leaks() 用的是同一个闭集合，所以自检也看不见
+#   ——闸和自检一起瞎，测试全绿。现在改成**惰性从库里取**（见 _ensure），
+#   不挂在任何启动钩子上：挂钩子的闸迟早会碰上没走那条路的入口（CLI、
+#   pytest、后台任务），这个项目已经为此栽过一次。
+#
+# 【改动二】种子名单和库里的名单是**并集**，不是二选一。原口径「取到库就不用
+#   种子」会在取到库的那一刻把种子里的 15 个真人丢掉——他们是 fjhy 的真人，
+#   丢了就是新开一个洞。宁可多脱，不可少脱。
 _SEED_NAMES = [
     "甘梓宁", "宓淑仪", "幸婉如", "蓝维安", "岑柏", "乐知行", "宿白", "逯承宇",
     "冼芷清", "宦允文", "笪澜生", "沃明远", "璩砺川", "郗岱", "鄢岚",
 ]
+
+# 只出现在自由文本里、**任何结构化姓名列都查不到**的真人。
+# 已知的一类是**代报单的被代报人**：FJPG-BX2607022137 由阙玥宁代报，
+# 被代报人「靳纭芷」只写在 expense_bill.summary 里（「靳纭芷莆田差旅费」），
+# submitter_no/payee/bill_traveler 全都没有她——所以 names_from_db() 按构造
+# 取不到，verify_name_coverage() 也查不到（它只扫姓名列）。
+#
+# 为什么不做自动扫描：试过「把摘要脱敏后剩下的汉字串当候选」，29+69 张单的
+# 摘要里出来 108 种候选，真名只有 1 个，其余全是单位名和业务词
+# （厦门轮船公司、闽运长乐公交公司、参加集团审计……）。107:1 的噪音比，
+# 这种报告没人会看第二次，等于没有。宽规则只配用来报告，而这个宽度连报告
+# 都不配——所以这里用显式名单，宁可要「要手工维护」这个代价。
+#
+# **根因在装载侧**：代报单的被代报人本该作为 employee 入库（822港航 的导出
+# 里没给她的工号，这是客户数据的缺口，已记在数据需求清单）。等补齐了，
+# 这个名字会自动从 employee.name 进闭集合，到时候可以从这里删掉。
+# 新装载的数据如果又出现这种单，要往这里加——verify_name_coverage() 帮不了你。
+_FREETEXT_ONLY_NAMES = [
+    "靳纭芷",
+]
+
+# 姓名来源列分两类，**解析方式不一样，别合并成一张表**：
+#   纯姓名列：整个值就是一个人名，原样收（不限字数，4 字姓名也要收得到）
+#   复合列  ：值是「工号/姓名」这类拼接，要切开再挑（见 _name_tokens）
+_PURE_NAME_COLS = (
+    ("employee", "name"),
+    ("bill_traveler", "name"),
+    ("hotel_invoice", "guest_name"),
+    ("expense_bill", "standard_basis_person"),
+)
+_COMPOSITE_NAME_COLS = (
+    ("expense_bill", "payee"),            # 姓名/工号
+    ("approval_record", "approver"),      # 工号/姓名，也有「姓名/工号 撤回单据」
+)
+
+# 内置名单 = 种子（40 张样本里的人）+ 自由文本专有（代报单的被代报人）。
+# 两份分开定义、合起来用：来源和维护方式不一样，合并成一个列表就看不出
+# 谁该在什么条件下删掉。
+_BUILTIN_NAMES = _SEED_NAMES + _FREETEXT_ONLY_NAMES
+
+_RE_CN_ONLY = re.compile(r"^[一-龥]{2,}$")
+# 复合列里只收 2~3 字：实测复合值里混着 4 字动作词「撤回单据」和 4 字演示占位
+# 「演示审核」，收进闭集合就会把界面上所有「撤回单据」打成星号——这是误报，
+# 和漏报一样致命。纯姓名列不受这条限制，因为那一列按定义不会混进动作词。
+_RE_CN_SHORT = re.compile(r"^[一-龥]{2,3}$")
+
 _NAMES = None
 _NAMES_SORTED = None
+_NAMES_AT = 0.0
+_NAMES_SRC = "未初始化"
+_PINNED = False
+# 库里新增了人（导入新实例的单据）之后，闭集合必须跟上。做法是定时过期而不是
+# 「写入时失效」：失效钩子要挂在每一条写路径上，漏一条就是一个静默的漏报窗口。
+_NAMES_TTL_S = 60.0
+
+
+def _name_tokens(raw):
+    """从复合列的值里取出姓名段。
+
+    实测这一列有四种写法，顺序不固定、还可能黏着动作词：
+        1000536/黄露琳          工号/姓名
+        岑柏/1000507 撤回单据    姓名/工号 + 空格 + 动作词
+        林若琪撤回              姓名直接黏着动作词，**没有分隔符**
+        aiAudit/null           账号/空
+    只收「切开后本身就是 2~3 个汉字」的 token。黏着动作词的那种收不到
+    （「林若琪撤回」是 5 个字），靠的是同一个人在别处有干净写法
+    （1000520/林若琪）兜住——这不是碰巧，装载程序两处写的是同一份名单。
+    真有谁只以黏着形式出现，verify_name_coverage() 会把它报出来，
+    而不是静悄悄放过。
+    """
+    for part in re.split(r"[/、,，;；\s]+", raw or ""):
+        part = part.strip()
+        if part and _RE_CN_SHORT.match(part):
+            yield part
+
+
+def names_from_db():
+    """从库里取真实姓名闭集合。
+
+    **不按实例过滤**：一条真名在哪个实例都是真名，脱敏是安全网，
+    按实例切只会切出漏洞——切错一次，另一个实例的人就裸着。
+    """
+    from . import db  # 延迟导入：mask 要能在没有库的环境里被引入（纯正则单测）
+
+    out = set()
+    for t, c in _PURE_NAME_COLS:
+        sql = "SELECT DISTINCT %s AS v FROM %s WHERE %s IS NOT NULL" % (c, t, c)
+        for r in db.query(sql):
+            v = (r["v"] or "").strip()
+            if _RE_CN_ONLY.match(v):
+                out.add(v)
+    for t, c in _COMPOSITE_NAME_COLS:
+        sql = "SELECT DISTINCT %s AS v FROM %s WHERE %s IS NOT NULL" % (c, t, c)
+        for r in db.query(sql):
+            out.update(_name_tokens(r["v"]))
+    return out
 
 
 def set_name_set(names):
-    """由运行时在启动后注入真实姓名闭集合。"""
-    global _NAMES, _NAMES_SORTED
+    """手工钉住闭集合，**从此 TTL 不再自动刷新**，直到有人调 refresh_names()。
+
+    为什么要钉住：不钉的话，手工注入的小名单会在 TTL 到期时被库里的名单
+    悄悄盖掉，用例就变成「有时过有时不过」的随机失败。
+    用完必须调 refresh_names() 还原——**不要用 set_name_set(_BUILTIN_NAMES)
+    还原**，那会把后面所有用例钉在 16 个人的内置名单上，库里的人全不在了，
+    于是后面任何「真人名该脱的照样脱」的用例都在一个假的小集合上跑。
+    这个项目在「当前实例」那个全局单例上已经栽过同样的跟头。
+    """
+    global _NAMES, _NAMES_SORTED, _PINNED
+    _PINNED = True
     with _LOCK:
         _NAMES = sorted({n.strip() for n in names if n and len(n.strip()) >= 2})
         # 长名优先：否则「岑柏」会先把「岑柏X」的前两个字替换掉，剩一个字裸露
         _NAMES_SORTED = sorted(_NAMES, key=len, reverse=True)
 
 
+def _ensure(force=False):
+    """惰性保证闭集合是新的。**不要把这个函数挪到启动钩子里**（见上方改动一）。"""
+    global _NAMES_AT, _NAMES_SRC
+    if _PINNED and not force:
+        return
+    now = time.monotonic()
+    if not force and _NAMES is not None and (now - _NAMES_AT) < _NAMES_TTL_S:
+        return
+    try:
+        got = names_from_db()
+    except Exception as e:
+        if _NAMES is not None:
+            # 已经有一份（含库里的人），取不到新的就**保留旧的**，
+            # 绝不退化成更小的种子名单——那是把已经堵上的洞重新打开。
+            _NAMES_AT = now
+            _NAMES_SRC += "；刷新失败(%s)，仍用上一份" % type(e).__name__
+            return
+        got, src = set(), "退回内置名单 %d 人（取库失败：%s）" % (
+            len(_BUILTIN_NAMES), type(e).__name__)
+    else:
+        src = "库 %d 人 ∪ 内置 %d 人" % (len(got), len(_BUILTIN_NAMES))
+    set_name_set(set(_BUILTIN_NAMES) | got)
+    _NAMES_AT = now
+    _NAMES_SRC = src
+
+
+def refresh_names():
+    """解除钉住并立刻重取闭集合。
+    装载完新实例的人员数据后调它，不用等 TTL；测试里用它还原。"""
+    global _PINNED
+    _PINNED = False
+    _ensure(force=True)
+    return list(_NAMES)
+
+
+def name_set_source():
+    """闭集合是从哪来的、几个人。给运行期自检和排障用：
+    「退回内置名单」出现在日志里就等于有人在裸奔，要当故障看，不是提示。"""
+    _ensure()
+    return _NAMES_SRC
+
+
 def name_set():
-    if _NAMES is None:
-        set_name_set(_SEED_NAMES)
+    _ensure()
     return list(_NAMES)
 
 
 def _names_sorted():
-    if _NAMES_SORTED is None:
-        set_name_set(_SEED_NAMES)
+    _ensure()
     return _NAMES_SORTED
 
 
@@ -418,6 +573,45 @@ def find_leaks(obj):
 
     walk(obj, "$")
     return hits
+
+
+# 这些词出现在姓名列里但**不是人名**，脱敏后它们理应原样留着。
+# 列出来是为了让 verify_name_coverage 能把「真的漏了一个人」和
+# 「这本来就不是人名」分开——否则自检会报一堆噪音，然后没人再看它。
+_NON_NAME_IN_NAME_COLS = ("撤回单据", "撤回", "演示审核", "null")
+
+
+def verify_name_coverage():
+    """**反向**自检：直接去姓名来源列里查，有没有哪个真名没进闭集合。
+
+    为什么必须有这个函数：find_leaks() 查泄露用的是**同一个闭集合**，
+    闭集合漏了谁，find_leaks 就看不见谁。2026-10-31 之前整个项目就栽在
+    这上面——822港航 14 个人全在裸奔，而脱敏测试一条不红。
+    用闸自己的规则去验闸，验的是「规则有没有被执行」，不是「规则对不对」。
+
+    返回 [(表.列, 原值, 脱敏后仍剩下的汉字片段)]，空列表表示源列已全覆盖。
+    """
+    from . import db
+
+    _ensure()
+    out = []
+    for t, c in _PURE_NAME_COLS + _COMPOSITE_NAME_COLS:
+        sql = "SELECT DISTINCT %s AS v FROM %s WHERE %s IS NOT NULL" % (c, t, c)
+        for r in db.query(sql):
+            raw = (r["v"] or "").strip()
+            if not raw:
+                continue
+            left = mask_free_text(raw)
+            for w in _NON_NAME_IN_NAME_COLS:
+                left = left.replace(w, "")
+            # **残留 1 个汉字是对的，不是漏**：脱敏按设计保留姓氏
+            # （「张灵」→「张*」）。只有连着 2 个及以上汉字还站着，
+            # 才说明这个名字整体没进闭集合。第一版没区分，报了 116 处
+            # 全是姓氏，噪音盖住信号——自检报假阳性，下次就没人看它了。
+            rest = [s for s in re.findall(r"[一-龥]+", left) if len(s) >= 2]
+            if rest:
+                out.append(("%s.%s" % (t, c), raw, "".join(rest)))
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
