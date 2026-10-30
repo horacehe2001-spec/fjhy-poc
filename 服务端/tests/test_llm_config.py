@@ -597,3 +597,158 @@ def test_启停不会顺带改掉别的字段(tmp_cfg):
                                    base_url, api_key_mask FROM llm_config
                             WHERE config_id=%s""", (cid,))
     assert before == after, "翻开关改掉了别的字段：%s -> %s" % (before, after)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 各用途的默认型号策略（config/llm_presets.yaml 的 purpose_defaults）
+# ─────────────────────────────────────────────────────────────────────────────
+# 为什么要有这一段：llm_config 那几条是人在界面上建的、带加密 API Key，
+# 不在仓库里也不该在。于是「哪个用途该用哪个型号」这个结论每次重建库都会丢。
+# 2026-10-31 丢过一次：extract 的默认是 qwen3.8-max-0902，而它在 240s 的
+# timeout 里跑不完一次规则抽取（连试三次全超时），排查花的时间远超配置本身。
+def test_默认型号策略每条都写清了为什么():
+    """只写「用 X 别用 Y」没有用——下一个人不知道能不能改。
+    必须带实测依据，否则半年后没人敢动它，也没人知道它是不是还成立。"""
+    from app.llm import presets
+    plan = presets.purpose_defaults()
+    assert plan, "purpose_defaults 是空的"
+    for it in plan:
+        assert it["purpose"] and it["prefer_model"]
+        assert len(it["why"]) > 40, "%s 的理由太短，看不出依据：%r" % (
+            it["purpose"], it["why"])
+        assert any(k in it["why"] for k in ("实测", "s", "秒")), \
+            "%s 的理由里没有实测数字" % it["purpose"]
+
+
+def test_策略里不许出现API_Key():
+    """这份 YAML 进仓库。**凭证绝不进代码库**，策略才进。"""
+    import io
+    from app.llm import presets
+    txt = io.open(presets.YAML_PATH, encoding="utf-8").read()
+    # 用 mask 的那条正则，**不要写 `"sk-" not in txt`**：
+    # 文件里有四处 `key_hint: sk- 开头`，那是告诉用户 Key 长什么样的说明
+    # 文字，不是 Key。第一版就是这么写的，当场误报——
+    # 误报会让人把这条断言删掉，然后真漏 Key 的时候也没人拦。
+    hit = mask.RE_APIKEY.search(txt)
+    assert not hit, "YAML 里有像 API Key 的串：%s" % (hit.group(0)[:12] if hit else "")
+    assert "api_key" not in txt.lower()
+    # Key 的落点只有一处：llm_config.api_key_cipher，由界面写入。
+    assert "api_key_cipher" not in txt
+
+
+def _two_configs_of(purpose, want):
+    """取「推荐型号那条」和「同用途另一条」。拿不到就让调用方 skip。
+
+    **这两条用例不许依赖库里当时有没有默认。** 本文件里的 free_slots 夹具
+    会把所有默认清空且不还原（收尾交给 module 级的 keep_real_defaults），
+    所以排在它之后的用例看到的是「一条默认都没有」——第一版就因此双双
+    skip 掉了，而 skip 的用例等于没写。自己建前置状态才不受顺序影响。
+    """
+    tgt = db.query_one("""SELECT config_id FROM llm_config
+                           WHERE purpose = %s AND model_name = %s AND enabled""",
+                       (purpose, want))
+    other = db.query_one("""SELECT config_id FROM llm_config
+                             WHERE purpose = %s AND enabled
+                               AND model_name <> %s LIMIT 1""", (purpose, want))
+    return tgt, other
+
+
+def test_种子不覆盖人工设定():
+    """界面上的手工切换往往是现场有意为之（某个型号临时限流）。
+    种子脚本把它悄悄改回去，是最难查的那类问题。"""
+    from app.llm import presets
+    plan = presets.purpose_defaults()[0]
+    pur, want = plan["purpose"], plan["prefer_model"]
+    tgt, other = _two_configs_of(pur, want)
+    if not (tgt and other):
+        pytest.skip("%s 用途缺少可制造差异的两条配置" % pur)
+    presets._set_default(other["config_id"], pur)          # 模拟人工切过去
+    rep = presets.apply_defaults(apply=False, verbose=False)
+    now = db.query_one("""SELECT config_id FROM llm_config
+                           WHERE purpose = %s AND is_default""", (pur,))
+    assert now["config_id"] == other["config_id"], "apply=False 却改了默认"
+    r = [x for x in rep if x["purpose"] == pur][0]
+    assert "没有改" in r["action"], r["action"]
+
+
+def test_加开关才真的对齐():
+    from app.llm import presets
+    plan = presets.purpose_defaults()[0]
+    pur, want = plan["purpose"], plan["prefer_model"]
+    tgt, other = _two_configs_of(pur, want)
+    if not (tgt and other):
+        pytest.skip("%s 用途缺少可制造差异的两条配置" % pur)
+    presets._set_default(other["config_id"], pur)
+    presets.apply_defaults(apply=True, verbose=False)
+    now = db.query_one("""SELECT config_id FROM llm_config
+                           WHERE purpose = %s AND is_default""", (pur,))
+    assert now["config_id"] == tgt["config_id"]
+
+
+def test_这个用途本来没有默认时种子可以直接设上():
+    """重建库之后的典型状态：配置刚建好，还没人点过「设为默认」。
+    这一档是种子真正该起作用的地方。"""
+    from app.llm import presets
+    plan = presets.purpose_defaults()[0]
+    pur, want = plan["purpose"], plan["prefer_model"]
+    tgt, _ = _two_configs_of(pur, want)
+    if not tgt:
+        pytest.skip("库里没有 %s" % want)
+    db.execute("""UPDATE llm_config SET is_default = FALSE
+                   WHERE purpose = %s AND is_default""", (pur,))
+    rep = presets.apply_defaults(apply=False, verbose=False)
+    r = [x for x in rep if x["purpose"] == pur][0]
+    assert "还没有默认" in r["state"], r["state"]
+    assert "可设为默认" in r["action"], r["action"]
+    presets.apply_defaults(apply=True, verbose=False)
+    now = db.query_one("""SELECT config_id FROM llm_config
+                           WHERE purpose = %s AND is_default""", (pur,))
+    assert now["config_id"] == tgt["config_id"]
+
+
+def test_推荐型号在库里不存在时不动已有默认():
+    """**绝不自动创建配置**：没有 Key 创建出来也是不可用的，
+    而界面上看着像有——那比没有更坏。也不许顺手把现有默认清掉。"""
+    import io
+    import os
+    import tempfile
+    from app.llm import presets
+    pur = presets.purpose_defaults()[0]["purpose"]
+    before = db.query_one("""SELECT config_id FROM llm_config
+                              WHERE purpose = %s AND is_default""", (pur,))
+    n_before = db.scalar("SELECT count(*) FROM llm_config")
+    txt = io.open(presets.YAML_PATH, encoding="utf-8").read().replace(
+        "prefer_model: " + presets.purpose_defaults()[0]["prefer_model"],
+        "prefer_model: FJHY-TEST-LLM-不存在的型号")
+    p = os.path.join(tempfile.gettempdir(), "fjhy_test_presets.yaml")
+    io.open(p, "w", encoding="utf-8", newline="\n").write(txt)
+    try:
+        rep = presets.apply_defaults(apply=True, verbose=False, path=p)
+        r = [x for x in rep if x["purpose"] == pur][0]
+        assert "没有已启用的" in r["state"], r["state"]
+        now = db.query_one("""SELECT config_id FROM llm_config
+                               WHERE purpose = %s AND is_default""", (pur,))
+        assert (now or {}).get("config_id") == (before or {}).get("config_id"), \
+            "推荐型号不存在，却把现有默认动了"
+        assert db.scalar("SELECT count(*) FROM llm_config") == n_before, \
+            "自动创建了配置——绝对不许，那条配置没有 Key"
+    finally:
+        os.remove(p)
+
+
+def test_装预置的那条命令会顺带过一遍默认型号策略():
+    """这一步必须挂在部署脚本已经会跑的那条命令里。
+    另起一个脚本就得记得去改 部署/entrypoint.sh，而「忘了改部署脚本」
+    不报错，只会在下一次重建库时悄悄丢掉这个结论。"""
+    import io
+    import os
+    src = io.open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "app", "llm", "presets.py"),
+        encoding="utf-8").read()
+    main = src.split('if __name__ == "__main__":')[1]
+    assert "apply_defaults" in main, "presets.py 的入口里没有调 apply_defaults"
+    ep = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "部署", "entrypoint.sh")
+    if os.path.exists(ep):
+        assert "app/llm/presets.py" in io.open(ep, encoding="utf-8").read(), \
+            "部署脚本里没有跑 presets.py，这个策略在部署时不会生效"
