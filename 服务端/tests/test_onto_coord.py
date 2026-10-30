@@ -253,9 +253,16 @@ def test_采纳进来的规则不会被装载脚本删掉():
                        VALUES ('fjhy','TR-ZZ-99',1,'装载保护验证','D1','超标准','hard',%s,
                                '{}','{}',50,'警告',FALSE,'未编译','draft','onto_adopt:test')""",
                     (sc,))
-        cur.execute("DELETE FROM release_item")
-        cur.execute("DELETE FROM rule WHERE created_by = 'asset_loader'")
-        cur.execute("SELECT rule_id FROM rule")
+        # **删与查都要带实例。** 装载脚本只服务 fjhy（rules/loader.py 里
+        # INSTANCE 写死），所以它的删除条件和这里的断言都只该看那一片。
+        # 不带实例的后果 2026-10-30 实测到了：822港航 转入 74 条规则之后，
+        # `SELECT rule_id FROM rule` 把它们全查了出来，断言报
+        # 「装载脚本会删掉采纳进来的规则」——而装载脚本根本碰不到那 74 条。
+        # 报出来的结论和真相相反，排查方向会被整个带偏。
+        cur.execute("DELETE FROM release_item WHERE instance_id = 'fjhy'")
+        cur.execute("DELETE FROM rule "
+                    "WHERE instance_id = 'fjhy' AND created_by = 'asset_loader'")
+        cur.execute("SELECT rule_id FROM rule WHERE instance_id = 'fjhy'")
         left = [r[0] for r in cur.fetchall()]
         assert left == ["TR-ZZ-99"], "装载脚本的删除条件会清掉采纳进来的规则：%s" % left
     finally:

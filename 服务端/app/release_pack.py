@@ -111,13 +111,18 @@ def _iid(instance_id=None):
     return scope.require(instance_id)
 
 
-def _onto_version():
-    return onto_current.version()
+def _onto_version(instance_id=None):
+    return onto_current.version(instance_id)
 
 
-def _yaml_section(key):
-    """读 本体_v0.1.yaml 的一个顶层段。规则本体只在 YAML 里，库里没有投影。"""
-    raw = yaml.safe_load(io.open(config.ONTOLOGY_YAML, encoding="utf-8").read())
+def _yaml_section(key, instance_id=None):
+    """读**本实例那份**本体 YAML 的一个顶层段。规则本体只在 YAML 里，库里没有投影。
+
+    0044 之后每实例一份 YAML。原来写死 config.ONTOLOGY_YAML，于是
+    822港航 冻出来的「规则本体」层装的是福建海运集团的内容。
+    """
+    raw = yaml.safe_load(io.open(onto_yaml.path_of(instance_id),
+                                 encoding="utf-8").read())
     return raw.get(key)
 
 
@@ -185,20 +190,23 @@ def _snap_params(iid):
 
 
 def _snap_biz(iid):
-    v = _onto_version()
+    # **每一句都要带实例。** 两个实例的本体版本号都是 '0.1'（各自 YAML 里写的），
+    # 只按 version 查会把对面的实体、概念、枚举一起冻进这个实例的发布包里，
+    # 而包里没有任何地方标着「这几行是别家的」。
+    v = _onto_version(iid)
     ents = db.query("""SELECT entity_id, name, source, note, alias FROM ontology_entity
-                        WHERE version=%s ORDER BY entity_id""", (v,))
+                        WHERE instance_id=%s AND version=%s ORDER BY entity_id""", (iid, v))
     cons = db.query("""SELECT concept_id, entity_id, name, data_type, enum_id, ref_entity,
                               source, availability, gap_id, sensitive, ocr_sourced, note, alias
-                         FROM ontology_concept WHERE version=%s
-                        ORDER BY concept_id""", (v,))
+                         FROM ontology_concept WHERE instance_id=%s AND version=%s
+                        ORDER BY concept_id""", (iid, v))
     enums = db.query("""SELECT enum_id, name, source, note FROM ontology_enum
-                         WHERE version=%s ORDER BY enum_id""", (v,))
+                         WHERE instance_id=%s AND version=%s ORDER BY enum_id""", (iid, v))
     vals = db.query("""SELECT enum_id, value, ord FROM ontology_enum_value
-                        WHERE version=%s ORDER BY enum_id, ord""", (v,))
+                        WHERE instance_id=%s AND version=%s ORDER BY enum_id, ord""", (iid, v))
     rels = db.query("""SELECT from_entity, to_entity, rel_type, cardinality, source, note
-                         FROM ontology_relation WHERE version=%s
-                        ORDER BY from_entity, to_entity, rel_type""", (v,))
+                         FROM ontology_relation WHERE instance_id=%s AND version=%s
+                        ORDER BY from_entity, to_entity, rel_type""", (iid, v))
     payload = {
         "version": v,
         "entities": [{"entity_id": e["entity_id"], "entity_name": e["name"],
@@ -223,7 +231,10 @@ def _snap_onto_source(iid):
     这一行记录的是「拿到包的时候同步不同步」。
     """
     si = onto_yaml.source_info()
-    text = io.open(config.ONTOLOGY_YAML, encoding="utf-8").read()
+    # **和 source_info() 读同一个文件**。原来这里读 config.ONTOLOGY_YAML
+    # 而 source_info() 已经按实例取了，两者对不上时下面那道自检会报
+    # 「本体源文件在冻结过程中被改动了」——报错方向对，真因却是读错了文件。
+    text = io.open(onto_yaml.path_of(iid), encoding="utf-8").read()
     payload = {
         "file": si["path"], "lines": si["lines"], "bytes": si["bytes"],
         "sha256": si["sha256"], "version": si["version"], "maturity": si["maturity"],
@@ -240,10 +251,14 @@ def _snap_onto_source(iid):
 
 
 def _snap_rule_schema(iid):
-    schema = _yaml_section("rule_schema")
+    schema = _yaml_section("rule_schema", iid)
     if not schema:
-        raise PackError("本体_v0.1.yaml 里没有 rule_schema 段——规则本体这一层无从冻结。")
-    cur = db.query("SELECT enum_id, value FROM enum_value_current ORDER BY enum_id, value")
+        raise PackError("%s 里没有 rule_schema 段——规则本体这一层无从冻结。"
+                        % onto_yaml.path_of(iid))
+    # 枚举取值也要按实例取：0044 之后 enum_value_current 带 instance_id，
+    # 不带的话 822港航 冻出来的规则本体层里混着福建海运集团的枚举值。
+    cur = db.query("SELECT enum_id, value FROM enum_value_current "
+                   "WHERE instance_id=%s ORDER BY enum_id, value", (iid,))
     n = (len(schema) if isinstance(schema, dict) else 1) + len(cur)
     return n, {"rule_schema": schema,
                "enum_value_current": [dict(x) for x in cur],
@@ -252,12 +267,12 @@ def _snap_rule_schema(iid):
 
 
 def _snap_process(iid):
-    v = _onto_version()
+    v = _onto_version(iid)
     nodes = db.query("""SELECT node_id, name, is_bypass, note, alias FROM process_node
-                         WHERE version=%s ORDER BY node_id""", (v,))
+                         WHERE instance_id=%s AND version=%s ORDER BY node_id""", (iid, v))
     trans = db.query("""SELECT from_node, to_node, cond, blocking, note
-                          FROM process_transition WHERE version=%s
-                         ORDER BY from_node, to_node""", (v,))
+                          FROM process_transition WHERE instance_id=%s AND version=%s
+                         ORDER BY from_node, to_node""", (iid, v))
     payload = {
         "version": v,
         "nodes": [{"node_id": n["node_id"], "node_name": n["name"],

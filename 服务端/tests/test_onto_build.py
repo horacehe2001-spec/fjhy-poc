@@ -11,6 +11,7 @@
 """
 import io
 import os
+import re
 import sys
 
 import pytest
@@ -147,10 +148,23 @@ def test_插坏了必须回滚且文件原样():
 
 
 def test_每次写之前都要备份():
+    """**纪律没变，锚点变了。**
+
+    原来按字面找 `open(config.ONTOLOGY_YAML, "w"`。迁移 0044 之后每实例一份
+    YAML，写路径改成了 `open(path_of(), "w")`——写死 config.ONTOLOGY_YAML 的话，
+    在 822港航 采纳一个候选会把它插进福建海运集团的本体文件里。
+    于是这条测试报 `substring not found`：**纪律还在，是它找的那句话没了**。
+    改成按「写模式打开」这个行为找，不按某一个常量名找。
+    """
     src = io.open(os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "app", "onto_yaml.py"), encoding="utf-8").read()
-    i_bak, i_write = src.index("bak = backup()"), src.index('open(config.ONTOLOGY_YAML, "w"')
-    assert i_bak < i_write, "备份要在写之前——这个项目没有 git，备份是唯一的退路"
+    i_bak = src.index("bak = backup()")
+    writes = [m.start() for m in re.finditer(r'io\.open\([^)]*,\s*"w"', src)]
+    assert writes, "onto_yaml.py 里找不到任何写文件的地方——这条测试已经盯不住它要盯的东西了"
+    assert i_bak < min(writes), "备份要在写之前——这个项目没有 git，备份是唯一的退路"
+    # 顺带钉住「写的是本实例那一份」：写死 config.ONTOLOGY_YAML 会改到别家的本体
+    assert 'open(config.ONTOLOGY_YAML, "w"' not in src, \
+        "又写死成福建海运集团那份 YAML 了：在别的实例采纳候选会改错文件，而页面上看不出来"
 
 
 def test_绝不走解析再序列化的路子():

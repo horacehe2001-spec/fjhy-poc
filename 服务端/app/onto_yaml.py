@@ -44,13 +44,28 @@ class PatchError(RuntimeError):
 
 
 # ── 源文件：摆出来给人看 ────────────────────────────────────────────────────
-def _lines():
-    with io.open(config.ONTOLOGY_YAML, encoding="utf-8") as f:
+def path_of(instance_id=None):
+    """本实例的本体源文件路径。**每实例一份（迁移 0044）。**
+
+    本模块原来一律直读 config.ONTOLOGY_YAML，那是 福建海运集团 的那一份。
+    隔离之后后果有两种，写路径那种更糟：
+      · 读：822港航 的「本体源文件与库同步」闸，拿 fjhy 的文件 sha 去比
+        822港航 库里的 sha，**永远不同步，发布闸永远过不了**。
+      · 写：在 822港航 采纳一个候选概念，会把它写进**福建海运集团的 YAML**，
+        而两边页面都不显示这件事。
+    """
+    from .ontology import loader as _ol
+    from . import scope
+    return _ol.yaml_for(scope.require(instance_id))
+
+
+def _lines(instance_id=None):
+    with io.open(path_of(instance_id), encoding="utf-8") as f:
         return f.read().split("\n")
 
 
-def sha256():
-    return hashlib.sha256(io.open(config.ONTOLOGY_YAML, "rb").read()).hexdigest()
+def sha256(instance_id=None):
+    return hashlib.sha256(io.open(path_of(instance_id), "rb").read()).hexdigest()
 
 
 SECTION_RE = re.compile(r"^(meta|business|rule_schema|glossary|process):\s*$")
@@ -71,16 +86,17 @@ def sections():
 
 def source_info():
     """源文件的全部可见信息。**包括「谁写的」——这一条最容易被含糊过去。**"""
+    _p = path_of()
     lines = _lines()
     raw = yaml.safe_load("\n".join(lines))
     meta = raw.get("meta") or {}
     v = onto_current.row()
     h = sha256()
     return {
-        "path": os.path.basename(config.ONTOLOGY_YAML),
-        "abs_path": config.ONTOLOGY_YAML,
+        "path": os.path.basename(_p),
+        "abs_path": _p,
         "lines": len(lines),
-        "bytes": os.path.getsize(config.ONTOLOGY_YAML),
+        "bytes": os.path.getsize(_p),
         "sha256": h,
         "version": str(meta.get("version") or ""),
         "maturity": meta.get("maturity"),
@@ -142,9 +158,9 @@ def backup():
     """定点插入前先整份备份。**这个项目没有 git**，备份就是唯一的退路。"""
     os.makedirs(BACKUP_DIR, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    dst = os.path.join(BACKUP_DIR, "%s.%s.bak" % (
-        os.path.basename(config.ONTOLOGY_YAML), ts))
-    shutil.copy2(config.ONTOLOGY_YAML, dst)
+    src = path_of()
+    dst = os.path.join(BACKUP_DIR, "%s.%s.bak" % (os.path.basename(src), ts))
+    shutil.copy2(src, dst)
     return dst
 
 
@@ -288,14 +304,17 @@ def apply_patch(cand):
     else:
         lines[pv["line"]:pv["line"]] = pv["patch"].split("\n")
     text = "\n".join(lines)
-    with io.open(config.ONTOLOGY_YAML, "w", encoding="utf-8", newline="\n") as f:
+    # **写回本实例自己那份 YAML。** 原来写死 config.ONTOLOGY_YAML：
+    # 在 822港航 采纳一个候选，会把它插进福建海运集团的本体文件里。
+    _p = path_of()
+    with io.open(_p, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
     try:
         raw = yaml.safe_load(text)
         if not raw or "business" not in raw or "process" not in raw:
             raise PatchError("插入后结构不完整")
     except Exception as e:                                     # noqa: BLE001
-        shutil.copy2(bak, config.ONTOLOGY_YAML)
+        shutil.copy2(bak, _p)
         raise PatchError("插入后 YAML 解析不过，已从备份回滚（%s）：%s"
                          % (os.path.basename(bak), e))
     return {"line": pv["line"], "patch": pv["patch"], "backup": bak,

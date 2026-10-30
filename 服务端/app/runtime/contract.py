@@ -112,9 +112,22 @@ def verify(verbose=True):
     r = ContractResult()
     fact = _fact()
 
-    # ── 0 本体是否已装载且未漂移 ─────────────────────────────────────────────
+    # **整份契约钉在规则资产所属的实例上，不跟「当前实例」走。**
+    #
+    # 这里校验的是「规则资产 ↔ 本体」这一对的一致性，而规则资产是人按
+    # 福建海运集团 的制度整理的那几份固定文件（rules/loader.py 里 INSTANCE 写死），
+    # 对照的也是项目根目录那份 本体_v0.1.yaml 和 事实模型_v0.1.json。
+    #
+    # 跟当前实例走的后果实测过：界面切到 822港航 之后重启，
+    # 契约拿 822港航 的本体去对 福建海运集团 的 YAML 与事实模型，报
+    #   - 本体未漂移：库里的本体与 本体_v0.1.yaml 不一致
+    #   - 枚举取值与事实模型一致：EN21 缺[] 多['厅局级','未命名档']
+    # 然后 **fail-fast 拒绝启动**——拦是对的，理由是错的：
+    # 它比的是两个本来就不该比的东西。
+    from ..rules.loader import INSTANCE as ASSET_IID
     from .. import onto_current
-    onto = onto_current.row(cols="version, source_hash, stats")
+    onto = onto_current.row(cols="version, source_hash, stats",
+                            instance_id=ASSET_IID)
     if not r.check("本体已装载", onto is not None, "库里没有当前本体版本，先跑 app/ontology/loader.py"):
         return r
     import hashlib
@@ -124,21 +137,25 @@ def verify(verbose=True):
 
     concepts = {c["concept_id"]: c for c in db.query(
         "SELECT concept_id, name, availability, gap_id, sensitive, ocr_sourced, enum_id "
-        "FROM ontology_concept WHERE version = %s", (onto["version"],))}
+        "FROM ontology_concept WHERE instance_id = %s AND version = %s",
+        (ASSET_IID, onto["version"]))}
     entities = {e["entity_id"] for e in db.query(
-        "SELECT entity_id FROM ontology_entity WHERE version = %s", (onto["version"],))}
+        "SELECT entity_id FROM ontology_entity WHERE instance_id = %s AND version = %s",
+        (ASSET_IID, onto["version"]))}
 
     # ── 1 规则引用的概念都存在 ──────────────────────────────────────────────
     bad_concept = db.query("""
         SELECT rc.rule_id, rc.concept_id FROM rule_concept rc
         LEFT JOIN ontology_concept oc
           ON oc.concept_id = rc.concept_id AND oc.version = %s
-        WHERE oc.concept_id IS NULL
-    """, (onto["version"],))
+         AND oc.instance_id = %s
+        WHERE rc.instance_id = %s AND oc.concept_id IS NULL
+    """, (onto["version"], ASSET_IID, ASSET_IID))
     r.check("规则引用的概念都存在于本体", not bad_concept,
             "；".join("%s→%s" % (b["rule_id"], b["concept_id"]) for b in bad_concept[:10]))
 
-    bad_entity = [b for b in db.query("SELECT rule_id, entity_id FROM rule_entity")
+    bad_entity = [b for b in db.query("SELECT rule_id, entity_id FROM rule_entity "
+                                      "WHERE instance_id = %s", (ASSET_IID,))
                   if b["entity_id"] not in entities]
     r.check("规则引用的实体都存在于本体", not bad_entity,
             "；".join("%s→%s" % (b["rule_id"], b["entity_id"]) for b in bad_entity[:10]))
@@ -148,10 +165,11 @@ def verify(verbose=True):
         SELECT r.rule_id, r.rule_class, r.control_type, r.compiled, r.demo_executable,
                r.demo_blocker, r.demo_scope, r.binding_node, r.external_table,
                r.logic, r.compiled_reason
-        FROM rule r WHERE r.version = 1 ORDER BY r.rule_id
-    """)
+        FROM rule r WHERE r.instance_id = %s AND r.version = 1 ORDER BY r.rule_id
+    """, (ASSET_IID,))
     rc_map = {}
-    for row in db.query("SELECT rule_id, concept_id, role FROM rule_concept"):
+    for row in db.query("SELECT rule_id, concept_id, role FROM rule_concept "
+                        "WHERE instance_id = %s", (ASSET_IID,)):
         rc_map.setdefault(row["rule_id"], []).append(row)
 
     executable = []
@@ -214,7 +232,8 @@ def verify(verbose=True):
 
     # 库里的 demo_executable 标记必须与这里算出来的执行集一致，否则两个口径会打架
     marked = {x["rule_id"] for x in db.query(
-        "SELECT rule_id FROM rule WHERE demo_executable AND version = 1")}
+        "SELECT rule_id FROM rule WHERE instance_id = %s AND demo_executable "
+        "AND version = 1", (ASSET_IID,))}
     r.check("执行集与库里的 demo_executable 标记一致",
             set(executable) == marked,
             "算出来 %d 条、库里标了 %d 条，差集 %s" % (
@@ -263,7 +282,8 @@ def verify(verbose=True):
 
     # ── 5 枚举取值与事实模型一致 ────────────────────────────────────────────
     db_enums = {}
-    for row in db.query("SELECT enum_id, value FROM enum_value_current ORDER BY enum_id, value"):
+    for row in db.query("SELECT enum_id, value FROM enum_value_current "
+                        "WHERE instance_id = %s ORDER BY enum_id, value", (ASSET_IID,)):
         db_enums.setdefault(row["enum_id"], set()).add(row["value"])
     diffs = []
     for eid, meta in fact["enums"].items():
@@ -329,7 +349,8 @@ def verify(verbose=True):
     r.check("自由文本泄露路径都被 M06 覆盖", not leak_missing, str(leak_missing))
 
     # ── 额外：软规则不得硬拦 / 发布态必须签字 ───────────────────────────────
-    soft_block = db.query("SELECT rule_id FROM rule WHERE rule_class='soft' AND control_type='禁止'")
+    soft_block = db.query("SELECT rule_id FROM rule WHERE instance_id = %s "
+                          "AND rule_class='soft' AND control_type='禁止'", (ASSET_IID,))
     r.check("软规则没有标禁止", not soft_block, str([x["rule_id"] for x in soft_block]))
     unsigned = db.query("SELECT release_id FROM release WHERE status='published' "
                         "AND reviewed_by IS NULL")

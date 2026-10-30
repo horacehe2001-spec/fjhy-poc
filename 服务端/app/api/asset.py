@@ -52,14 +52,22 @@ def nav():
     iid = _iid()
     # 侧栏这几个数字是用户判断「这块有没有东西」的依据，所以必须是**当前实例的**数。
     # 新建的实例这里应当全是 0——那正是它真实的样子，不是接口坏了。
-    # proc（流程本体）与 llm（大模型配置）两项不按实例过滤，原因不同：
-    #   proc  —— process_node 还没有 instance_id 列（本体链迁移未做）；
-    #   llm   —— 大模型配置是系统级的（2026-10-18 已定），不跟业务域走。
+    # **前两项原来数的是死表。**
+    #   doc-lib 数 policy_doc、extract 数 extract_candidate——这两张表
+    #   （连同 policy_clause / extract_task）全库 0 行、全项目零写入，
+    #   是早期设计留下的空壳。真正在用的是 doc_lib_file 与 doclib_clause。
+    #   表现是左侧导航「制度文件库 0 / 规则抽取 0」而库里明明有 12 份文件、
+    #   343 条条款——**两个实例都一直是 0**，所以没人把它当成 bug，
+    #   只当成「这个实例还没开始建」。
+    #
+    # llm（大模型配置）不按实例过滤：系统级配置（2026-10-18 已定），不跟业务域走。
+    # proc 按实例过滤（本体链 0044 之后 process_node 有 instance_id 了）。
     counts = {
-        "doc-lib": db.scalar("SELECT count(*) FROM policy_doc WHERE instance_id=%s",
-                             (iid,)) or 0,
-        "extract": db.scalar("SELECT count(*) FROM extract_candidate WHERE instance_id=%s",
-                             (iid,)) or 0,
+        "doc-lib": db.scalar("SELECT count(*) FROM doc_lib_file "
+                             "WHERE instance_id=%s AND NOT missing", (iid,)) or 0,
+        "extract": db.scalar("""SELECT count(*) FROM doclib_clause c
+                                  JOIN doc_lib_file f ON f.file_id = c.file_id
+                                 WHERE f.instance_id=%s""", (iid,)) or 0,
         "onto": db.scalar("SELECT count(*) FROM rule WHERE instance_id=%s AND version=1",
                           (iid,)) or 0,
         "proc": db.scalar("SELECT count(*) FROM process_node "
