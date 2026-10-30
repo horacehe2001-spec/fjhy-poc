@@ -72,10 +72,10 @@ SECTION_RE = re.compile(r"^(meta|business|rule_schema|glossary|process):\s*$")
 SUB_RE = re.compile(r"^  (entities|enums|relations|nodes|bypasses|transitions):\s*$")
 
 
-def sections():
+def sections(instance_id=None):
     """源文件的段落索引（名字 + 起始行）。页面上点一下就能跳到那一段。"""
     out = []
-    for i, ln in enumerate(_lines(), 1):
+    for i, ln in enumerate(_lines(instance_id), 1):
         m = SECTION_RE.match(ln) or SUB_RE.match(ln)
         if m:
             # section_name，不是 name：实测段落名被脱成了 m***、b*******
@@ -84,14 +84,24 @@ def sections():
     return out
 
 
-def source_info():
-    """源文件的全部可见信息。**包括「谁写的」——这一条最容易被含糊过去。**"""
-    _p = path_of()
-    lines = _lines()
+def source_info(instance_id=None):
+    """源文件的全部可见信息。**包括「谁写的」——这一条最容易被含糊过去。**
+
+    **instance_id 必须一路传下去**（2026-10-31 补）。原来这个函数一个参数
+    都没有，path_of()/_lines()/sha256()/onto_current.row() 全走「当前实例」。
+    于是 release_pack.gates(instance_id='fjhy') 在当前实例是 822港航 时，
+    「本体源文件与库同步」这条闸比的是 822港航 的文件和 822港航 的库记录
+    ——**两边都是另一个实例的，所以永远相等，闸永远绿**。
+    实测：gates('fjhy') 报「文件 sha 0c9932cfd396 / 库 0c9932cfd396」，
+    而 fjhy 库里存的是 9f30dac94aa1。fjhy 的 YAML 真漂移了也查不出来。
+    闸失效而没人发现，比没有这道闸更危险——它会让人以为查过了。
+    """
+    _p = path_of(instance_id)
+    lines = _lines(instance_id)
     raw = yaml.safe_load("\n".join(lines))
     meta = raw.get("meta") or {}
-    v = onto_current.row()
-    h = sha256()
+    v = onto_current.row(instance_id)
+    h = sha256(instance_id)
     return {
         "path": os.path.basename(_p),
         "abs_path": _p,
@@ -101,7 +111,7 @@ def source_info():
         "version": str(meta.get("version") or ""),
         "maturity": meta.get("maturity"),
         "date": str(meta.get("date") or ""),
-        "sections": sections(),
+        "sections": sections(instance_id),
         "counts": {"实体": len(raw["business"]["entities"]),
                    "概念": sum(len(e.get("concepts") or [])
                              for e in raw["business"]["entities"]),

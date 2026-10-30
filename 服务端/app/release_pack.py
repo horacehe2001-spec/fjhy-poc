@@ -230,7 +230,12 @@ def _snap_onto_source(iid):
     不是内容。冻结时它必然是 True（gates 挡着），冻进去只会让人以为
     这一行记录的是「拿到包的时候同步不同步」。
     """
-    si = onto_yaml.source_info()
+    # **iid 必须传给 source_info**（2026-10-31 补）。它原来不收参数，走的是
+    # 「当前实例」：于是给 fjhy 冻结而当前实例是 822港航 时，正文是 fjhy 的
+    # （下一行按 iid 读），而 sha256/版本/计数/段落索引全是 822港航 的——
+    # **一份快照里混了两个实例**，而且下面那道自检只会报「源文件在冻结过程中
+    # 被改动了」，报错方向对、真因完全不是那个。
+    si = onto_yaml.source_info(iid)
     # **和 source_info() 读同一个文件**。原来这里读 config.ONTOLOGY_YAML
     # 而 source_info() 已经按实例取了，两者对不上时下面那道自检会报
     # 「本体源文件在冻结过程中被改动了」——报错方向对，真因却是读错了文件。
@@ -401,7 +406,10 @@ def gates(assets=None, instance_id=None):
     """能不能冻结。**每条闸都给出「怎么过」**，不然页面上只有一个红叉。"""
     iid = _iid(instance_id)
     out = []
-    si = onto_yaml.source_info()
+    # **必须把 iid 传进去**：不传的话这条闸比的是「当前实例」的文件和库记录，
+    # 两边都是同一个（别的）实例的，所以永远相等——给 fjhy 冻结时闸是绿的，
+    # 而它根本没看 fjhy 的 YAML。见 onto_yaml.source_info 的说明。
+    si = onto_yaml.source_info(iid)
     out.append({
         "gate": "本体源文件与库同步",
         "ok": bool(si["loaded"]["in_sync"]),

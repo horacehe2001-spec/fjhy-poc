@@ -413,7 +413,10 @@ def summary(instance_id=None):
     acts = {r["action"]: r["n"] for r in db.query(
         "SELECT action, count(*) n FROM onto_cand_action WHERE instance_id=%s GROUP BY 1",
         (iid,))}
-    src = onto_yaml.source_info()
+    # 上面的统计都按 iid 过滤了，源文件也必须按同一个 iid 取——
+    # 不传就是「当前实例」，于是显式传了 instance_id 的调用方会拿到
+    # 「A 实例的候选数 + B 实例的源文件信息」，一张卡片上两个实例。
+    src = onto_yaml.source_info(iid)
     return {"by_verdict": {k: by_v.get(k, 0) for k in ("建议新增", "层间不一致", "已在本体")},
             "by_kind": by_k, "actions": acts, "source": src,
             "note": "候选只收可操作的那些：建议新增 / 层间不一致 / 样本与制度都没出现过。"

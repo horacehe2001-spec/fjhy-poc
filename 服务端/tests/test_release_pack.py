@@ -172,7 +172,10 @@ def test_本体与库不同步时不许冻结(clean, monkeypatch):
     """
     real = oy.source_info()
 
-    def fake():
+    # 形参要跟着 source_info 走：它 2026-10-31 加了 instance_id，
+    # 桩函数不收这个参数就会 TypeError，而那个报错长得像「冻结崩了」，
+    # 不像「桩写得过时了」。
+    def fake(instance_id=None):
         d = dict(real)
         d["loaded"] = dict(real["loaded"], in_sync=False, source_hash="deadbeef")
         return d
@@ -181,6 +184,41 @@ def test_本体与库不同步时不许冻结(clean, monkeypatch):
     with pytest.raises(rp.PackError) as e:
         _freeze("nosync")
     assert "重装" in str(e.value)
+
+
+def test_本体同步闸必须查被冻结的那个实例而不是当前实例():
+    """**这条闸曾经永远是绿的**，而且绿得毫无痕迹。
+
+    source_info() 原来一个参数都没有，path_of()/sha256()/onto_current.row()
+    全走「当前实例」。于是 gates(instance_id='fjhy') 在当前实例是 822港航 时，
+    比的是 822港航 的文件 ⟷ 822港航 的库记录——**两边都是另一个实例的，
+    所以恒等，闸恒绿**。实测当时 gates('fjhy') 报的是
+    「文件 sha 0c9932cfd396 / 库 0c9932cfd396」，而 fjhy 库里存的是 9f30dac94aa1。
+
+    闸失效而没人发现，比没有这道闸更危险：它会让人以为查过了。
+    所以这里不验「闸是不是绿的」，验的是**它到底看了谁的文件**。
+    """
+    iids = [r["instance_id"] for r in db.query(
+        "SELECT DISTINCT instance_id FROM ontology_version WHERE is_current "
+        "ORDER BY 1")]
+    assert len(iids) >= 2, "只有一个实例，这条用例验不出跨实例串台"
+    seen = {}
+    for iid in iids:
+        si = oy.source_info(iid)
+        stored = db.query_one("""SELECT source_hash FROM ontology_version
+                                  WHERE instance_id = %s AND is_current""",
+                              (iid,))["source_hash"]
+        assert si["sha256"] == oy.sha256(iid), (
+            "%s 的 source_info 读的不是它自己的文件" % iid)
+        assert si["loaded"]["source_hash"] == stored, (
+            "%s 的 source_info 读的不是它自己的库记录" % iid)
+        gate = [g for g in rp.gates(instance_id=iid)
+                if g["gate"] == "本体源文件与库同步"][0]
+        assert stored[:12] in gate["detail"], (
+            "%s 的闸报的 hash 不是它自己的：%s" % (iid, gate["detail"]))
+        seen[iid] = si["sha256"]
+    assert len(set(seen.values())) == len(seen), (
+        "多个实例的源文件指纹相同，说明还在读同一份文件：%s" % seen)
 
 
 def test_未签字不能发布(clean):
