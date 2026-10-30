@@ -31,6 +31,43 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _把当前实例钉在福建海运集团():
+    """整个测试会话固定跑在 audit / fjhy 上，跑完恢复原值。
+
+    **为什么必须钉住**（2026-10-30 实测踩到）：当前实例是**全局单例**
+    （库里一行，页面上点一下就改，所有人共用）。审核领域加了第二个实例之后，
+    绝大多数用例依赖的规则、单据、发布版本都只在 fjhy 名下，于是
+    「跑测试之前有人在界面上切到了 822港航」会让它们集体报
+    「实例 822gh 下没有 release」——**而这跟被测代码毫无关系**。
+    实测那一次是 52 个 error + 27 个 failed，排查方向全被带到隔离逻辑上去了。
+
+    反过来也要管：测试里有用例会切换当前实例做验证，**不能把切换结果留给界面**
+    （本文件另两个 fixture 讲的是同一条纪律：别把验证动作的产物留在
+    别人的演示环境里）。实测那一次结束后库里留下的就是 822gh，
+    `updated_by` 还写着 test:restore——某个用例的"恢复"把错的值恢复回去了，
+    因为它快照到的已经是被上一个用例改过的值。会话级钉死 + 会话级恢复，
+    这类相互覆盖就不成立了。
+
+    **不是在改被测行为**：钉的是测试环境的前提，和「用例自己显式切实例做断言」
+    不冲突——那些用例照样切，只是会话结束时统一回到 fjhy。
+    """
+    from app import db
+    keys = ("current_domain", "current_instance")
+    before = {k: db.scalar("SELECT value FROM app_setting WHERE setting_key=%s", (k,))
+              for k in keys}
+    for k, v in (("current_domain", "audit"), ("current_instance", "fjhy")):
+        db.execute("""INSERT INTO app_setting (setting_key, value, updated_by)
+                      VALUES (%s,%s,'pytest:session')
+                      ON CONFLICT (setting_key) DO UPDATE
+                      SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by,
+                          updated_at=now()""", (k, v))
+    yield
+    for k in keys:
+        db.execute("""UPDATE app_setting SET value=%s, updated_by='pytest:session-restore',
+                             updated_at=now() WHERE setting_key=%s""", (before[k], k))
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _把反向覆盖台账留成一致的():
     yield
     try:

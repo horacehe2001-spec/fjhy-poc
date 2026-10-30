@@ -18,12 +18,19 @@
 """
 import hashlib
 import io
+import os
 import re
 import uuid
 
-from . import config, db, onto_yaml
+from . import config, db, onto_yaml, onto_current, scope
 
 CLAUSE_SOURCE = "条款印证"
+
+
+def _scope_iid():
+    """当前实例。写成小函数是因为本文件里有几处统计句要用它。"""
+    from . import scope
+    return scope.require()
 
 
 def _cid(kind, key):
@@ -37,7 +44,7 @@ def onto_names():
     之前 alias 没进库，比对列头时「报账人公司」被报成缺概念，
     而它是 C0107 核算主体 的别名——照着去新增就长出一条重复概念。
     """
-    v = db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    v = onto_current.version()
     out = {}
     for r in db.query("""SELECT entity_id AS ref, name, alias, '实体' AS kind
                            FROM ontology_entity WHERE version = %s""", (v,)):
@@ -157,7 +164,7 @@ def enum_candidates():
        · 真实数据里出现、枚举里没有 → 建议新增
        · 枚举里有，而样本与制度**都**没出现过 → 可疑（可能是凭常识补的）
     """
-    v = db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    v = onto_current.version()
     onto = {}
     for r in db.query("""SELECT enum_id, value FROM ontology_enum_value
                           WHERE version = %s""", (v,)):
@@ -228,7 +235,7 @@ def _why_unresolved(name, nodes, enum_vals):
 
 def process_candidates():
     """→ (候选, 统计)。节点按**名字/别名/前缀**三种方式比对，判不出就标出来。"""
-    v = db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    v = onto_current.version()
     nodes = db.query("""SELECT node_id, name, alias FROM process_node
                          WHERE version = %s""", (v,))
     by_name = {n["name"]: n for n in nodes}
@@ -332,7 +339,7 @@ def collect():
     return h + e + p, {"列头": s1, "枚举": s2, "流程": s3}
 
 
-def save(cands):
+def save(cands, instance_id=None):
     """**整表重算**：候选是算出来的。人的动作在 onto_cand_action，重算不动它。
 
     **整段占住 onto_candidate。** 这个函数是「工场一键搭建」和
@@ -342,31 +349,47 @@ def save(cands):
     会把冲突吞掉——不报错。闸放这里，命令行入口也绕不过。
     """
     with db.table_lock("onto_candidate", who="候选重算 onto_build.save"):
-        return _save_locked(cands)
+        return _save_locked(cands, instance_id)
 
 
-def _save_locked(cands):
-    db.execute("DELETE FROM onto_candidate")
+def _save_locked(cands, instance_id=None):
+    from . import scope
+    iid = scope.require(instance_id)
+    # **"整表重算"只能是"本实例那一片"。** 不带实例条件，本实例重算一次候选
+    # 就把另一个实例的候选台账清空，而它那边页面只显示"还没算过"，
+    # 看不出是被谁清的。
+    db.execute("DELETE FROM onto_candidate WHERE instance_id = %s", (iid,))
     for c in cands:
-        db.execute("""INSERT INTO onto_candidate(cand_id, kind, cand_key, cand_name,
-                          source_kind, evidence, occurrences, verdict, existing_ref,
-                          basis, yaml_target)
-                      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                      ON CONFLICT (cand_id) DO NOTHING""",
-                   (_cid(c["kind"], c["cand_key"]), c["kind"], c["cand_key"],
+        # cand_id 是 kind+key 的稳定哈希（0023），**两个实例很可能算出同一个值**：
+        # 候选键多半是单据列头名（"出差天数"之类），两家的报销单用同样的列头
+        # 完全正常。所以 0041 把主键改成了 (instance_id, cand_id)，
+        # ON CONFLICT 也要跟着带上实例，否则冲突判定落在错的维度上。
+        db.execute("""INSERT INTO onto_candidate(instance_id, cand_id, kind, cand_key,
+                          cand_name, source_kind, evidence, occurrences, verdict,
+                          existing_ref, basis, yaml_target)
+                      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                      ON CONFLICT (instance_id, cand_id) DO NOTHING""",
+                   (iid, _cid(c["kind"], c["cand_key"]), c["kind"], c["cand_key"],
                     c["cand_name"], c["source_kind"], c["evidence"], c.get("occurrences"),
                     c["verdict"], c.get("existing_ref"), c["basis"], c.get("yaml_target")))
     return len(cands)
 
 
-def list_candidates(kind=None, verdict=None, limit=300):
+def list_candidates(kind=None, verdict=None, limit=300, instance_id=None):
+    from . import scope
+    iid = scope.require(instance_id)
+    # 两个子查询也要带实例：cand_id 在两边可能同值（见 _save_locked 的注释），
+    # 不带的话本实例的候选会显示成"已被采纳过"，而本实例的本体里查不到它。
     sql = ["""SELECT c.*, (SELECT a.action FROM onto_cand_action a
-                            WHERE a.cand_id = c.cand_id
+                            WHERE a.instance_id = c.instance_id
+                              AND a.cand_id = c.cand_id
                             ORDER BY a.acted_at DESC LIMIT 1) AS last_action,
                      (SELECT a.yaml_line FROM onto_cand_action a
-                       WHERE a.cand_id = c.cand_id AND a.action = '采纳' LIMIT 1) AS yaml_line
-                FROM onto_candidate c WHERE TRUE"""]
-    args = []
+                       WHERE a.instance_id = c.instance_id
+                         AND a.cand_id = c.cand_id AND a.action = '采纳'
+                       LIMIT 1) AS yaml_line
+                FROM onto_candidate c WHERE c.instance_id = %s"""]
+    args = [iid]
     if kind:
         sql.append("AND c.kind = %s")
         args.append(kind)
@@ -378,13 +401,18 @@ def list_candidates(kind=None, verdict=None, limit=300):
     return db.query(" ".join(sql), tuple(args))
 
 
-def summary():
+def summary(instance_id=None):
+    from . import scope
+    iid = scope.require(instance_id)
     by_v = {r["verdict"]: r["n"] for r in db.query(
-        "SELECT verdict, count(*) n FROM onto_candidate GROUP BY 1")}
+        "SELECT verdict, count(*) n FROM onto_candidate WHERE instance_id=%s GROUP BY 1",
+        (iid,))}
     by_k = {r["kind"]: r["n"] for r in db.query(
-        "SELECT kind, count(*) n FROM onto_candidate GROUP BY 1")}
+        "SELECT kind, count(*) n FROM onto_candidate WHERE instance_id=%s GROUP BY 1",
+        (iid,))}
     acts = {r["action"]: r["n"] for r in db.query(
-        "SELECT action, count(*) n FROM onto_cand_action GROUP BY 1")}
+        "SELECT action, count(*) n FROM onto_cand_action WHERE instance_id=%s GROUP BY 1",
+        (iid,))}
     src = onto_yaml.source_info()
     return {"by_verdict": {k: by_v.get(k, 0) for k in ("建议新增", "层间不一致", "已在本体")},
             "by_kind": by_k, "actions": acts, "source": src,
@@ -397,8 +425,11 @@ class BuildError(ValueError):
     pass
 
 
-def _cand(cand_id):
-    c = db.query_one("SELECT * FROM onto_candidate WHERE cand_id = %s", (cand_id,))
+def _cand(cand_id, instance_id=None):
+    from . import scope
+    iid = scope.require(instance_id)
+    c = db.query_one("SELECT * FROM onto_candidate WHERE instance_id=%s AND cand_id = %s",
+                     (iid, cand_id))
     if not c:
         raise BuildError("没有这条候选：%s。先跑一次本体构建" % cand_id)
     return c
@@ -423,8 +454,11 @@ def adopt(cand_id, by, yaml_target=None, reload=True):
     c = dict(_cand(cand_id))
     if not (by or "").strip():
         raise BuildError("采纳必须署名：没有署名的采纳在审计上等于没发生")
-    if db.query_one("SELECT 1 FROM onto_cand_action WHERE cand_id=%s AND action='采纳'",
-                    (cand_id,)):
+    # 带实例：cand_id 在两个实例下可能同值，不带会把别人采纳过的事算到本实例头上，
+    # 于是本实例永远采纳不了这条候选，而报错说的是"已经采纳过了"。
+    if db.query_one("""SELECT 1 FROM onto_cand_action
+                        WHERE instance_id=%s AND cand_id=%s AND action='采纳'""",
+                    (c["instance_id"], cand_id)):
         raise BuildError("这条候选已经采纳过了。重复采纳会在 YAML 里插入两段同样的定义，"
                          "而 loader 对重复 id 是后者覆盖前者——"
                          "只有一段生效，另一段静静地留在源文件里误导下一个人")
@@ -449,11 +483,11 @@ def adopt(cand_id, by, yaml_target=None, reload=True):
             err = "%s: %s" % (type(e).__name__, e)
 
     aid = "oca-" + uuid.uuid4().hex[:10]
-    db.execute("""INSERT INTO onto_cand_action(action_id, cand_id, cand_kind, cand_key,
-                      action, acted_by, yaml_file, yaml_line, yaml_patch, backup_path,
-                      reloaded, onto_version)
-                  VALUES (%s,%s,%s,%s,'采纳',%s,%s,%s,%s,%s,%s,%s)""",
-               (aid, cand_id, c["kind"], c["cand_key"], by.strip(),
+    db.execute("""INSERT INTO onto_cand_action(instance_id, action_id, cand_id, cand_kind,
+                      cand_key, action, acted_by, yaml_file, yaml_line, yaml_patch,
+                      backup_path, reloaded, onto_version)
+                  VALUES (%s,%s,%s,%s,%s,'采纳',%s,%s,%s,%s,%s,%s,%s)""",
+               (c["instance_id"], aid, cand_id, c["kind"], c["cand_key"], by.strip(),
                 "本体_v0.1.yaml", res["line"], res["patch"], res["backup"],
                 reloaded, version))
     return {"action_id": aid, "cand_id": cand_id, "new_id": res.get("new_id"),
@@ -475,10 +509,11 @@ def dispose(cand_id, action, by, reason):
         raise BuildError("必须写理由：「为什么不进本体」比「进了什么」更容易被时间冲掉")
     c = _cand(cand_id)
     aid = "oca-" + uuid.uuid4().hex[:10]
-    db.execute("""INSERT INTO onto_cand_action(action_id, cand_id, cand_kind, cand_key,
-                      action, acted_by, reason)
-                  VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-               (aid, cand_id, c["kind"], c["cand_key"], action, by.strip(), reason))
+    db.execute("""INSERT INTO onto_cand_action(instance_id, action_id, cand_id, cand_kind,
+                      cand_key, action, acted_by, reason)
+                  VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+               (c["instance_id"], aid, cand_id, c["kind"], c["cand_key"], action,
+                by.strip(), reason))
     return {"action_id": aid, "cand_id": cand_id, "action": action}
 
 
@@ -519,29 +554,52 @@ def biz_storage():
     v0.1-draft），而页面上那个数会被当成「本体有多大」来读。
     **一个会被误读的数，比不给这个数更糟。**
     """
-    cur = db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    iid = scope.require()
+    cur = onto_current.version(iid)
     rows = []
     for name, what, who, on_recalc, why in BIZ_STORAGE:
         n = total = None
         if name.endswith(".yaml"):
             try:
-                n = len(io.open(config.ONTOLOGY_YAML, encoding="utf-8").read().split("\n"))
-            except OSError:
+                # 源文件也是每实例一份（0044）：显示本实例那一份的行数，
+                # 否则 822港航 的页面上会报 福建海运集团 那份 YAML 有多少行。
+                from .ontology import loader as _ol
+                n = len(io.open(_ol.yaml_for(iid), encoding="utf-8").read().split("\n"))
+            except (OSError, FileNotFoundError):
                 n = None
         else:
             try:
-                total = db.scalar("SELECT count(*) FROM " + name)
-                n = (db.scalar("SELECT count(*) FROM %s WHERE version = %%s" % name, (cur,))
+                # **按实例计数。** 本体链 0044 之后带 instance_id，
+                # 不过滤的话这里会把两个实例的行加在一起——而页面上这个数
+                # 是当成「本实例的本体有多大」来读的。
+                total = db.scalar("SELECT count(*) FROM %s WHERE instance_id = %%s" % name,
+                                  (iid,))
+                n = (db.scalar("SELECT count(*) FROM %s WHERE instance_id = %%s "
+                               "AND version = %%s" % name, (iid, cur))
                      if name in VERSIONED else total)
             except Exception:                                  # noqa: BLE001
                 n = total = None
+        if name.endswith(".yaml"):
+            # **名字要跟着实例走。** 0044 之后每实例一份 YAML，
+            # 标签写死成 本体_v0.1.yaml 而行数读的是 本体_822gh_v0.1.yaml，
+            # 就成了「名字和数字对不上」——比不给这个数更糟。
+            try:
+                from .ontology import loader as _ol2
+                name = os.path.basename(_ol2.yaml_for(iid))
+            except (OSError, FileNotFoundError):
+                name = name + "（本实例没有这份文件）"
         rows.append({"table_name": name, "what": what, "written_by": who,
                      "on_recalc": on_recalc, "why": why, "rows": n,
                      "rows_all_versions": total,
                      "stale_versions": (total - n) if (total is not None and n is not None
                                                        and total > n) else 0})
+    # 版本历史也只列本实例的。不带实例的话，822港航 的本体页上会列出
+    # 福建海运集团 的历史版本，而且两边都标着 is_current——看起来像
+    # 「这个实例有两个当前版本」，而真相是在看别人的那一行。
     others = db.query("""SELECT version, is_current, loaded_at FROM ontology_version
-                          ORDER BY is_current DESC, loaded_at DESC""")
+                          WHERE instance_id = %s
+                          ORDER BY is_current DESC, loaded_at DESC""",
+                      (scope.require(),))
     return {"items": rows, "current_version": cur, "versions": others,
             "note": "**第一行是源文件，不是数据库表。** 本体的真源头是那份 YAML，"
                     "库里这些表全是它的投影——投影缺一列（0024 之前缺 alias），"
@@ -550,10 +608,12 @@ def biz_storage():
                     % sum(r["stale_versions"] or 0 for r in rows)}
 
 
-def list_actions(limit=200):
-    return db.query("""SELECT * FROM onto_cand_action
+def list_actions(limit=200, instance_id=None):
+    from . import scope
+    iid = scope.require(instance_id)
+    return db.query("""SELECT * FROM onto_cand_action WHERE instance_id=%s
                         ORDER BY acted_at DESC LIMIT %s""",
-                    (max(1, min(500, int(limit))),))
+                    (iid, max(1, min(500, int(limit)))))
 
 
 # ── L0 感知用的素材账 ───────────────────────────────────────────────────────
@@ -573,7 +633,7 @@ def perceive():
     源文件的写入口仍然只有人工采纳（adopt）。装载本身不在这个 Agent 里，
     它是本体工场第②③步的按钮。
     """
-    v = db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    v = onto_current.version()
     si = onto_yaml.source_info()
     return {
         # 源头：文件事实 + 库里的投影是否跟得上
@@ -606,5 +666,6 @@ def perceive():
         "本体枚举取值": db.scalar(
             "SELECT count(*) FROM ontology_enum_value WHERE version=%s", (v,)),
         "流程节点": db.scalar("SELECT count(*) FROM process_node WHERE version=%s", (v,)),
-        "现有候选": db.scalar("SELECT count(*) FROM onto_candidate"),
+        "现有候选": db.scalar("SELECT count(*) FROM onto_candidate WHERE instance_id=%s",
+                             (_scope_iid(),)),
     }

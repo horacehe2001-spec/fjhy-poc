@@ -34,7 +34,7 @@ import os
 
 import yaml
 
-from . import config, db, onto_yaml
+from . import config, db, onto_yaml, onto_current
 from .rules import engine as rule_engine
 
 # 八层。ord 决定页面与资产包里的顺序：文件 → 规则 → 三元本体 → 派生。
@@ -99,8 +99,20 @@ def sha_file(path):
         return None
 
 
+def _iid(instance_id=None):
+    """这次冻结/查询是哪个实例的。没传就取当前实例，取不到抛（不挑默认值）。
+
+    **发布资产必须有实例归属**：0041 之后 release 的主键是
+    (instance_id, release_id)，两个实例同一天各冻一版很可能都叫
+    rs-2026xxxx-01。不带实例去查 release，拿到的可能是另一个实例的版本，
+    而消费方会把它当成本实例的口径写进自己的审核链。
+    """
+    from . import scope
+    return scope.require(instance_id)
+
+
 def _onto_version():
-    return db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    return onto_current.version()
 
 
 def _yaml_section(key):
@@ -112,11 +124,11 @@ def _yaml_section(key):
 # ─────────────────────────────────────────────────────────────────────────────
 # 八层采集。每个 _snap_* 回 (item_count, payload)
 # ─────────────────────────────────────────────────────────────────────────────
-def _snap_files():
+def _snap_files(iid):
     rows = db.query("""SELECT rel_path, file_name, ext, file_size, parse_state, parse_reason,
                               text_chars, missing, doc_kind, doc_number, doc_title, issued_year,
                               abs_path, ocr_state, ocr_pages, ocr_table_pages
-                         FROM doc_lib_file ORDER BY rel_path""")
+                         FROM doc_lib_file WHERE instance_id = %s ORDER BY rel_path""", (iid,))
     items = []
     unreadable = 0
     for r in rows:
@@ -138,18 +150,21 @@ def _snap_files():
                                 "（已删/改名/权限），**不是空文件**"}
 
 
-def _snap_rules():
-    rows = db.query("SELECT * FROM rule ORDER BY rule_id, version")
+def _snap_rules(iid):
+    rows = db.query("SELECT * FROM rule WHERE instance_id = %s ORDER BY rule_id, version",
+                    (iid,))
     items = []
     for r in rows:
         d = dict(r)
         d.pop("created_at", None)        # 簿记字段，重装就变，进哈希会让「变没变」判不出来
+        d.pop("instance_id", None)       # 归属不是内容：同一份规则换个实例装进来，
+                                         # 内容哈希不该因此变化，否则 diff 永远显示「改了」
         d["rule_name"] = d.pop("name", None)   # 不叫 name：叫 name 会被人名脱敏吃掉
         items.append(d)
     return len(items), {"rules": items}
 
 
-def _snap_params():
+def _snap_params(iid):
     out = {}
     n = 0
     for key, path in (("标准表", config.STANDARDS_YAML),
@@ -169,7 +184,7 @@ def _snap_params():
     return n, {"tables": out}
 
 
-def _snap_biz():
+def _snap_biz(iid):
     v = _onto_version()
     ents = db.query("""SELECT entity_id, name, source, note, alias FROM ontology_entity
                         WHERE version=%s ORDER BY entity_id""", (v,))
@@ -200,7 +215,7 @@ def _snap_biz():
     return n, payload
 
 
-def _snap_onto_source():
+def _snap_onto_source(iid):
     """本体源文件原文。**冻文本，不冻解析结果**——注释只活在文本里。
 
     `loaded`（库里的投影是否同步）故意不冻：那是**当时的活状态**，
@@ -224,7 +239,7 @@ def _snap_onto_source():
     return si["lines"], payload
 
 
-def _snap_rule_schema():
+def _snap_rule_schema(iid):
     schema = _yaml_section("rule_schema")
     if not schema:
         raise PackError("本体_v0.1.yaml 里没有 rule_schema 段——规则本体这一层无从冻结。")
@@ -236,7 +251,7 @@ def _snap_rule_schema():
                        "enum_value_current 是库里的当前取值视图，规则的枚举列引用它"}
 
 
-def _snap_process():
+def _snap_process(iid):
     v = _onto_version()
     nodes = db.query("""SELECT node_id, name, is_bypass, note, alias FROM process_node
                          WHERE version=%s ORDER BY node_id""", (v,))
@@ -265,11 +280,11 @@ def _snap_json_file(path, label):
     return n, {"file": os.path.basename(path), "content": obj}
 
 
-def _snap_facts():
+def _snap_facts(iid):
     return _snap_json_file(config.FACT_MODEL_JSON, "事实模型")
 
 
-def _snap_bindings():
+def _snap_bindings(iid):
     return _snap_json_file(config.BINDING_JSON, "规则绑定")
 
 
@@ -281,11 +296,17 @@ COLLECTORS = {
 }
 
 
-def collect():
-    """抄一遍八层。**整体成败**：缺一层就抛，不做部分冻结。"""
+def collect(instance_id=None):
+    """抄一遍八层。**整体成败**：缺一层就抛，不做部分冻结。
+
+    按实例抄：文件层与规则层只抄本实例的（0034/0041 之后这两张表都带
+    instance_id）。否则 822港航 的发布包里会出现福建海运集团的规则——
+    而发布包是对外消费的唯一数据源，装错一层比不发布糟得多。
+    """
+    iid = _iid(instance_id)
     out = {}
     for name, _o, kind, ref, note in LAYERS:
-        n, payload = COLLECTORS[name]()
+        n, payload = COLLECTORS[name](iid)
         out[name] = {"layer": name, "ord": LAYER_ORD[name], "source_kind": kind,
                      "source_ref": ref, "item_count": n, "payload": payload,
                      "content_sha256": sha_obj(payload), "note": note}
@@ -304,7 +325,7 @@ def bundle_sha(assets):
 # ─────────────────────────────────────────────────────────────────────────────
 # 工作区：现在能发什么、和当前生效版本差多少
 # ─────────────────────────────────────────────────────────────────────────────
-def current_release():
+def current_release(instance_id=None):
     """**只看指针**，没人点过「切为当前」就返回 None。
 
     和 `rules.engine.effective_release()`（带 fallback 阶梯）**故意不一样**，
@@ -316,8 +337,11 @@ def current_release():
       · 内部引擎与管理页用 effective_release()——本机演示不能因为
         少点一次按钮就整套不工作。
     """
+    iid = _iid(instance_id)
     return db.query_one("""SELECT r.* FROM release_current c
-                             JOIN release r ON r.release_id = c.release_id""")
+                             JOIN release r ON r.release_id = c.release_id
+                                           AND r.instance_id = c.instance_id
+                            WHERE c.instance_id = %s""", (iid,))
 
 
 def _rule_hash_map(rules):
@@ -325,8 +349,9 @@ def _rule_hash_map(rules):
     return {r.get("rule_id"): sha_obj(r) for r in rules}
 
 
-def diff_against(assets, base_release_id):
+def diff_against(assets, base_release_id, instance_id=None):
     """工作区快照 vs 某个已冻结版本。只做规则层逐条、其余层按哈希比。"""
+    iid = _iid(instance_id)
     if not base_release_id:
         n = assets["规则"]["item_count"]
         return {"added": n, "modified": 0, "retired": 0, "unchanged": 0,
@@ -335,8 +360,8 @@ def diff_against(assets, base_release_id):
                     {"rule_id": r["rule_id"], "change": "added"}
                     for r in assets["规则"]["payload"]["rules"]]
     base = {r["layer"]: r for r in db.query(
-        "SELECT layer, content_sha256, payload FROM release_asset WHERE release_id=%s",
-        (base_release_id,))}
+        """SELECT layer, content_sha256, payload FROM release_asset
+            WHERE instance_id=%s AND release_id=%s""", (iid, base_release_id))}
     now_rules = _rule_hash_map(assets["规则"]["payload"]["rules"])
     old_rules = _rule_hash_map((base.get("规则", {}).get("payload") or {}).get("rules") or [])
     items = []
@@ -357,8 +382,9 @@ def diff_against(assets, base_release_id):
             "base": base_release_id}, items
 
 
-def gates(assets=None):
+def gates(assets=None, instance_id=None):
     """能不能冻结。**每条闸都给出「怎么过」**，不然页面上只有一个红叉。"""
+    iid = _iid(instance_id)
     out = []
     si = onto_yaml.source_info()
     out.append({
@@ -369,10 +395,14 @@ def gates(assets=None):
         "how": "不同步就说不清冻的是哪一份：页面上改过 YAML 还没重装，"
                "库里是旧投影而文件是新的。去业务本体那一栏重装一次本体。",
     })
-    n_rule = db.scalar("SELECT count(*) FROM rule WHERE version=1")
+    n_rule = db.scalar("SELECT count(*) FROM rule WHERE instance_id=%s AND version=1",
+                       (iid,))
     out.append({"gate": "工作区有规则", "ok": n_rule > 0,
                 "detail": "%d 条" % n_rule,
-                "how": "先跑规则资产装载（python app/rules/loader.py）"})
+                "how": "这个实例下还没有规则。新建的实例是空的：先在制度文件库上传"
+                       "制度文件、走规则抽取与统一口径采纳，规则本体里才会有东西。"
+                       "（福建海运集团那套是用 python app/rules/loader.py 从手工整理的"
+                       "规则清单_v0.1.json 装进去的，那份文件是它专属的，别的实例没有）"})
     if assets is not None:
         out.append({"gate": "九层都抄全了", "ok": len(assets) == len(LAYERS),
                     "detail": "%d/%d 层" % (len(assets), len(LAYERS)),
@@ -380,18 +410,20 @@ def gates(assets=None):
     return out
 
 
-def workspace():
+def workspace(instance_id=None):
     """「现在能发什么」。页面第一段就是它。"""
-    assets = collect()
+    iid = _iid(instance_id)
+    assets = collect(iid)
     # **比对基准和页面上的「当前生效」都取 effective_release()**，不取
     # current_release()（只看指针）。没设指针时后者返回 None，于是
     # 页头显示「现在没有生效版本」、工作区 diff 说「没有可比的已发布版本，
     # 整份都算新增」——而引擎其实正按最新已发布版在判。两句话都是错的。
-    eff, eff_why = rule_engine.effective_release()
-    cur = db.query_one("SELECT * FROM release WHERE release_id=%s",
-                       (eff["release_id"],)) if eff else None
-    is_pointer = bool(db.query_one("SELECT 1 FROM release_current"))
-    summary, _items = diff_against(assets, cur["release_id"] if cur else None)
+    eff, eff_why = rule_engine.effective_release(iid)
+    cur = db.query_one("SELECT * FROM release WHERE instance_id=%s AND release_id=%s",
+                       (iid, eff["release_id"])) if eff else None
+    is_pointer = bool(db.query_one("SELECT 1 FROM release_current WHERE instance_id=%s",
+                                   (iid,)))
+    summary, _items = diff_against(assets, cur["release_id"] if cur else None, iid)
     return {
         "layers": [{"layer": k, "ord": assets[k]["ord"],
                     "source_kind": assets[k]["source_kind"],
@@ -405,26 +437,33 @@ def workspace():
         "triple": list(TRIPLE),
         "bundle_sha256": bundle_sha(assets),
         "diff": summary,
-        "gates": gates(assets),
+        "gates": gates(assets, iid),
         "current": {"release_id": cur["release_id"], "rule_set_version": cur["rule_set_version"],
                     "published_at": cur["published_at"],
                     "is_pointer": is_pointer, "why": eff_why} if cur else None,
-        "suggest_version": _suggest_version(),
+        "suggest_version": _suggest_version(iid),
         "note": "冻结会把这九层**原样抄一份**存进库，之后改 YAML、重装规则、"
                 "文件库重扫都动不了它。三元本体 = 业务 / 规则 / 流程，"
                 "外加一层带注释的本体源文件原文。",
     }
 
 
-def _suggest_version():
+def _suggest_version(instance_id=None):
+    """建议的版本号。**按实例排号**：0041 把 rule_set_version 的唯一约束从全局
+    改成了 (instance_id, rule_set_version)，所以两个实例各自从 01 开始排，
+    不必为了避让对方跳号——跳号会让人以为中间那一版被删了。"""
+    iid = _iid(instance_id)
     d = datetime.date.today().strftime("%Y%m%d")
-    n = db.scalar("SELECT count(*) FROM release WHERE rule_set_version LIKE %s",
-                  ("rs-" + d + "-%",)) or 0
+    n = db.scalar("""SELECT count(*) FROM release
+                      WHERE instance_id=%s AND rule_set_version LIKE %s""",
+                  (iid, "rs-" + d + "-%")) or 0
     return "rs-%s-%02d" % (d, n + 1)
 
 
-def _next_release_id():
-    rows = db.query("SELECT release_id FROM release WHERE release_id ~ '^rel-[0-9]+$'")
+def _next_release_id(instance_id=None):
+    iid = _iid(instance_id)
+    rows = db.query("""SELECT release_id FROM release
+                        WHERE instance_id=%s AND release_id ~ '^rel-[0-9]+$'""", (iid,))
     nos = [int(r["release_id"].split("-")[1]) for r in rows]
     return "rel-%04d" % ((max(nos) if nos else 0) + 1)
 
@@ -432,78 +471,95 @@ def _next_release_id():
 # ─────────────────────────────────────────────────────────────────────────────
 # 冻结 → 送审 → 签字发布 → 切当前 / 回滚
 # ─────────────────────────────────────────────────────────────────────────────
-def freeze(version, by, note=None):
+def freeze(version, by, note=None, instance_id=None):
+    iid = _iid(instance_id)
     version = (version or "").strip()
     by = (by or "").strip()
     if not version:
         raise PackError("版本号必填。它是消费方引用这一版的唯一凭据。")
     if not by:
         raise PackError("冻结人必填。发布链上每一步都要有名字——出事要找得到人。")
-    if db.query_one("SELECT 1 FROM release WHERE rule_set_version=%s", (version,)):
-        raise PackError("版本号 %s 已经有了。版本号不许复用：复用等于"
+    if db.query_one("""SELECT 1 FROM release
+                        WHERE instance_id=%s AND rule_set_version=%s""", (iid, version)):
+        raise PackError("本实例里版本号 %s 已经有了。版本号不许复用：复用等于"
                         "「同一个号两次拉到不同内容」，那是对外消费里最难查的事故。"
-                        % version)
-    assets = collect()
-    bad = [g for g in gates(assets) if not g["ok"]]
+                        "（0041 之后版本号只要求**实例内**唯一，"
+                        "别的实例用过同一个号不算冲突）" % version)
+    assets = collect(iid)
+    bad = [g for g in gates(assets, iid) if not g["ok"]]
     if bad:
         raise PackError("；".join("%s（%s）→ %s" % (g["gate"], g["detail"], g["how"])
                                  for g in bad))
-    cur = current_release()
-    summary, items = diff_against(assets, cur["release_id"] if cur else None)
-    rid = _next_release_id()
+    cur = current_release(iid)
+    summary, items = diff_against(assets, cur["release_id"] if cur else None, iid)
+    rid = _next_release_id(iid)
     onto_v = _onto_version()
     n_rule = assets["规则"]["item_count"]
-    compiled = db.scalar("SELECT count(*) FROM rule WHERE version=1 AND compiled")
-    executable = db.scalar("SELECT count(*) FROM rule WHERE version=1 AND demo_executable")
+    compiled = db.scalar("""SELECT count(*) FROM rule
+                             WHERE instance_id=%s AND version=1 AND compiled""", (iid,))
+    executable = db.scalar("""SELECT count(*) FROM rule
+                               WHERE instance_id=%s AND version=1 AND demo_executable""",
+                           (iid,))
     bsha = bundle_sha(assets)
     with db.tx() as conn:
         cur_ = conn.cursor()
-        cur_.execute("""INSERT INTO release (release_id, rule_set_version, ontology_version,
-                            status, rule_count, compiled_count, executable_count,
-                            diff_summary, created_by, note, frozen_at, bundle_sha256)
-                        VALUES (%s,%s,%s,'draft',%s,%s,%s,%s,%s,%s,now(),%s)""",
-                     (rid, version, onto_v, n_rule, compiled, executable,
+        cur_.execute("""INSERT INTO release (instance_id, release_id, rule_set_version,
+                            ontology_version, status, rule_count, compiled_count,
+                            executable_count, diff_summary, created_by, note,
+                            frozen_at, bundle_sha256)
+                        VALUES (%s,%s,%s,%s,'draft',%s,%s,%s,%s,%s,%s,now(),%s)""",
+                     (iid, rid, version, onto_v, n_rule, compiled, executable,
                       json.dumps(summary, ensure_ascii=False), by, note, bsha))
         for k in sorted(assets, key=lambda x: assets[x]["ord"]):
             a = assets[k]
-            cur_.execute("""INSERT INTO release_asset (release_id, layer, ord, source_kind,
-                                source_ref, item_count, content_sha256, payload, note)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                         (rid, k, a["ord"], a["source_kind"], a["source_ref"],
+            cur_.execute("""INSERT INTO release_asset (instance_id, release_id, layer, ord,
+                                source_kind, source_ref, item_count, content_sha256,
+                                payload, note)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                         (iid, rid, k, a["ord"], a["source_kind"], a["source_ref"],
                           a["item_count"], a["content_sha256"],
                           json.dumps(a["payload"], ensure_ascii=False, default=str),
                           a["note"]))
         for it in items:
-            cur_.execute("""INSERT INTO release_item (release_id, rule_id, version, change)
-                            VALUES (%s,%s,1,%s)""", (rid, it["rule_id"], it["change"]))
+            cur_.execute("""INSERT INTO release_item (instance_id, release_id, rule_id,
+                                version, change)
+                            VALUES (%s,%s,%s,1,%s)""",
+                         (iid, rid, it["rule_id"], it["change"]))
     return {"release_id": rid, "rule_set_version": version, "bundle_sha256": bsha,
             "layers": len(assets), "diff": summary,
             "note": "已冻结为草稿。**草稿不能被消费**——/api/pub 只给已发布的版本。"
                     "下一步：送审 → 签字发布 → 切为当前。"}
 
 
-def _must(release_id):
-    r = db.query_one("SELECT * FROM release WHERE release_id=%s", (release_id,))
+def _must(release_id, instance_id=None):
+    """取一版，**限定在实例内**。不限定的话，发布管理页上的操作可能打到
+    另一个实例的同名版本上——release_id 在 0041 之后只在实例内唯一。"""
+    iid = _iid(instance_id)
+    r = db.query_one("SELECT * FROM release WHERE instance_id=%s AND release_id=%s",
+                     (iid, release_id))
     if not r:
-        raise PackError("没有这个发布：%s" % release_id)
+        raise PackError("本实例里没有这个发布：%s" % release_id)
     return r
 
 
-def review(release_id, by):
-    r = _must(release_id)
+def review(release_id, by, instance_id=None):
+    iid = _iid(instance_id)
+    r = _must(release_id, iid)
     if r["status"] != "draft":
         raise PackError("只有草稿能送审，当前是「%s」。" % r["status"])
     if not r["frozen_at"]:
         raise PackError("这一版还没冻结过内容（frozen_at 为空），送审没有意义。")
     if not (by or "").strip():
         raise PackError("送审人必填。")
-    db.execute("UPDATE release SET status='reviewing' WHERE release_id=%s", (release_id,))
+    db.execute("""UPDATE release SET status='reviewing'
+                    WHERE instance_id=%s AND release_id=%s""", (iid, release_id))
     return {"release_id": release_id, "status": "reviewing"}
 
 
-def publish(release_id, by):
+def publish(release_id, by, instance_id=None):
     """签字发布。**不自动切为当前**——发布和生效是两件事。"""
-    r = _must(release_id)
+    iid = _iid(instance_id)
+    r = _must(release_id, iid)
     if r["status"] not in ("draft", "reviewing"):
         raise PackError("当前状态「%s」不能发布。" % r["status"])
     if not (by or "").strip():
@@ -511,7 +567,9 @@ def publish(release_id, by):
                         "reviewed_by 为空的 release 不允许进 published。"
                         "规则集一变，所有在跑的单据的判定口径就跟着变——不许自动发布。")
     db.execute("""UPDATE release SET status='published', reviewed_by=%s, reviewed_at=now(),
-                         published_at=now() WHERE release_id=%s""", (by.strip(), release_id))
+                         published_at=now()
+                    WHERE instance_id=%s AND release_id=%s""",
+               (by.strip(), iid, release_id))
     same = (r["created_by"] or "").strip() == by.strip()
     return {"release_id": release_id, "status": "published", "reviewed_by": by.strip(),
             "same_person": same,
@@ -520,28 +578,38 @@ def publish(release_id, by):
                     else "已发布。还要再点一次「切为当前」才会生效。"}
 
 
-def switch_current(release_id, by):
-    r = _must(release_id)
+def switch_current(release_id, by, instance_id=None):
+    """切为当前。**只动本实例的指针。**
+
+    0041 之前 release_current 是全库单行表（singleton BOOLEAN PRIMARY KEY），
+    所以这里原来是无条件 `DELETE FROM release_current` 再插一行。审核领域有了
+    第二个实例之后，那个写法会把**另一个实例的生效版本一起清掉**——
+    而那边页面上什么都不会变，直到有人发现引擎换了版本在判单。
+    现在主键是 instance_id，删与插都带实例条件。
+    """
+    iid = _iid(instance_id)
+    r = _must(release_id, iid)
     if r["status"] != "published":
         raise PackError("只有已发布的版本能切为当前，当前是「%s」。" % r["status"])
     with db.tx() as conn:
         c = conn.cursor()
-        c.execute("DELETE FROM release_current")
-        c.execute("""INSERT INTO release_current (singleton, release_id, switched_by)
-                     VALUES (TRUE,%s,%s)""", (release_id, (by or "").strip() or None))
+        c.execute("DELETE FROM release_current WHERE instance_id=%s", (iid,))
+        c.execute("""INSERT INTO release_current (instance_id, release_id, switched_by)
+                     VALUES (%s,%s,%s)""", (iid, release_id, (by or "").strip() or None))
     return {"release_id": release_id, "current": True}
 
 
-def rollback(release_id, to_release_id, by, reason):
-    """把某一版标回滚，并把当前指针指回另一个已发布版本。"""
-    r = _must(release_id)
+def rollback(release_id, to_release_id, by, reason, instance_id=None):
+    """把某一版标回滚，并把当前指针指回另一个已发布版本。只动本实例。"""
+    iid = _iid(instance_id)
+    r = _must(release_id, iid)
     if r["status"] != "published":
         raise PackError("只有已发布的版本需要回滚，当前是「%s」。" % r["status"])
     if not (reason or "").strip():
         raise PackError("回滚原因必填。没有原因的回滚，三个月后没人说得清为什么。")
     if not (by or "").strip():
         raise PackError("操作人必填。")
-    to = _must(to_release_id) if to_release_id else None
+    to = _must(to_release_id, iid) if to_release_id else None
     if to and to["status"] != "published":
         raise PackError("要指回的版本 %s 不是已发布状态。" % to_release_id)
     if to and to["release_id"] == release_id:
@@ -549,12 +617,12 @@ def rollback(release_id, to_release_id, by, reason):
     with db.tx() as conn:
         c = conn.cursor()
         c.execute("""UPDATE release SET status='rolled_back', rolled_back_at=now(),
-                            rollback_reason=%s WHERE release_id=%s""",
-                  (reason.strip(), release_id))
-        c.execute("DELETE FROM release_current")
+                            rollback_reason=%s WHERE instance_id=%s AND release_id=%s""",
+                  (reason.strip(), iid, release_id))
+        c.execute("DELETE FROM release_current WHERE instance_id=%s", (iid,))
         if to:
-            c.execute("""INSERT INTO release_current (singleton, release_id, switched_by)
-                         VALUES (TRUE,%s,%s)""", (to_release_id, by.strip()))
+            c.execute("""INSERT INTO release_current (instance_id, release_id, switched_by)
+                         VALUES (%s,%s,%s)""", (iid, to_release_id, by.strip()))
     return {"release_id": release_id, "status": "rolled_back",
             "current": to_release_id,
             "note": "当前指针%s。回滚不是「取 published 里最新的一条」能表达的——"
@@ -562,22 +630,25 @@ def rollback(release_id, to_release_id, by, reason):
                     % ("已指回 " + to_release_id if to else "已清空（现在没有生效版本）")}
 
 
-def discard(release_id, by):
+def discard(release_id, by, instance_id=None):
     """删掉一个草稿。**只能删草稿**：已发布的版本删不掉，那是资产。"""
-    r = _must(release_id)
+    iid = _iid(instance_id)
+    r = _must(release_id, iid)
     if r["status"] != "draft":
         raise PackError("只有草稿能删，当前是「%s」。已发布的版本是资产，不许删。"
                         % r["status"])
     if not (by or "").strip():
         raise PackError("操作人必填。")
-    db.execute("DELETE FROM release WHERE release_id=%s", (release_id,))   # 快照级联删
+    db.execute("DELETE FROM release WHERE instance_id=%s AND release_id=%s",
+               (iid, release_id))   # 快照级联删
     return {"release_id": release_id, "deleted": True}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 查询
 # ─────────────────────────────────────────────────────────────────────────────
-def list_releases():
+def list_releases(instance_id=None):
+    iid = _iid(instance_id)
     rows = db.query("""SELECT r.release_id, r.rule_set_version, r.ontology_version, r.status,
                               r.rule_count, r.compiled_count, r.executable_count,
                               r.diff_summary, r.created_by, r.created_at, r.frozen_at,
@@ -585,18 +656,22 @@ def list_releases():
                               r.rolled_back_at, r.rollback_reason, r.note, r.bundle_sha256,
                               (c.release_id IS NOT NULL) AS is_current,
                               (SELECT count(*) FROM release_asset a
-                                WHERE a.release_id = r.release_id) AS layers,
+                                WHERE a.instance_id = r.instance_id
+                                  AND a.release_id = r.release_id) AS layers,
                               (SELECT count(*) FROM release_access_log l
-                                WHERE l.release_id = r.release_id) AS accesses
+                                WHERE l.instance_id = r.instance_id
+                                  AND l.release_id = r.release_id) AS accesses
                          FROM release r
                          LEFT JOIN release_current c ON c.release_id = r.release_id
-                        ORDER BY r.created_at DESC""")
+                                                    AND c.instance_id = r.instance_id
+                        WHERE r.instance_id = %s
+                        ORDER BY r.created_at DESC""", (iid,))
     # is_effective = 规则引擎实际在用的那一版。**直接问引擎，不在这里另算一遍。**
     # 原先这里自己写了一套 fallback（最新的 published），而引擎取的是
     # 「最新的任意版本」，两套在实测中给出了不同答案：引擎按草稿 rs-0.1 判，
     # 页面却把 rs-20261021-01 标成「生效中（自动）」。页面标错生效版，
     # 等于让人照着错的版本号去复现结论。
-    eff, eff_why = rule_engine.effective_release()
+    eff, eff_why = rule_engine.effective_release(iid)
     eff_id = eff["release_id"] if eff else None
     for r in rows:
         r["is_effective"] = (r["release_id"] == eff_id)
@@ -608,42 +683,54 @@ def list_releases():
                        "effective": eff_why}}
 
 
-def get_release(release_id):
-    r = _must(release_id)
+def get_release(release_id, instance_id=None):
+    iid = _iid(instance_id)
+    r = _must(release_id, iid)
     r["is_current"] = bool(db.query_one(
-        "SELECT 1 FROM release_current WHERE release_id=%s", (release_id,)))
+        "SELECT 1 FROM release_current WHERE instance_id=%s AND release_id=%s",
+        (iid, release_id)))
     r["assets"] = db.query("""SELECT layer, ord, source_kind, source_ref, item_count,
                                      content_sha256, note
-                                FROM release_asset WHERE release_id=%s ORDER BY ord""",
-                           (release_id,))
+                                FROM release_asset
+                               WHERE instance_id=%s AND release_id=%s ORDER BY ord""",
+                           (iid, release_id))
     for a in r["assets"]:
         a["is_triple"] = a["layer"] in TRIPLE
     r["items"] = db.query("""SELECT rule_id, change FROM release_item
-                              WHERE release_id=%s ORDER BY change, rule_id""", (release_id,))
+                              WHERE instance_id=%s AND release_id=%s
+                              ORDER BY change, rule_id""", (iid, release_id))
     return r
 
 
-def asset_payload(release_id, layer):
+def asset_payload(release_id, layer, instance_id=None):
+    iid = _iid(instance_id)
     row = db.query_one("""SELECT payload, content_sha256, item_count, source_ref
-                            FROM release_asset WHERE release_id=%s AND layer=%s""",
-                       (release_id, layer))
+                            FROM release_asset
+                           WHERE instance_id=%s AND release_id=%s AND layer=%s""",
+                       (iid, release_id, layer))
     if not row:
         raise PackError("发布 %s 里没有「%s」这一层。" % (release_id, layer))
     return row
 
 
-def access_log(limit=50):
+def access_log(limit=50, instance_id=None):
+    iid = _iid(instance_id)
     return db.query("""SELECT l.id, l.release_id, l.resource, l.at, l.client, l.bytes,
                               l.http_status, r.rule_set_version
                          FROM release_access_log l
                          LEFT JOIN release r ON r.release_id = l.release_id
-                        ORDER BY l.at DESC LIMIT %s""", (limit,))
+                                            AND r.instance_id = l.instance_id
+                        WHERE l.instance_id = %s
+                        ORDER BY l.at DESC LIMIT %s""", (iid, limit))
 
 
-def log_access(release_id, resource, client, nbytes, status=200):
-    db.execute("""INSERT INTO release_access_log (release_id, resource, client, bytes,
-                        http_status) VALUES (%s,%s,%s,%s,%s)""",
-               (release_id, resource, (client or "")[:200] or None, nbytes, status))
+def log_access(release_id, resource, client, nbytes, status=200, instance_id=None):
+    """消费台账。**instance_id 允许为空**：拉一个不存在的版本也要留一行
+    （0025 的口径——差的那几次请求必须查得出来），而那种请求算不出归属。"""
+    iid = instance_id or None
+    db.execute("""INSERT INTO release_access_log (instance_id, release_id, resource, client,
+                        bytes, http_status) VALUES (%s,%s,%s,%s,%s,%s)""",
+               (iid, release_id, resource, (client or "")[:200] or None, nbytes, status))
 
 
 STORAGE = [

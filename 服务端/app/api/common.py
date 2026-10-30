@@ -34,8 +34,19 @@ def demo_banner():
     所有列表接口都带这个字段，前端据此打标——
     「这条结论是跑真实单据得出的还是跑编的数据得出的」必须一眼可辨。
     """
-    n_demo = db.scalar("SELECT count(*) FROM expense_bill WHERE is_demo") or 0
-    n_real = db.scalar("SELECT count(*) FROM expense_bill WHERE NOT is_demo") or 0
+    # 按当前实例数。这两个数会出现在每个列表页的横幅上，
+    # 不按实例数的话，822港航 的页面会顶着"真实单据 40 张"的横幅而列表里一张都没有,
+    # 看的人只能理解成列表坏了。
+    # **没选实例时回 0 而不是全库数**：如实说"这里没有可统计的单据"。
+    from .. import scope
+    try:
+        iid = scope.require()
+    except scope.ScopeError:
+        iid = None
+    n_demo = (db.scalar("SELECT count(*) FROM expense_bill WHERE instance_id=%s AND is_demo",
+                        (iid,)) or 0) if iid else 0
+    n_real = (db.scalar("SELECT count(*) FROM expense_bill "
+                        "WHERE instance_id=%s AND NOT is_demo", (iid,)) or 0) if iid else 0
     return {"demo_bills": n_demo, "real_bills": n_real,
             "prefix": config.DEMO_BILL_PREFIX,
             "note": "带 %s 前缀、is_demo=true 的是合成的演示数据；其余是客户真实单据"

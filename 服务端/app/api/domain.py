@@ -21,7 +21,7 @@ import uuid
 
 from fastapi import APIRouter, Body, HTTPException
 
-from .. import db
+from .. import db, onto_current
 
 router = APIRouter(prefix="/api/domain", tags=["领域知识资产"])
 
@@ -150,6 +150,66 @@ def add_domain(body: dict = Body(...)):
             "note": "领域已建好，下面还没有实例。要用它先给它加一个实例。"}
 
 
+@router.post("/instances")
+def add_instance(body: dict = Body(...)):
+    """新增实例。对应页面上的「添加实例」按钮。
+
+    **建出来就是空的，不做任何种子数据**（用户 2026-10-29 决策：新实例完全空白，
+    不克隆现有实例的资产）。所以这个接口很薄——它不需要给新实例建空的
+    release / ontology 占位行：`engine.effective_release()` 的第三级阶梯
+    本来就能处理「这个实例下一个 release 都没有」，页面也会如实显示 0。
+    凭空造几行占位数据反而会让人以为那里已经有东西了。
+
+    **不自动切过去**（和 add_domain 同一条理由）：点「添加」是建一个东西，
+    不是「我要开始用它」。当前实例是全局单例，切过去会影响所有正在看页面的人。
+
+    instance_id 用生成的短 id，不从中文名推：拼音转换不在依赖里，
+    而让用户自己填英文 id 是在问一个他答不上来的问题。
+
+    重名只在**同一领域内**判。不同领域下可以有同名实例（审核/华电集团 与
+    报表/华电集团 是两回事），跨领域判重会把合理的事情挡掉。
+    """
+    did = (body.get("domain_id") or "").strip()
+    d = db.query_one("SELECT domain_id, label, enabled FROM domain WHERE domain_id = %s",
+                     (did,))
+    if not d:
+        raise HTTPException(400, "领域不存在：%s" % did)
+    if not d["enabled"]:
+        raise HTTPException(400, "领域已停用：%s，不能往里加实例" % did)
+
+    label = (body.get("label") or "").strip()
+    if not label:
+        raise HTTPException(400, "实例名称不能为空")
+    if len(label) > 40:
+        raise HTTPException(400, "实例名称最长 40 字")
+    dup = db.query_one("""SELECT instance_id FROM domain_instance
+                           WHERE domain_id = %s AND label = %s""", (did, label))
+    if dup:
+        raise HTTPException(400, "领域「%s」下已有同名实例：%s（%s）"
+                            % (d["label"], label, dup["instance_id"]))
+
+    iid = "inst-" + uuid.uuid4().hex[:8]
+    nxt = (db.scalar("SELECT max(sort_no) FROM domain_instance WHERE domain_id = %s",
+                     (did,)) or 0) + 10
+    # 该领域下还没有实例时，第一个建出来的当默认——否则这个领域永远没有默认实例，
+    # 而 set_current 在不传 instance_id 时取的就是默认实例，会一直置空。
+    has_default = db.scalar("""SELECT count(*) FROM domain_instance
+                                WHERE domain_id = %s AND is_default""", (did,)) or 0
+    db.execute("""INSERT INTO domain_instance (instance_id, domain_id, label, is_default,
+                      sort_no, note) VALUES (%s,%s,%s,%s,%s,%s)""",
+               (iid, did, label, not has_default, nxt,
+                (body.get("note") or "").strip()[:500] or None))
+    return {
+        "ok": True, "instance_id": iid, "label": label,
+        "domain_id": did, "domain_label": d["label"],
+        "is_default": not has_default,
+        "note": "实例已建好，**里面是空的**：制度文件 0、规则 0、本体 0、发布版本 0。"
+                "要给它建内容，先切到这个实例，然后去「制度文件库」上传它自己的"
+                "制度文件，再走规则抽取与统一口径采纳。"
+                "当前实例没有自动切过去——建一个东西和开始用它是两件事。",
+    }
+
+
 @router.get("/overview")
 def overview():
     """当前实例的资产概览。
@@ -158,15 +218,29 @@ def overview():
     口径写在返回里，不让人误读成「筛出来的」。
     """
     cur = current()
-    _onto_cur = db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    iid = cur["instance_id"]
+    _onto_cur = onto_current.version()
+    # 没选实例（切到了一个还没有实例的领域）时，不去编一组数字出来：
+    # 全部给 0 并在 scope_note 里说明，比显示全库数字诚实。
     counts = {
-        "doc_files": db.scalar("SELECT count(*) FROM doc_lib_file") or 0,
-        "clauses": db.scalar("SELECT count(*) FROM doclib_clause") or 0,
-        "rules_total": db.scalar("SELECT count(*) FROM rule WHERE version = 1") or 0,
+        "doc_files": db.scalar("SELECT count(*) FROM doc_lib_file WHERE instance_id = %s",
+                               (iid,)) or 0 if iid else 0,
+        # doclib_clause 自己没有 instance_id（归属经 doc_lib_file 推），
+        # 所以这里 join 过去数，不是多写一个 join 而已——条款数要和上面的
+        # 文件数同口径，否则页面上会出现「0 份文件却有 400 条条款」。
+        "clauses": db.scalar("""SELECT count(*) FROM doclib_clause c
+                                  JOIN doc_lib_file f ON f.file_id = c.file_id
+                                 WHERE f.instance_id = %s""", (iid,)) or 0 if iid else 0,
+        "rules_total": db.scalar("""SELECT count(*) FROM rule
+                                     WHERE instance_id = %s AND version = 1""",
+                                 (iid,)) or 0 if iid else 0,
         "rules_compiled": db.scalar(
-            "SELECT count(*) FROM rule WHERE version = 1 AND compiled") or 0,
+            "SELECT count(*) FROM rule WHERE instance_id = %s AND version = 1 AND compiled",
+            (iid,)) or 0 if iid else 0,
         "rules_executable": db.scalar(
-            "SELECT count(*) FROM rule WHERE version = 1 AND demo_executable") or 0,
+            """SELECT count(*) FROM rule
+                WHERE instance_id = %s AND version = 1 AND demo_executable""",
+            (iid,)) or 0 if iid else 0,
         # 本体实体/概念只数**当前版本**，当前版本取自 ontology_version.is_current。
         # 两个坑都在这一句里：
         #   · 直接 count(*) 会把旧版 v0.1-draft 的行算进去（34 实体 / 240 概念），
@@ -177,15 +251,19 @@ def overview():
             "SELECT count(*) FROM ontology_entity WHERE version = %s", (_onto_cur,)) or 0,
         "onto_concepts": db.scalar(
             "SELECT count(*) FROM ontology_concept WHERE version = %s", (_onto_cur,)) or 0,
-        "bills_real": db.scalar("SELECT count(*) FROM expense_bill WHERE NOT is_demo") or 0,
-        "bills_demo": db.scalar("SELECT count(*) FROM expense_bill WHERE is_demo") or 0,
+        "bills_real": db.scalar(
+            "SELECT count(*) FROM expense_bill WHERE instance_id = %s AND NOT is_demo",
+            (iid,)) or 0 if iid else 0,
+        "bills_demo": db.scalar(
+            "SELECT count(*) FROM expense_bill WHERE instance_id = %s AND is_demo",
+            (iid,)) or 0 if iid else 0,
     }
     # 生效版本**必须走 engine.effective_release()**。自己写一句
     # `WHERE status='current'` 会得到 None（库里根本没有 current 这个状态值），
     # 页面就会显示「没有发布版本」，而引擎其实正按 rs-20261021-01 在判。
     # 这个判断全站只留一份，engine 里那份注释写明了分叉过一次的后果。
     from ..rules import engine
-    rel, rel_why = engine.effective_release()
+    rel, rel_why = (engine.effective_release(iid) if iid else (None, "还没有选定实例"))
     return {
         "current": cur,
         "counts": counts,
@@ -193,7 +271,15 @@ def overview():
         "current_release_why": rel_why,
         "rule_set_version": rel.get("rule_set_version") if rel else None,
         "onto_version": _onto_cur,
-        "scope_note": ("本期按「归属 + 展示」做：资产已归到当前实例，"
-                       "但接口**尚未按实例过滤**，所以这里是全库数字。"
-                       "有第二个实例时才需要逐条接口加过滤。"),
+        # 口径必须写准：**制度文件/条款/规则/单据这四类已经是按当前实例过滤的数字**
+        # （迁移 0040/0041 之后），而**本体那两个数仍是全库的**——本体链还没做
+        # 按实例隔离（ontology_* 表还没有 instance_id 列）。
+        # 不把这个差别写出来，看页面的人会以为本体也是这个实例自己的。
+        "scope_note": ("制度文件、条款、规则、单据这几个数**已按当前实例过滤**。"
+                       "本体实体/概念两个数仍是**全库**数字：本体表还没做按实例隔离，"
+                       "两个实例目前共用同一份本体投影（本体的源头是单一文件"
+                       "本体_v0.1.yaml）。"
+                       if iid else
+                       "这个领域下还没有实例，所以没有可统计的资产——"
+                       "**不是 0 条资产，是还没有归属可言**。先添加一个实例。"),
     }

@@ -91,9 +91,9 @@ def bill():
     """一张真实（非演示）测试单。跑完连带附件一起删。"""
     no = PREFIX + "0001"
     # doc_type / biz_type 是 NOT NULL 且带枚举外键，必须给真值
-    db.execute("""INSERT INTO expense_bill(bill_no, doc_type, biz_type, is_demo,
-                                           attach_pages)
-                  VALUES (%s, '差旅费报账单', '国内差旅费', FALSE, 7)
+    db.execute("""INSERT INTO expense_bill(instance_id, bill_no, doc_type, biz_type,
+                                           is_demo, attach_pages)
+                  VALUES ('fjhy', %s, '差旅费报账单', '国内差旅费', FALSE, 7)
                   ON CONFLICT (bill_no) DO NOTHING""", (no,))
     yield no
     db.execute("DELETE FROM attachment WHERE bill_no=%s", (no,))

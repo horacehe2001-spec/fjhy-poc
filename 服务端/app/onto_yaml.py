@@ -33,7 +33,7 @@ import shutil
 
 import yaml
 
-from . import config, db
+from . import config, db, onto_current
 
 BACKUP_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "onto_yaml_backup")
@@ -74,8 +74,7 @@ def source_info():
     lines = _lines()
     raw = yaml.safe_load("\n".join(lines))
     meta = raw.get("meta") or {}
-    v = db.query_one("""SELECT version, source_hash, loaded_at, stats
-                          FROM ontology_version WHERE is_current""")
+    v = onto_current.row()
     h = sha256()
     return {
         "path": os.path.basename(config.ONTOLOGY_YAML),
@@ -313,16 +312,14 @@ def reload(check_only=False):
     """
     from .ontology import loader as onto_loader
     h = sha256()
-    cur = db.query_one("""SELECT version, source_hash, loaded_at
-                            FROM ontology_version WHERE is_current""")
+    cur = onto_current.row(cols="version, source_hash, loaded_at")
     if check_only:
         return {"checked": True, "file_sha256": h,
                 "db_source_hash": cur["source_hash"] if cur else None,
                 "in_sync": bool(cur and cur["source_hash"] == h),
                 "note": "只比对，没写库。不一致说明文件改了但没重装。"}
     stats = onto_loader.load(verbose=False)
-    after = db.query_one("""SELECT version, source_hash, loaded_at, stats
-                             FROM ontology_version WHERE is_current""")
+    after = onto_current.row()
     return {"checked": False, "file_sha256": h, "loaded": True,
             "version": after["version"] if after else None,
             "db_source_hash": after["source_hash"] if after else None,

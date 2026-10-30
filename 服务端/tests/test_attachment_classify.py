@@ -49,8 +49,11 @@ def _png_file(tmp_path, name="a.png", color="red"):
 def att(tmp_path):
     """一张挂在真实单上的测试附件，带磁盘原图。跑完连带附件台账一起删。"""
     bill = PREFIX + "0001"
-    db.execute("""INSERT INTO expense_bill(bill_no, doc_type, biz_type, is_demo)
-                  VALUES (%s,'差旅费报账单','国内差旅费',FALSE)
+    # instance_id 必填（迁移 0040）。测试数据一律挂在 fjhy 下：
+    # 这几个用例验的是附件读图链路，和实例隔离无关，挂哪个实例都行，
+    # 但**必须显式写出来**——留空会撞 NOT NULL，而那个报错和被测的东西毫无关系。
+    db.execute("""INSERT INTO expense_bill(instance_id, bill_no, doc_type, biz_type, is_demo)
+                  VALUES ('fjhy',%s,'差旅费报账单','国内差旅费',FALSE)
                   ON CONFLICT (bill_no) DO NOTHING""", (bill,))
     path = _png_file(tmp_path)
     aid = db.scalar("""INSERT INTO attachment(bill_no, file_name, stored_path, seq,
@@ -227,9 +230,9 @@ def test_重读不覆盖旧行而是新增attempt(att, cfg, monkeypatch):
 def test_不是xlsx内嵌来源的附件拒绝读图(cfg):
     """演示数据的类型是生成器直接给的，不该被读图覆盖，也不该花这个钱。"""
     bill = PREFIX + "DEMO"
-    db.execute("""INSERT INTO expense_bill(bill_no, doc_type, biz_type, is_demo)
-                  VALUES (%s,'差旅费报账单','国内差旅费',TRUE) ON CONFLICT DO NOTHING""",
-               (bill,))
+    db.execute("""INSERT INTO expense_bill(instance_id, bill_no, doc_type, biz_type, is_demo)
+                  VALUES ('fjhy',%s,'差旅费报账单','国内差旅费',TRUE)
+                  ON CONFLICT DO NOTHING""", (bill,))
     aid = db.scalar("""INSERT INTO attachment(bill_no, file_name, source_kind)
                         VALUES (%s,'演示票据.pdf','演示合成') RETURNING id""", (bill,))
     try:

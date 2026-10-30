@@ -9,7 +9,7 @@ import os
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
-from .. import db
+from .. import db, scope
 from ..audit import recorder as rec
 from .common import demo_banner, must_exist, paginate
 
@@ -19,10 +19,24 @@ router = APIRouter(prefix="/api", tags=["报账单审核"])
 # ─────────────────────────────────────────────────────────────────────────────
 # 审核岗工作台
 # ─────────────────────────────────────────────────────────────────────────────
+def _iid():
+    """本栏查询按哪个实例过滤。没选实例回 400，**不退化成全库**。
+
+    400 而不是 500：这是"请先去选实例"，不是程序出错（与 api/doclib.py 同款处置）。
+    """
+    try:
+        return scope.require()
+    except scope.ScopeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/bills")
 def list_bills(conclusion: str = None, is_demo: bool = None,
                q: str = None, page: int = 1, size: int = 20):
-    where, params = [], []
+    # 单据列表必须按实例过滤：这是审核工作台的入口页，不过滤的话切到 822港航
+    # 看到的是福建海运集团的 69 张单，而页头徽标写着 822港航——
+    # 更要紧的是从这里能点进单据详情、能触发复核，等于跨实例在改别人的单。
+    where, params = ["b.instance_id = %s"], [_iid()]
     if is_demo is not None:
         where.append("b.is_demo = %s")
         params.append(is_demo)
@@ -32,7 +46,7 @@ def list_bills(conclusion: str = None, is_demo: bool = None,
     if conclusion:
         where.append("r.conclusion = %s")
         params.append(conclusion)
-    w = (" WHERE " + " AND ".join(where)) if where else ""
+    w = " WHERE " + " AND ".join(where)
     base = """FROM expense_bill b
               LEFT JOIN LATERAL (SELECT * FROM review_run rr WHERE rr.bill_no=b.bill_no
                                  ORDER BY rr.started_at DESC LIMIT 1) r ON TRUE""" + w
@@ -50,9 +64,13 @@ def list_bills(conclusion: str = None, is_demo: bool = None,
 
 @router.get("/bills/{bill_no}")
 def get_bill(bill_no: str):
+    # bill_no 全局唯一，所以这里加实例条件不是为了"找对那一张"，
+    # 而是为了**挡住跨实例读取**：切到 822港航 之后，拿一个福建海运集团的单号
+    # 仍然能把整张单（含姓名、金额、附件）调出来，那是越过实例边界读数据。
     b = must_exist(db.query_one("""SELECT b.*, o.name AS org_name FROM expense_bill b
                                    LEFT JOIN org o ON o.org_id=b.org_id
-                                   WHERE b.bill_no=%s""", (bill_no,)), "报账单 " + bill_no)
+                                   WHERE b.instance_id=%s AND b.bill_no=%s""",
+                                (_iid(), bill_no)), "报账单 " + bill_no)
     b["details"] = db.query("SELECT expense_item, amount, alloc_dept FROM expense_detail "
                             "WHERE bill_no=%s ORDER BY id", (bill_no,))
     b["approvals"] = db.query("""SELECT seq, node, approver, opinion, approved_at

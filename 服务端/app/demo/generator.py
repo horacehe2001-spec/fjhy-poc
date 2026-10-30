@@ -28,6 +28,15 @@ if __name__ == "__main__" and __package__ is None:
 from app import config, db  # noqa: E402
 
 PREFIX = config.DEMO_BILL_PREFIX
+
+# **演示数据只属于福建海运集团，实例硬编码不做参数。** 0040 之后 org 与
+# expense_bill 带 instance_id NOT NULL，于是"这批演示单算谁的"必须回答。
+# 答案是 fjhy：这 29 张单里的单位名、人名、城市、金额档位全部照着海运集团的
+# 制度与样本编的（"闽运集团"、住宿费 380/350 两档之类），换到别的实例下既不像
+# 它的业务也对不上它的限额标准。822港航 要演示数据得另编一套，那是另一件事。
+# 不做成参数的理由同 rules/loader.py：给一个没有输入的实例开入口，
+# 真被调用一次就是"822港航 莫名多出 29 张海运集团的单"。
+INSTANCE = "fjhy"
 D0 = datetime.date(2026, 9, 1)
 
 # 演示用核算主体。有些规则的 scope 限定了主体（闽货、八方物流…），
@@ -430,7 +439,13 @@ def _add_attachments(cur, bill_no, case, day):
         # 页面上的 _attachment_note 会如实说出来，而不是静默留一个 404。
         stored_path = content_type = byte_size = None
         try:
-            from . import demo_attachment_image as dai
+            # 绝对导入，不用相对导入：entrypoint.sh 和 start.ps1 都是
+            # `python -I app/demo/generator.py` 当**脚本**跑的，脚本模式下
+            # __package__ is None，`from . import` 永远抛
+            # ImportError: attempted relative import with no known parent package，
+            # 于是整段画图被下面的 except 吞掉，只留「有类型没有图」。
+            # 本体头部那段 sys.path.insert 保证了 app 包在脚本模式下也能导。
+            from app.demo import demo_attachment_image as dai
             r = dai.render(
                 os.path.join(config.ATTACH_DEMO_DIR, bill_no,
                              "%02d_%s.png" % (seq, suffix)),
@@ -497,9 +512,19 @@ def clear(conn):
     cur.execute("DELETE FROM transport_voucher WHERE bill_no LIKE %s", (PREFIX + "%",))
     cur.execute("DELETE FROM invoice WHERE bill_no LIKE %s", (PREFIX + "%",))
     cur.execute("DELETE FROM trip_application WHERE bill_no LIKE %s", (PREFIX + "%",))
-    cur.execute("DELETE FROM expense_bill WHERE bill_no LIKE %s", (PREFIX + "%",))
+    # bill_no 按用户决策维持全局唯一，PREFIX 本身已经分得开；
+    # 仍然带上实例条件是为了**让这句删除的作用域写在 SQL 里而不是写在前缀约定里**——
+    # 前缀约定哪天被改宽，这句就会伸到别的实例去。
+    cur.execute("DELETE FROM expense_bill WHERE instance_id = %s AND bill_no LIKE %s",
+                (INSTANCE, PREFIX + "%"))
+    # employee 没有 instance_id（归属经 org 推），按 DEMO- 前缀删就够。
     cur.execute("DELETE FROM employee WHERE emp_no LIKE 'DEMO-%'")
-    cur.execute("DELETE FROM org WHERE org_id LIKE 'DEMO-%'")
+    # org 有 instance_id：带上它。DEMO- 前缀在两个实例下都可能出现，
+    # 不限定实例，这句会把别的实例的演示单位删掉，而那边的单据还挂着 org_id——
+    # 外键是 RESTRICT，于是**对面下一次写单直接报错**，而错误信息指向的是
+    # 一个它自己从没动过的表。
+    cur.execute("DELETE FROM org WHERE instance_id = %s AND org_id LIKE 'DEMO-%%'",
+                (INSTANCE,))
 
 
 def generate(verbose=True):
@@ -507,8 +532,9 @@ def generate(verbose=True):
         cur = conn.cursor()
         clear(conn)
         for o in DEMO_ORGS:
-            cur.execute("INSERT INTO org (org_id, name, city, is_internal) "
-                        "VALUES (%s,%s,%s,TRUE)", (o["org_id"], o["name"], o["city"]))
+            cur.execute("INSERT INTO org (instance_id, org_id, name, city, is_internal) "
+                        "VALUES (%s,%s,%s,%s,TRUE)",
+                        (INSTANCE, o["org_id"], o["name"], o["city"]))
         for p in DEMO_PEOPLE:
             cur.execute("INSERT INTO employee (emp_no, name, rank_level, org_id, resident_city) "
                         "VALUES (%s,%s,%s,'DEMO-ORG-CZ',%s)",
@@ -519,13 +545,13 @@ def generate(verbose=True):
             sub = c.get("submitter", "DEMO-E001")
             cla = c.get("claimant", sub)
             cur.execute("""INSERT INTO expense_bill
-                (bill_no, doc_type, doc_date, submitter_no, claimant_no, claim_dept,
-                 org_id, biz_type, amount, pay_amount, currency, summary, remark,
-                 applicant_rank, is_multi_person, is_demo)
-                VALUES (%s,'差旅费报账单',%s,%s,%s,'【演示】运营管理部',%s,%s,%s,%s,
+                (instance_id, bill_no, doc_type, doc_date, submitter_no, claimant_no,
+                 claim_dept, org_id, biz_type, amount, pay_amount, currency, summary,
+                 remark, applicant_rank, is_multi_person, is_demo)
+                VALUES (%s,%s,'差旅费报账单',%s,%s,%s,'【演示】运营管理部',%s,%s,%s,%s,
                         '人民币',%s,%s,'其他员工',FALSE,TRUE)""",
-                (bill_no, day, sub, cla, c["org"], c["biz"], c["amount"], c["amount"],
-                 c["summary"], c.get("remark")))
+                (INSTANCE, bill_no, day, sub, cla, c["org"], c["biz"], c["amount"],
+                 c["amount"], c["summary"], c.get("remark")))
             for k, (item, amt) in enumerate(c["details"], 1):
                 cur.execute("""INSERT INTO expense_detail
                     (bill_no, expense_item, amount, line_no) VALUES (%s,%s,%s,%s)""",

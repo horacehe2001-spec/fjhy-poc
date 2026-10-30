@@ -39,6 +39,18 @@ from app import config, db  # noqa: E402
 
 RULE_VERSION = 1
 
+# **实例硬编码，不做成参数。** 0040/0041 之后 rule / release / lookup_table /
+# standard_limit 都按 instance_id 隔离，于是「这个脚本该装给谁」成了个必须回答的问题。
+# 答案是：**只能是福建海运集团**。它装的是上面列的那几份固定路径的手工整理文件
+# （规则清单_v0.1.json、标准表_v0.1.yaml、必要附件决策表、敏感词表、内部单位名单、
+# 规则绑定），每一份都是人按海运集团的制度逐条抠出来的，别的实例手里没有等价物。
+# 822港航 要建规则走的是另一条路：界面上「制度文件上传 → 规则抽取 → 采纳进本体」，
+# 规则的 created_by 是 onto_adopt:<谁>，是人拍板写进去的。
+# 把这里改成 `load_all(instance_id=...)` 看着通用，实际是给一个没有输入的实例
+# 开了个入口——真被调用一次，装进去的是海运集团的限额和单位名单，
+# 而页面按实例过滤，看上去就是「822港航 莫名多出 82 条规则」。
+INSTANCE = "fjhy"
+
 
 def _j(v):
     return json.dumps(v, ensure_ascii=False) if v is not None else None
@@ -78,23 +90,34 @@ def load_rules(conn, rules):
     # 这类「我的流程把别人的数据清了」的损失在 code review 里极难发现，
     # 所以口径写在这里：**装载脚本的地盘是 created_by='asset_loader'，
     # 别人的行一律不碰。**
-    kept = db_scalar_in_tx(cur, "SELECT count(*) FROM rule WHERE created_by <> %s",
-                           ('asset_loader',))
-    cur.execute("DELETE FROM rule_relation WHERE (rule_id, version) IN "
-                "(SELECT rule_id, version FROM rule WHERE created_by = %s)",
-                ('asset_loader',))
-    cur.execute("DELETE FROM rule_entity WHERE (rule_id, version) IN "
-                "(SELECT rule_id, version FROM rule WHERE created_by = %s)",
-                ('asset_loader',))
-    cur.execute("DELETE FROM rule_concept WHERE (rule_id, version) IN "
-                "(SELECT rule_id, version FROM rule WHERE created_by = %s)",
-                ('asset_loader',))
+    # **而「别人的行」现在还包括别的实例的行。** created_by='asset_loader' 这个条件
+    # 在 822港航 入场之前足够用，现在不够了：两个实例的规则同在一张 rule 表里，
+    # 不带 instance_id 的 DELETE 会把 822港航 的规则一起清空，而这个脚本打印的
+    # 「保留 N 条」只数自己实例，输出里一个字都看不出来——和上面那笔学费一模一样。
+    # 子查询里也要带：rule 的主键是 (instance_id, rule_id, version)，
+    # 只按 (rule_id, version) 匹配会顺带删掉另一个实例下同名规则的概念/实体/关系。
+    kept = db_scalar_in_tx(cur, "SELECT count(*) FROM rule WHERE instance_id = %s "
+                                "AND created_by <> %s",
+                           (INSTANCE, 'asset_loader'))
+    cur.execute("DELETE FROM rule_relation WHERE instance_id = %s AND (rule_id, version) IN "
+                "(SELECT rule_id, version FROM rule WHERE instance_id = %s AND created_by = %s)",
+                (INSTANCE, INSTANCE, 'asset_loader'))
+    cur.execute("DELETE FROM rule_entity WHERE instance_id = %s AND (rule_id, version) IN "
+                "(SELECT rule_id, version FROM rule WHERE instance_id = %s AND created_by = %s)",
+                (INSTANCE, INSTANCE, 'asset_loader'))
+    cur.execute("DELETE FROM rule_concept WHERE instance_id = %s AND (rule_id, version) IN "
+                "(SELECT rule_id, version FROM rule WHERE instance_id = %s AND created_by = %s)",
+                (INSTANCE, INSTANCE, 'asset_loader'))
     # **只清草稿的差异清单。** 已发布版本的 release_item 是历史，不许碰。
     # 0025 已经拆掉了 release_item → rule 的外键，所以留着它们也不会
     # 挡住下面那条 DELETE FROM rule（发布是快照，不该被工作区的删除拖着走）。
-    cur.execute("DELETE FROM release_item WHERE release_id IN "
-                "(SELECT release_id FROM release WHERE status = 'draft')")
-    cur.execute("DELETE FROM rule WHERE created_by = %s", ('asset_loader',))
+    # 实例条件不带，这句会把 822港航 每一份草稿的差异清单也清掉，
+    # 而 release 行还在——于是它那边的草稿变成「规则 82 条、差异清单 0 条」。
+    cur.execute("DELETE FROM release_item WHERE instance_id = %s AND release_id IN "
+                "(SELECT release_id FROM release WHERE instance_id = %s AND status = 'draft')",
+                (INSTANCE, INSTANCE))
+    cur.execute("DELETE FROM rule WHERE instance_id = %s AND created_by = %s",
+                (INSTANCE, 'asset_loader'))
     if kept:
         print("  保留 %d 条非装载脚本写入的规则（采纳入本体的）" % kept)
     for r in rules:
@@ -111,15 +134,17 @@ def load_rules(conn, rules):
         demo_blocker = r.get("demo_blocker") or b.get("demo_blocker")
         demo_scope = r.get("demo_scope") or b.get("demo_scope")
         cur.execute("""
-            INSERT INTO rule (rule_id, version, name, dimension, risk_class, rule_class,
+            INSERT INTO rule (instance_id, rule_id, version, name, dimension, risk_class,
+                rule_class,
                 source_clause, also_source, scope, logic, exception, priority, owner,
                 effective_from, effective_to, algo_code, algo_type, control_type,
                 configurator_status, compiled, compiled_reason, demo_executable,
                 demo_blocker, demo_scope, binding_node, impl_path, feasibility,
                 external_table, note, status, created_by)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                    %s,%s,%s,%s,%s,%s,%s,'draft','asset_loader')
+                    %s,%s,%s,%s,%s,%s,%s,%s,'draft','asset_loader')
         """, (
+            INSTANCE,
             r["rule_id"], RULE_VERSION, r["name"], r["dimension"], r["risk_class"],
             r["rule_class"], _j(r.get("source_clause")), _j(r.get("also_source")),
             _j(r.get("scope")), _j(lg), r.get("exception"), r.get("priority") or 100,
@@ -134,25 +159,27 @@ def load_rules(conn, rules):
         for cid in lg.get("concepts") or []:
             # role：阈值位的概念单独标出来，契约校验对它更严
             role = "threshold" if r.get("threshold_source") else "read"
-            cur.execute("INSERT INTO rule_concept (rule_id, version, concept_id, role) "
-                        "VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                        (r["rule_id"], RULE_VERSION, cid, role))
+            cur.execute("INSERT INTO rule_concept (instance_id, rule_id, version, "
+                        "concept_id, role) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                        (INSTANCE, r["rule_id"], RULE_VERSION, cid, role))
         for eid in lg.get("entities") or []:
-            cur.execute("INSERT INTO rule_entity (rule_id, version, entity_id, semantics) "
-                        "VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                        (r["rule_id"], RULE_VERSION, eid,
+            cur.execute("INSERT INTO rule_entity (instance_id, rule_id, version, "
+                        "entity_id, semantics) VALUES (%s,%s,%s,%s,%s) "
+                        "ON CONFLICT DO NOTHING",
+                        (INSTANCE, r["rule_id"], RULE_VERSION, eid,
                          lg.get("entities_semantics") or "存在性判断"))
         for key, rel in (("overrides", "overrides"), ("priority_over", "priority_over")):
             for other in (r.get(key) or []) if isinstance(r.get(key), list) else \
                          ([r[key]] if r.get(key) else []):
-                cur.execute("INSERT INTO rule_relation (rule_id, version, rel_type, "
-                            "other_rule, note) VALUES (%s,%s,%s,%s,%s)",
-                            (r["rule_id"], RULE_VERSION, rel, str(other), None))
+                cur.execute("INSERT INTO rule_relation (instance_id, rule_id, version, "
+                            "rel_type, other_rule, note) VALUES (%s,%s,%s,%s,%s,%s)",
+                            (INSTANCE, r["rule_id"], RULE_VERSION, rel, str(other), None))
         cf = r.get("conflict")
         if cf:
-            cur.execute("INSERT INTO rule_relation (rule_id, version, rel_type, other_rule, "
-                        "note, needs_confirm, gap_id) VALUES (%s,%s,'conflicts_with',%s,%s,%s,%s)",
-                        (r["rule_id"], RULE_VERSION, str(cf.get("with") or "?"),
+            cur.execute("INSERT INTO rule_relation (instance_id, rule_id, version, rel_type, "
+                        "other_rule, note, needs_confirm, gap_id) "
+                        "VALUES (%s,%s,%s,'conflicts_with',%s,%s,%s,%s)",
+                        (INSTANCE, r["rule_id"], RULE_VERSION, str(cf.get("with") or "?"),
                          _j(cf), bool(cf.get("needs_confirm")), cf.get("gap")))
     return len(rules)
 
@@ -160,17 +187,24 @@ def load_rules(conn, rules):
 def _lookup(conn, table_id, version, kind, source_file, source_rows, key_fields,
             fallback_key, on_miss, note, rows):
     cur = conn.cursor()
-    cur.execute("DELETE FROM lookup_table WHERE table_id = %s", (table_id,))
-    cur.execute("""INSERT INTO lookup_table (table_id, version, kind, source_file, source_rows,
-                   row_count, key_fields, fallback_key, on_miss, note)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (table_id, version, kind, source_file, source_rows, len(rows),
+    # table_id 是固定中文名（"必要附件决策表"之类），两个实例都会有同名的一张。
+    # 不带实例条件，这句删的是**别人那张同名表**——而 lookup_row 跟着级联消失，
+    # 822港航 的决策表会在它完全不知情的情况下空掉，
+    # 下一次它跑审核时「场景未配置，转人工」会铺满整张报告。
+    cur.execute("DELETE FROM lookup_table WHERE instance_id = %s AND table_id = %s",
+                (INSTANCE, table_id))
+    cur.execute("""INSERT INTO lookup_table (instance_id, table_id, version, kind, source_file,
+                   source_rows, row_count, key_fields, fallback_key, on_miss, note)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (INSTANCE, table_id, version, kind, source_file, source_rows, len(rows),
                  _j(key_fields), _j(fallback_key), on_miss or "待人工", note))
     for row in rows:
-        cur.execute("""INSERT INTO lookup_row (table_id, row_key, row_value, enabled,
-                       confidence, source_rows, must_hit, must_not_hit, conflict, gap_id, note)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (table_id, _j(row["key"]), _j(row["value"]), row.get("enabled", True),
+        cur.execute("""INSERT INTO lookup_row (instance_id, table_id, row_key, row_value,
+                       enabled, confidence, source_rows, must_hit, must_not_hit,
+                       conflict, gap_id, note)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (INSTANCE, table_id, _j(row["key"]), _j(row["value"]),
+                     row.get("enabled", True),
                      row.get("confidence"), row.get("source_rows"),
                      _j(row.get("must_hit")), _j(row.get("must_not_hit")),
                      _j(row.get("conflict")), row.get("gap"), row.get("note")))
@@ -278,7 +312,12 @@ def load_standards(conn):
     """
     d = yaml.safe_load(io.open(config.STANDARDS_YAML, encoding="utf-8"))
     cur = conn.cursor()
-    cur.execute("DELETE FROM standard_limit")
+    # **这句原来是整表 DELETE，是本文件里最危险的一句。** 不带实例条件，
+    # 跑一次装载就把 822港航 的限额标准全部清空——而住宿费/伙食/市内交通的限额
+    # 一旦为空，那几条规则查不到任何行，于是**超标判定静默失效**（不是报错，
+    # 是永远判不出超标）。本函数末尾那组断言只检本次装进去的行，
+    # 对面被清空这件事它一个字也不会说。
+    cur.execute("DELETE FROM standard_limit WHERE instance_id = %s", (INSTANCE,))
 
     acc = d["accommodation"]
     acc_rates = acc["rates"]
@@ -291,10 +330,10 @@ def load_standards(conn):
             amt = r.get(key)
             if not isinstance(amt, (int, float)):
                 continue
-            cur.execute("""INSERT INTO standard_limit (std_type, tier, region, limit_amount,
-                           unit, source_clause, confidence, cross_checked)
-                           VALUES (%s,%s,%s,%s,%s,%s,%s,FALSE)""",
-                        ("住宿费限额标准", tier, region, amt, "元/人·天",
+            cur.execute("""INSERT INTO standard_limit (instance_id, std_type, tier, region,
+                           limit_amount, unit, source_clause, confidence, cross_checked)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,FALSE)""",
+                        (INSTANCE, "住宿费限额标准", tier, region, amt, "元/人·天",
                          "细则附件1（第 %s 页）" % r.get("page", "?"),
                          r.get("confidence") or "人眼读图"))
             n_acc += 1
@@ -302,19 +341,19 @@ def load_standards(conn):
     meal = d["meal_allowance"]
     n_meal = 0
     for r in meal["rates"]:
-        cur.execute("""INSERT INTO standard_limit (std_type, tier, region, limit_amount,
-                       unit, source_clause, confidence, cross_checked)
-                       VALUES (%s,NULL,%s,%s,%s,%s,%s,%s)""",
-                    ("伙食补助费标准", r["area"], r["amount"], meal["unit"],
+        cur.execute("""INSERT INTO standard_limit (instance_id, std_type, tier, region,
+                       limit_amount, unit, source_clause, confidence, cross_checked)
+                       VALUES (%s,%s,NULL,%s,%s,%s,%s,%s,%s)""",
+                    (INSTANCE, "伙食补助费标准", r["area"], r["amount"], meal["unit"],
                      meal["clause"], meal["confidence"], bool(meal.get("cross_check"))))
         n_meal += 1
 
     lt = d["local_transport"]
     base = lt["base_rate"]
-    cur.execute("""INSERT INTO standard_limit (std_type, tier, region, limit_amount,
-                   unit, source_clause, confidence, cross_checked)
-                   VALUES (%s,NULL,NULL,%s,%s,%s,%s,%s)""",
-                ("市内交通费标准", base["amount"], base["unit"], lt["clause"],
+    cur.execute("""INSERT INTO standard_limit (instance_id, std_type, tier, region,
+                   limit_amount, unit, source_clause, confidence, cross_checked)
+                   VALUES (%s,%s,NULL,NULL,%s,%s,%s,%s,%s)""",
+                (INSTANCE, "市内交通费标准", base["amount"], base["unit"], lt["clause"],
                  lt["confidence"], bool(lt.get("cross_check"))))
     n_lt = 1
 
@@ -346,15 +385,18 @@ def load_standards(conn):
                      if isinstance(r.get(k), (int, float)))
     assert n_acc == expect_acc, "住宿费限额装载 %d 行，资产里应有 %d 行" % (n_acc, expect_acc)
     assert n_meal == len(meal["rates"]), "伙食补助装载 %d 行，应有 %d 行" % (n_meal, len(meal["rates"]))
-    cur.execute("SELECT count(*) FROM standard_limit WHERE std_type='住宿费限额标准' AND region IS NULL")
+    cur.execute("SELECT count(*) FROM standard_limit WHERE instance_id = %s "
+                "AND std_type='住宿费限额标准' AND region IS NULL", (INSTANCE,))
     null_region = cur.fetchone()[0]
     assert null_region == 0, (
         "住宿费限额有 %d 行的 region 是 NULL。按地区查限额会查不到任何行，"
         "住宿费标准于是静默失效——这正是第一版踩的坑。" % null_region)
-    cur.execute("SELECT count(*) FROM standard_limit WHERE std_type='住宿费限额标准' AND tier IS NULL")
+    cur.execute("SELECT count(*) FROM standard_limit WHERE instance_id = %s "
+                "AND std_type='住宿费限额标准' AND tier IS NULL", (INSTANCE,))
     null_tier = cur.fetchone()[0]
     assert null_tier == 0, "住宿费限额有 %d 行的 tier 是 NULL" % null_tier
-    cur.execute("SELECT count(DISTINCT region) FROM standard_limit WHERE std_type='住宿费限额标准'")
+    cur.execute("SELECT count(DISTINCT region) FROM standard_limit WHERE instance_id = %s "
+                "AND std_type='住宿费限额标准'", (INSTANCE,))
     n_region = cur.fetchone()[0]
     assert n_region == len(acc_rates), (
         "住宿费限额只有 %d 个不同地区，资产里有 %d 行费率——"
@@ -365,7 +407,9 @@ def load_standards(conn):
 def make_release(conn, rules):
     cur = conn.cursor()
 
-    cur.execute("SELECT version FROM ontology_version WHERE is_current")
+    # 装载器只服务 INSTANCE（见文件顶上），所以这里直接钉死它，不取「当前实例」
+    cur.execute("SELECT version FROM ontology_version "
+                "WHERE instance_id=%s AND is_current", (INSTANCE,))
     row = cur.fetchone()
     onto_version = row[0] if row else "0.1"
     rs_version = "rs-0.1"
@@ -376,7 +420,8 @@ def make_release(conn, rules):
     # 而逐维度统计（事务提交后另开连接查的）是对的 17 ——两个数自相矛盾。
     # **带 version=1**：这个数要写进 release.executable_count，
     # 多一个版本就会把两版加起来，而发布资产上的数字是对外的。
-    cur.execute("SELECT count(*) FROM rule WHERE version=1 AND demo_executable")
+    cur.execute("SELECT count(*) FROM rule WHERE instance_id = %s AND version=1 "
+                "AND demo_executable", (INSTANCE,))
     executable = cur.fetchone()[0]
 
     # ── 装载只动工作区 ────────────────────────────────────────────────────
@@ -385,34 +430,43 @@ def make_release(conn, rules):
     # release_current 也不清——那是发布管理（栏目五）的事。
     # 原来这里是 `DELETE FROM release_current` + 不分状态地删 rs-0.1，
     # 结果是「装载一次，当前生效版本就没了」。
-    cur.execute("DELETE FROM release WHERE created_by = 'asset_loader' "
-                "AND status = 'draft'")
+    # 不带实例条件，这句会删掉 822港航 自己那份工作区草稿——
+    # 而它那边的页面只会显示「现在没有草稿」，看不出是谁删的。
+    cur.execute("DELETE FROM release WHERE instance_id = %s "
+                "AND created_by = 'asset_loader' AND status = 'draft'", (INSTANCE,))
     # rs_version 有唯一约束。若 rs-0.1 已经被签字发布过，就不能再占这个号——
     # 换一个带日期的号，并在输出里说清楚，不静默改名。
-    cur.execute("SELECT count(*) FROM release WHERE rule_set_version = %s", (rs_version,))
+    # 0041 把 rule_set_version 的唯一约束从全局改成了 (instance_id, rule_set_version)，
+    # 所以"这个号被占了没有"只在本实例内问。不限定实例会为了避让对方而跳号，
+    # 而跳号会让人以为中间那一版被删了。
+    cur.execute("SELECT count(*) FROM release WHERE instance_id = %s "
+                "AND rule_set_version = %s", (INSTANCE, rs_version))
     taken = cur.fetchone()[0] > 0
     if taken:
         import datetime
-        cur.execute("SELECT count(*) FROM release WHERE rule_set_version LIKE %s",
-                    ("rs-ws-%",))
+        cur.execute("SELECT count(*) FROM release WHERE instance_id = %s "
+                    "AND rule_set_version LIKE %s", (INSTANCE, "rs-ws-%"))
         rs_version = "rs-ws-%s-%02d" % (datetime.date.today().strftime("%Y%m%d"),
                                         cur.fetchone()[0] + 1)
     # release_id 同样不能硬编码 rel-0001：那一版可能已经发布了。
-    cur.execute("SELECT release_id FROM release WHERE release_id ~ '^rel-[0-9]+$'")
+    cur.execute("SELECT release_id FROM release WHERE instance_id = %s "
+                "AND release_id ~ '^rel-[0-9]+$'", (INSTANCE,))
     nos = [int(r[0].split("-")[1]) for r in cur.fetchall()]
     rel_id = "rel-%04d" % ((max(nos) if nos else 0) + 1)
 
-    cur.execute("""INSERT INTO release (release_id, rule_set_version, ontology_version, status,
-                   rule_count, compiled_count, executable_count, diff_summary, created_by, note)
-                   VALUES (%s,%s,%s,'draft',%s,%s,%s,%s,'asset_loader',%s)""",
-                (rel_id, rs_version, onto_version, len(rules), compiled, executable,
+    cur.execute("""INSERT INTO release (instance_id, release_id, rule_set_version,
+                   ontology_version, status, rule_count, compiled_count, executable_count,
+                   diff_summary, created_by, note)
+                   VALUES (%s,%s,%s,%s,'draft',%s,%s,%s,%s,'asset_loader',%s)""",
+                (INSTANCE, rel_id, rs_version, onto_version, len(rules), compiled, executable,
                  _j({"added": len(rules), "modified": 0, "retired": 0,
                      "note": "装载脚本建的工作区草稿，内容未冻结"}),
                  "装载脚本自动建的**工作区草稿**：frozen_at 为空，八层快照没抄，"
                  "所以它不能送审也不能发布。要发版请到发布管理页点「冻结为新版本」。"))
     for r in rules:
-        cur.execute("INSERT INTO release_item (release_id, rule_id, version, change) "
-                    "VALUES (%s,%s,%s,'added')", (rel_id, r["rule_id"], RULE_VERSION))
+        cur.execute("INSERT INTO release_item (instance_id, release_id, rule_id, version, "
+                    "change) VALUES (%s,%s,%s,%s,'added')",
+                    (INSTANCE, rel_id, r["rule_id"], RULE_VERSION))
     return rs_version, compiled, executable
 
 
@@ -448,7 +502,7 @@ def precheck():
     """
     checks = []
     cur = db.query_one("SELECT version, source_hash FROM ontology_version "
-                       "WHERE is_current")
+                       "WHERE instance_id=%s AND is_current", (INSTANCE,))
     checks.append({
         "check": "本体已装载并切为当前版本", "level": "blocker", "ok": bool(cur),
         "detail": ("当前版本 %s" % cur["version"]) if cur else
@@ -497,7 +551,34 @@ def precheck():
             "reason": bad[0]["detail"] if bad else None}
 
 
-def load_all(verbose=True, force=False):
+class WrongInstanceError(RuntimeError):
+    """在不属于这批源文件的实例上调用了装载。接口层按 409 回，不是 500。"""
+
+
+def load_all(verbose=True, force=False, allow_any_instance=False):
+    # ── 第一道闸：当前实例是不是这批源文件的主人 ───────────────────────────
+    #
+    # INSTANCE 写死成 fjhy 是对的（理由见文件顶上），但**只写死不检查是半道闸**：
+    # 2026-10-30 实测，在 822港航 点「装载规则资产」，这里照样把 82 条规则、
+    # 34 条限额、6 张查找表装进了**福建海运集团**，接口还回 200 说「rules: 82」。
+    # 于是「在 A 实例点一下按钮，B 实例的数据变了」，而两边页面都不显示这件事。
+    # 没有损坏数据（装的是 fjhy 自己的源文件、内容相同），但这是**跨实例写入**，
+    # 下一次源文件变了就是真改数据。
+    #
+    # 命令行入口（python -m app.rules.loader）不受影响：那里没有「当前实例」
+    # 这个概念，allow_any_instance=True 直接过。
+    if not allow_any_instance:
+        from app import scope
+        iid = scope.require()
+        if iid != INSTANCE:
+            raise WrongInstanceError(
+                "这批规则资产的源文件（规则清单_v0.1.json、标准表_v0.1.yaml、"
+                "必要附件决策表、敏感词表、内部单位名单）是人按**%s**的制度"
+                "逐条整理出来的，别的实例手里没有等价物，所以**不装给「%s」**。\n"
+                "「%s」要建规则走另一条路：制度文件库上传 → 规则抽取 → "
+                "采纳进本体，规则的 created_by 是 onto_adopt:<谁>，是人拍板写进去的。"
+                % (INSTANCE, iid, iid))
+
     gate = precheck()
     if not gate["ok"] and not force:
         # **拒绝装载，不是警告后继续。** 继续的后果是一批静默的坏引用，
@@ -510,7 +591,8 @@ def load_all(verbose=True, force=False):
     # 但原子不等于互斥：两个装载同时跑，PG 层面是「后提交的赢」，
     # 而两边的 release 草稿都已经建出来了，库里会多一份没人认领的 draft。
     # 占住之后第二个调用方当场收到「正在装载」，而不是等锁等到超时。
-    with db.table_lock("rule", who="规则资产装载 rules.loader.load_all"), db.tx() as conn:
+    with db.table_lock("rule", who="规则资产装载 rules.loader.load_all（实例 %s）"
+                               % INSTANCE), db.tx() as conn:
         n_rules = load_rules(conn, rules)
         n_att = load_attachment_table(conn)
         n_kw = load_keywords(conn)
@@ -522,16 +604,21 @@ def load_all(verbose=True, force=False):
         print("  规则            %d 条（可编译 %d / 演示可执行 %d）" % (n_rules, compiled, executable))
         print("  必要附件决策表   %d 行" % n_att)
         print("  敏感词表        %d 词（启用 %s）" % (
-            n_kw, db.scalar("SELECT count(*) FROM lookup_row WHERE table_id='敏感词表' AND enabled")))
+            n_kw, db.scalar("SELECT count(*) FROM lookup_row WHERE instance_id=%s "
+                            "AND table_id='敏感词表' AND enabled", (INSTANCE,))))
         print("  内部单位名单     %d 条（启用 %s）" % (
-            n_unit, db.scalar("SELECT count(*) FROM lookup_row WHERE table_id='内部单位名单' AND enabled")))
+            n_unit, db.scalar("SELECT count(*) FROM lookup_row WHERE instance_id=%s "
+                              "AND table_id='内部单位名单' AND enabled", (INSTANCE,))))
         print("  标准表限额       %d 行" % n_std)
         print("  release         %s（draft，未签字，不可用于生产）" % rs_version)
-        print("  规则概念绑定     %s 条" % db.scalar("SELECT count(*) FROM rule_concept"))
-        print("  规则实体绑定     %s 条" % db.scalar("SELECT count(*) FROM rule_entity"))
+        print("  规则概念绑定     %s 条" % db.scalar(
+            "SELECT count(*) FROM rule_concept WHERE instance_id=%s", (INSTANCE,)))
+        print("  规则实体绑定     %s 条" % db.scalar(
+            "SELECT count(*) FROM rule_entity WHERE instance_id=%s", (INSTANCE,)))
         print("  规则关系        %s 条（其中需裁决 %s 条）" % (
-            db.scalar("SELECT count(*) FROM rule_relation"),
-            db.scalar("SELECT count(*) FROM rule_relation WHERE needs_confirm")))
+            db.scalar("SELECT count(*) FROM rule_relation WHERE instance_id=%s", (INSTANCE,)),
+            db.scalar("SELECT count(*) FROM rule_relation WHERE instance_id=%s "
+                      "AND needs_confirm", (INSTANCE,))))
     return {"rules": n_rules, "compiled": compiled, "executable": executable,
             "attachment_rows": n_att, "keywords": n_kw, "units": n_unit,
             "standards": n_std, "release": rs_version,
@@ -542,21 +629,25 @@ def load_all(verbose=True, force=False):
 
 def status():
     # 一律按 version=1 报。命令行的数和页面上的数对不上，排错时最费时间。
-    print("规则：%s 条" % db.scalar("SELECT count(*) FROM rule WHERE version=1"))
+    print("规则：%s 条（实例 %s）" % (
+        db.scalar("SELECT count(*) FROM rule WHERE instance_id=%s AND version=1",
+                  (INSTANCE,)), INSTANCE))
     for row in db.query("""SELECT dimension, count(*) n,
                            sum(CASE WHEN compiled THEN 1 ELSE 0 END) c,
                            sum(CASE WHEN demo_executable THEN 1 ELSE 0 END) d
-                           FROM rule WHERE version=1
-                           GROUP BY dimension ORDER BY dimension"""):
+                           FROM rule WHERE instance_id=%s AND version=1
+                           GROUP BY dimension ORDER BY dimension""", (INSTANCE,)):
         print("  %-4s 共 %2d  可编译 %2d  演示可执行 %2d" % (
             row["dimension"], row["n"], row["c"], row["d"]))
     print("查找表：")
     for row in db.query("SELECT table_id, kind, row_count, source_rows, on_miss "
-                        "FROM lookup_table ORDER BY table_id"):
+                        "FROM lookup_table WHERE instance_id=%s ORDER BY table_id",
+                        (INSTANCE,)):
         print("  %-14s %-15s %3d 行  源表 %-5s 未命中→%s" % (
             row["table_id"], row["kind"], row["row_count"],
             row["source_rows"] if row["source_rows"] is not None else "-", row["on_miss"]))
-    r = db.query_one("SELECT * FROM release ORDER BY created_at DESC LIMIT 1")
+    r = db.query_one("SELECT * FROM release WHERE instance_id=%s "
+                     "ORDER BY created_at DESC LIMIT 1", (INSTANCE,))
     if r:
         print("release %s  %s  规则 %d / 可编译 %d / 演示可执行 %d  签字人=%s" % (
             r["release_id"], r["status"], r["rule_count"], r["compiled_count"],
@@ -582,7 +673,9 @@ def main():
                 c["check"], c["detail"]))
         print("闸：%s" % ("过" if g["ok"] else "没过 —— " + g["reason"]))
         return 0 if g["ok"] else 1
-    load_all(force=args.force)
+    # 命令行没有「当前实例」这个概念（scope 读的是库里那一行 app_setting），
+    # 所以这里显式放行实例闸。装给谁由 INSTANCE 决定，和界面无关。
+    load_all(force=args.force, allow_any_instance=True)
     return 0
 
 

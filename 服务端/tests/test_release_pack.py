@@ -62,7 +62,7 @@ def test_文件层冻的是清单不是文件本身():
 
     这条边界要是糊了，别人以为拿到包就等于拿到源文件。
     """
-    n, p = rp._snap_files()
+    n, p = rp._snap_files("fjhy")
     assert n > 0
     f = p["files"][0]
     assert "content_sha256" in f and "rel_path" in f
@@ -78,7 +78,7 @@ def test_本体源文件冻的是带注释的原文():
     925 行里的口径说明与踩坑记录才是本体资产最贵的部分（CLAUDE.md 第 10 条
     讲的是同一件事：注释丢了在 review 里极难发现）。
     """
-    n, p = rp._snap_onto_source()
+    n, p = rp._snap_onto_source("fjhy")
     assert n > 800
     # 实测 2026-10-19：925 行里有 63 个注释行。阈值取 40 留余量——
     # 第一版这里拍了个 >100，红了：错的是断言，不是代码。
@@ -112,7 +112,7 @@ def test_规则快照不含created_at():
     进了哈希，「这一版和上一版内容一样」就永远判不出来——
     而那个判断正是 diff 与「要不要发新版」的依据。
     """
-    _n, p = rp._snap_rules()
+    _n, p = rp._snap_rules("fjhy")
     assert p["rules"], "工作区一条规则都没有"
     for r in p["rules"][:5]:
         assert "created_at" not in r
@@ -466,17 +466,20 @@ def test_一版都没发布过时用草稿但要说清楚(monkeypatch):
                 "ontology_version": "0.1", "status": "draft"}
 
     monkeypatch.setattr(engine.db, "query_one", stub)
-    row, why = engine.effective_release()
+    # **显式传实例**：这条测试验的是三级阶梯，不是实例解析。
+    # 不传的话 effective_release 会去 scope 里问"当前实例是谁"，
+    # 而那条路也要查库——库已经被桩掉了，于是报出一个和被测逻辑无关的错。
+    row, why = engine.effective_release("fjhy")
     assert row["release_id"] == "rel-draft"
     assert "草稿" in why, "用了草稿就必须在 why 里说明，否则没人知道结论上的版本号是草稿号"
 
 
 def test_一条release都没有时直接报错(monkeypatch):
     monkeypatch.setattr(engine.db, "query_one", lambda *a, **kw: None)
-    row, why = engine.effective_release()
+    row, why = engine.effective_release("fjhy")
     assert row is None and why
     with pytest.raises(RuntimeError) as e:
-        engine.load_ruleset()
+        engine.load_ruleset(instance_id="fjhy")
     assert "loader" in str(e.value)
 
 

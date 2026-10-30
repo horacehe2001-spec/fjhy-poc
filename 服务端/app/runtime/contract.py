@@ -113,7 +113,8 @@ def verify(verbose=True):
     fact = _fact()
 
     # ── 0 本体是否已装载且未漂移 ─────────────────────────────────────────────
-    onto = db.query_one("SELECT version, source_hash, stats FROM ontology_version WHERE is_current")
+    from .. import onto_current
+    onto = onto_current.row(cols="version, source_hash, stats")
     if not r.check("本体已装载", onto is not None, "库里没有当前本体版本，先跑 app/ontology/loader.py"):
         return r
     import hashlib

@@ -214,7 +214,12 @@ class AgentJob:
             a["started_at"] = time.time()
             try:
                 prev = self.runners[a["id"]](job, a, prev)
-                a["status"] = "done"
+                # **runner 自己标了 skipped 就尊重它。** 有些步骤对当前实例
+                # 不适用（比如「装载规则资产」那批源文件只属于福建海运集团），
+                # 它既没失败也没干活。一律覆写成「已完成」会让人以为它产出过东西，
+                # 而 outputs 里全是 0 时那就成了一个说不通的页面。
+                if a["status"] != "skipped":
+                    a["status"] = "done"
             except Exception as e:                             # noqa: BLE001
                 a["status"] = "failed"
                 a["error"] = "%s: %s" % (type(e).__name__, e)

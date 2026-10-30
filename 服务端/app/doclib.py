@@ -118,15 +118,9 @@ class ConflictError(DocLibError):
 
 # ── 领域 / 实例归属 ─────────────────────────────────────────────────────────
 def current_instance():
-    """当前实例 id，没选返回 None。
-
-    **刻意反向 import（核心模块引 api 层）**：api/domain.py 明写了
-    「各处自己去读 app_setting 迟早会读出不一致的口径」，它是唯一入口。
-    为了不复制那段一致性校验（实例是否属于当前领域），这里宁可反着引。
-    函数内 import 是为了避开模块加载顺序，不是为了省时间。
-    """
-    from .api.domain import current as _cur
-    return _cur().get("instance_id")
+    """当前实例 id，没选返回 None。实现在 app/scope.py，全站一份。"""
+    from . import scope
+    return scope.current_instance()
 
 
 def resolve_instance(instance_id=None):
@@ -135,20 +129,16 @@ def resolve_instance(instance_id=None):
     挑默认值的后果：客户传的制度文件落到了另一个实例的目录里，
     而页面按当前实例过滤，于是「传成功了但清单里看不到」——
     这种现象查起来要翻落盘目录才看得出来。
+
+    **实现委托给 app/scope.py**（0041 之后几十张表都要做这个判断，不能有两份），
+    这里只把异常换成 doclib 自己的类型——api/doclib.py 按 DocLibError 回 400，
+    换类型是为了不动那一层的处置，不是为了包一层。
     """
-    iid = (instance_id or "").strip() or current_instance()
-    if not iid:
-        raise ScopeError("还没有选定实例。请先在「领域知识资产」页选好领域与实例，"
-                         "再回来上传——制度文件必须有归属，没有归属的文件"
-                         "不知道该进哪个实例的知识库。")
-    row = db.query_one("""SELECT i.instance_id, i.domain_id, i.label AS instance_label,
-                                 d.label AS domain_label
-                            FROM domain_instance i
-                            JOIN domain d ON d.domain_id = i.domain_id
-                           WHERE i.instance_id = %s""", (iid,))
-    if not row:
-        raise ScopeError("实例不存在：%s" % iid)
-    return row
+    from . import scope
+    try:
+        return scope.resolve(instance_id)
+    except scope.ScopeError as e:
+        raise ScopeError(str(e))
 
 
 # ── 路径安全 ────────────────────────────────────────────────────────────────
@@ -985,22 +975,87 @@ def list_changes(scan_id=None, change=None, limit=500, instance_id=None):
             "scan": db.query_one("SELECT * FROM doc_lib_scan WHERE scan_id=%s", (scan_id,))}
 
 
+# 「这份文件有没有可用正文」——三条取文路径任意一条成立即可。
+# **必须和 doclib_extract.extract() 的取文闸逐字一致**：两处分叉的表现是
+# 「待抽取列表里有它，点了抽取却不抽它」或者反过来，而两种都只表现为一个
+# 对不上的数字，没有任何报错。
+HAS_TEXT_SQL = """(
+       (parse_state='已解析' AND body IS NOT NULL)
+    OR (ocr_state='已OCR'    AND ocr_fingerprint    IS NOT DISTINCT FROM fingerprint)
+    OR (vision_state='已读图' AND vision_fingerprint IS NOT DISTINCT FROM fingerprint)
+)"""
+
+
+def extract_inventory(instance_id=None, limit=500):
+    """抽取清单：**在库每一份文件一行**，不只列待抽取的。
+
+    为什么要整份列出来：只列「待抽取」时，页面上剩下的全是数字——
+    「在库 12 / 待抽取 0 / 够不着 5」，而使用者真正想知道的是
+    **哪几份没进来、为什么**。把差额摊成一张清单，差额就不用解释了。
+    """
+    iid = (instance_id or "").strip() or None
+    if iid is None:
+        from . import scope
+        iid = scope.require()
+    rows = db.query("""
+        SELECT f.file_id, f.file_name, f.rel_path, f.ext, f.text_chars,
+               f.parse_state, f.origin, f.fingerprint,
+               f.ocr_state, f.ocr_fingerprint,
+               f.vision_state, f.vision_fingerprint, f.vision_chars,
+               f.vision_pages, f.vision_unreadable,
+               f.extracted_at, f.extract_fingerprint,
+               (SELECT count(*) FROM doclib_clause c WHERE c.file_id = f.file_id) AS clauses
+          FROM doc_lib_file f
+         WHERE NOT f.missing AND f.instance_id = %s
+         ORDER BY f.rel_path
+         LIMIT %s""", (iid, max(1, min(2000, int(limit)))))
+    for r in rows:
+        v_ok = (r["vision_state"] == "已读图"
+                and r["vision_fingerprint"] == r["fingerprint"])
+        o_ok = (r["ocr_state"] == "已OCR"
+                and r["ocr_fingerprint"] == r["fingerprint"])
+        n = r["text_chars"] or 0
+        native = r["parse_state"] == "已解析" and n
+        r["text_source"] = ("读图" if v_ok and n < (r["vision_chars"] or 0) else
+                            "原生文本" if native else
+                            "OCR" if o_ok else "读图" if v_ok else None)
+        if not r["text_source"]:
+            r["state"] = "够不着"
+            r["why"] = ("取不到正文（%s）。跑一次 OCR 或整份读图就能转进来"
+                        % r["parse_state"])
+        elif (r["extracted_at"] is not None
+              and r["extract_fingerprint"] == r["fingerprint"]):
+            r["state"] = "已抽取"
+            r["why"] = "已抽取，文件之后没被改过"
+        else:
+            r["state"] = "待抽取"
+            r["why"] = "从未抽取" if not r["extracted_at"] else "抽取后文件又被改过"
+    return rows
+
+
 def pending_extract(limit=500, instance_id=None):
     """待抽取：能取到正文、且（从没抽过 或 抽过之后又被改了）的文件。
 
     用指纹比对算，不设 pending 标志位——标志位忘了清，会出现
     「永远待抽取」或「改了却不提示」，两种都很难发现。
+
+    **0042 起「能取到正文」不再等于 parse_state='已解析'。** 原来硬卡这一个
+    条件，于是纯扫描件 PDF 永远进不了待抽取列表：OCR 过的进不来，
+    读图过的也进不来——哪怕文本已经在库里躺着。表现是抽取页上的份数
+    **永远少于在库份数**，而界面不解释差额去哪了。
     """
-    # 两条查询共用同一个实例条件。**不要用 % 拼进 SQL 模板里再混 %%s**——
+    # 几条查询共用同一个实例条件。**不要用 % 拼进 SQL 模板里再混 %%s**——
     # 那种写法看一眼分不清哪个 % 是 Python 的哪个是 psycopg 的，改一次就错一次。
     scope = ["AND instance_id = %s"] if instance_id else []
     a = [instance_id] if instance_id else []
     rows = db.query(" ".join([
         """SELECT file_id, root_id, rel_path, file_name, ext, file_size, text_chars,
                   parse_state, parse_reason, fingerprint, extract_fingerprint,
-                  extracted_at, last_change, changed_at, origin, instance_id
+                  extracted_at, last_change, changed_at, origin, instance_id,
+                  ocr_state, ocr_fingerprint, vision_state, vision_fingerprint,
+                  vision_chars, vision_unreadable, vision_model
              FROM doc_lib_file
-            WHERE NOT missing AND parse_state = '已解析'"""]
+            WHERE NOT missing AND """ + HAS_TEXT_SQL]
         + scope
         + ["""AND (extracted_at IS NULL
                    OR extract_fingerprint IS DISTINCT FROM fingerprint)
@@ -1008,14 +1063,44 @@ def pending_extract(limit=500, instance_id=None):
         tuple(a + [max(1, min(2000, int(limit)))]))
     for r in rows:
         r["why"] = "从未抽取" if not r["extracted_at"] else "抽取后文件又被改过"
+        # 正文从哪儿来，列表上要直说。判据和 doclib_extract 的取文那一段一致。
+        v_ok = (r["vision_state"] == "已读图"
+                and r["vision_fingerprint"] == r["fingerprint"])
+        o_ok = (r["ocr_state"] == "已OCR"
+                and r["ocr_fingerprint"] == r["fingerprint"])
+        n = r["text_chars"] or 0
+        r["text_source"] = ("读图" if v_ok and n < (r["vision_chars"] or 0) else
+                            "原生文本" if r["parse_state"] == "已解析" and n else
+                            "OCR" if o_ok else "读图" if v_ok else None)
+
+    # 真正够不着的：三条路径一条都不成立。
     blocked = db.query(" ".join([
         """SELECT parse_state, count(*) AS n FROM doc_lib_file
-            WHERE NOT missing AND parse_state <> '已解析'"""]
+            WHERE NOT missing AND NOT """ + HAS_TEXT_SQL]
         + scope + ["GROUP BY parse_state ORDER BY n DESC"]), tuple(a))
+    in_lib = db.scalar(" ".join(
+        ["SELECT count(*) FROM doc_lib_file WHERE NOT missing"] + scope), tuple(a)) or 0
+    done = db.scalar(" ".join(
+        ["""SELECT count(*) FROM doc_lib_file
+             WHERE NOT missing AND """ + HAS_TEXT_SQL + """
+               AND extracted_at IS NOT NULL
+               AND extract_fingerprint IS NOT DISTINCT FROM fingerprint"""] + scope),
+        tuple(a)) or 0
+    n_blocked = sum(b["n"] for b in blocked)
     return {"items": rows, "total": len(rows), "blocked": blocked,
+            # **三个数要加得起来**：在库 = 待抽取 + 已抽取 + 够不着。
+            # 只报一个「待抽取 N 份」，看的人没法判断剩下的去哪了，
+            # 而「抽完了」会被当成「制度都抽过了」。
+            "in_lib": in_lib, "extracted": done, "blocked_total": n_blocked,
+            "coverage_note":
+                "在库 %d 份 = 待抽取 %d + 已抽取 %d + 够不着 %d"
+                % (in_lib, len(rows), done, n_blocked)
+                + ("。**够不着的那 %d 份取不到正文**：「需OCR」是 PDF 没有文字层，"
+                   "跑一次 OCR 或整份读图就能转进来；「未解析」要先转格式。"
+                   % n_blocked if n_blocked else "。全部覆盖。"),
             "note": "blocked 里的文件取不到正文，抽取覆盖不到它们。"
-                    "「需OCR」那档是 PDF 没有文字层，跑一次 OCR 就能转进来；"
-                    "「未解析」那档要先转格式。不说清这件事，"
+                    "「需OCR」那档是 PDF 没有文字层，跑一次 OCR 或多模态读图"
+                    "就能转进来；「未解析」那档要先转格式。不说清这件事，"
                     "「抽完了」会被当成「制度都抽过了」。"}
 
 

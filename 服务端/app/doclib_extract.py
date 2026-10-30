@@ -29,7 +29,7 @@ import json
 import re
 import uuid
 
-from . import db, doclib, mask, ocr
+from . import db, doclib, mask, ocr, vision
 from .llm import client as llmc
 
 # ── 条款切分 ────────────────────────────────────────────────────────────────
@@ -240,6 +240,60 @@ def split_numbered(text):
     return out
 
 
+CN_NUM = "一二三四五六七八九十"
+# 中文序号公文体：一级「一、」，二级「（一）」。
+# ^ 锚在行首（re.M），**不许在句中匹配**——正文里「其中（一）是指…」这种
+# 写法很常见，不锚行首会把一句话从中间劈开。
+CN_SEC_HEAD = re.compile(r"^[ \t　]*([%s]{1,3})、[ \t　]*" % CN_NUM, re.M)
+CN_SUB_HEAD = re.compile(r"^[ \t　]*[（(]([%s]{1,3})[）)][ \t　]*" % CN_NUM, re.M)
+
+
+def split_cn_numbered(text):
+    """中文序号公文体：「一、报销要求」下挂「（一）…（二）…」。
+
+    **这是兜底策略，不参与 pick_strategy 的比大小**（理由写在那里）。
+
+    为什么非要有：实测 822港航《日常费用报销管理办法》6 页正文读得干干净净
+    （2152 字、条理清楚），却一条都切不出来——因为它既不用「第X条」
+    也不用「1.3.9.1.」，全文是「一、二、三」+「（一）（二）」。
+    表现是 strategy=未识别、clauses=0，而页面上看起来就像
+    **这份制度里没有条款**。这种失败最隐蔽：没有报错，只有一个 0。
+
+    切到「（X）」这一层，不是停在「一、」：规则内容长在子项上
+    （「（四）除差旅费报销外…接待费 5000 元以上…尽量采取对公转账」），
+    停在一级标题会把十几条要求糊成一条，后面既没法判定也没法溯源。
+    没有子项的一级标题自成一条。
+    """
+    if not text:
+        return []
+    secs = list(CN_SEC_HEAD.finditer(text))
+    if not secs:
+        return []
+    out = []
+    for i, m in enumerate(secs):
+        sec_no = m.group(1)
+        sec_start = m.start()
+        sec_end = secs[i + 1].start() if i + 1 < len(secs) else len(text)
+        chunk = text[m.end():sec_end]
+        title = (chunk.splitlines() or [""])[0].strip().strip("　：:。") or None
+        subs = list(CN_SUB_HEAD.finditer(chunk))
+        if not subs:
+            body = chunk.strip().strip("　：:。")
+            if len(body) >= MIN_TEXT:
+                out.append({"clause_no": sec_no, "title": title,
+                            "body": body, "pos": sec_start})
+            continue
+        for j, s in enumerate(subs):
+            s_end = subs[j + 1].start() if j + 1 < len(subs) else len(chunk)
+            body = chunk[s.end():s_end].strip().strip("　：:。")
+            if len(body) < MIN_TEXT:
+                continue
+            out.append({"clause_no": "%s(%s)" % (sec_no, s.group(1)),
+                        "title": title, "body": body,
+                        "pos": sec_start + s.start()})
+    return out
+
+
 def split_table_rows(text):
     """表格行体：每一行就是一条规则。
 
@@ -433,9 +487,21 @@ def pick_strategy(text, ext=None):
              ("层级编号", split_numbered(text)),
              ("场景拆条", split_scenario_rows(text))]
     name, items = max(cands, key=lambda kv: len(kv[1]))
-    if not items:
-        return "未识别", []
-    return name, items
+    if items:
+        return name, items
+    # ── 兜底：上面四种一条都切不出来时，才试中文序号公文体 ──────────────
+    #
+    # **刻意不放进上面的 cands 去比大小。** 比大小是取条数最多的那个，
+    # 而「第X条」的制度里几乎都带「（一）（二）」子项——把中文序号体放进去比，
+    # 它会在这类文件上切出更多条，于是**把本该走条款体的文件抢走**，
+    # 条款号从「第十二条」变成「三(五)」，而 coverage_index 是按条款号
+    # 硬匹配规则来源的，一换号，整份文件的「已落地/未落地」对账全部失真。
+    # 做成兜底则是严格增量的：只可能让原本 0 条的文件出条款，
+    # 不可能改变任何一份现在切得出来的文件。
+    fallback = split_cn_numbered(text)
+    if fallback:
+        return "中文序号", fallback
+    return "未识别", []
 
 
 # ── 覆盖比对 ────────────────────────────────────────────────────────────────
@@ -445,16 +511,27 @@ def _norm_name(s):
     return re.sub(r"[\s　《》<>]", "", s)
 
 
-def coverage_index():
+def coverage_index(instance_id=None):
     """(归一文件名, 条款号) → [规则号]，外加比对盲区的统计。
 
     **只认硬证据**：文件名归一后相等（或一方包含另一方）且条款号相同。
     相似度猜测一概不做——把规则挂到错的制度文件上，比标「未匹配」危险得多：
     前者给出一条看起来有据可查、实际指错地方的证据链。
+
+    **按实例过滤。** 这里原来是全库查 rule 的。rule_id（TR-D4-05 这类）
+    和文件名在两个实例间都会撞：D1~D10 是通用审核维度，两家各自从 01 往后编；
+    制度文件也常常同名。不过滤的话，本实例的条款会被判成「已被对面那条规则
+    覆盖」，于是**在「未落地」清单里凭空消失**——而那张清单正是用来找
+    「还有哪些制度没做成规则」的。
     """
+    # 局部导入：本模块有几个函数把 `scope` 当局部字符串变量用（口径标签），
+    # 顶层 import 会被那些函数的赋值遮成 UnboundLocalError。沿用本文件既有写法。
+    from . import scope
+    iid = scope.require(instance_id)
     idx = {}
     blind = []
-    for r in db.query("SELECT rule_id, source_clause FROM rule"):
+    for r in db.query("SELECT rule_id, source_clause FROM rule WHERE instance_id = %s",
+                      (iid,)):
         sc = r["source_clause"] or {}
         f, c = sc.get("file"), sc.get("clause")
         if not f or not c:
@@ -476,7 +553,7 @@ def _covered_by(idx, file_name, clause_no):
 
 
 # ── 第一步：条款切分（确定性，不出网）────────────────────────────────────────
-def run_split(file_ids=None, only_changed=False):
+def run_split(file_ids=None, only_changed=False, instance_id=None):
     """对文件库里已解析出正文的文件切条款。**不调模型。**
 
     only_changed=True 时只处理「待抽取」的文件（没抽过的，加上抽过之后又被改的）。
@@ -487,8 +564,14 @@ def run_split(file_ids=None, only_changed=False):
     过滤条件整个被跳过 → 一次「增量抽取 0 份」变成了全量重切 190 条条款。
     同类陷阱在 run_ai 和 rule_detail 里各有一处，一并修了（都有单测钉住）。
     """
-    from . import doclib
+    from . import doclib, scope
 
+    # **切条款的范围必须限定在本实例**：不限定的话，822港航 点一次"条款切分"
+    # 会把福建海运集团那 14 份制度也重切一遍——而重切会先
+    # `DELETE FROM doclib_clause WHERE file_id=...`，连着那些条款上已有的
+    # AI 草稿一起失效（下面 lost 那段统计的就是这件事）。
+    # 也就是说"不过滤"在这里不只是多读几行，是动了另一个实例已有的成果。
+    iid = scope.require(instance_id)
     task_id = "dlx-" + uuid.uuid4().hex[:12]
     explicit = file_ids is not None
     # 口径标签：only_changed 优先。增量抽取是**传定好的 file_ids + only_changed=True**
@@ -498,17 +581,23 @@ def run_split(file_ids=None, only_changed=False):
     db.execute("INSERT INTO doclib_extract_task(task_id, mode, scope) VALUES (%s,'条款切分',%s)",
                (task_id, scope))
 
-    # 两种文本来源都要收：原生文本，和 OCR 补出来的。
-    # **OCR 过期的不收**（文件在 OCR 之后又被换过）——拿旧版文本去抽现行制度的规则，
-    # 抽出来的东西看着有据可查，实际对的是一份已经不存在的文件。
+    # 三种文本来源都要收：原生文本、本机 OCR 补出来的、多模态读图读出来的。
+    # **过期的不收**（文件在 OCR / 读图之后又被换过）——拿旧版文本去抽现行制度的
+    # 规则，抽出来的东西看着有据可查，实际对的是一份已经不存在的文件。
+    # 读图这一支是 0042 加的：在那之前，本机 OCR 能让一份扫描件进抽取，
+    # 效果更好的多模态模型反而不能，纯扫描件因此永远卡在抽取之外。
     sql = ["""SELECT file_id, file_name, rel_path, body, fingerprint,
-                     parse_state, ocr_state, ocr_mean_conf
+                     parse_state, ocr_state, ocr_mean_conf, ocr_fingerprint,
+                     vision_state, vision_fingerprint, vision_chars
                 FROM doc_lib_file
                WHERE NOT missing
+                 AND instance_id = %s
                  AND ( (parse_state='已解析' AND body IS NOT NULL)
                     OR (ocr_state='已OCR'
-                        AND ocr_fingerprint IS NOT DISTINCT FROM fingerprint) )"""]
-    args = []
+                        AND ocr_fingerprint IS NOT DISTINCT FROM fingerprint)
+                    OR (vision_state='已读图'
+                        AND vision_fingerprint IS NOT DISTINCT FROM fingerprint) )"""]
+    args = [iid]
     if explicit:
         # 空列表也照样拼进去（`= ANY('{}')` 恒假，一份也不选），**不许跳过这个条件**
         sql.append("AND file_id = ANY(%s)"); args.append(list(file_ids))
@@ -518,7 +607,7 @@ def run_split(file_ids=None, only_changed=False):
     sql.append("ORDER BY rel_path")
     files = db.query(" ".join(sql), tuple(args) if args else None)
 
-    idx, blind = coverage_index()
+    idx, blind = coverage_index(iid)
     total_clauses = candidates = 0
     per_file = []
     try:
@@ -540,13 +629,43 @@ def run_split(file_ids=None, only_changed=False):
                                  "note": "业务单据，不是制度来源，不切条款"})
                 continue
             n_cand = 0
-            # 原生文本优先；没有才用 OCR 文本，并把页边界一起拿回来，
-            # 好把每一条条款映射回它所在的页。
-            if f["parse_state"] == "已解析" and f["body"]:
-                text, source, spans = f["body"], "原生文本", []
-            else:
+            # ── 取文：三条路径，**按「哪一份正文更完整」选，不按固定优先级** ──
+            #
+            # 原来是「原生文本优先，没有才用 OCR」。那条规则在**混合型 PDF**
+            # 上会选错：实测 822港航 有两份被判成「已解析」的 PDF，
+            # 其实是 10 页里 9 页无文字层（全份只有 3 个字）、
+            # 20 页里 19 页无文字层（262 字）——封面有薄薄一层字，正文全是图。
+            # 按「原生优先」它们会拿着那 3 个字去切条款，切出 0 条，
+            # 看起来像「这份制度里没有条款」，而真相是正文根本没进来。
+            # 这种失败最隐蔽：没有报错，只有一个 0。
+            #
+            # 所以判据改成字数：读图读出来的正文比原生文字层多，就用读图的。
+            # 一份真正有完整文字层的 PDF，原生字数必然远多于读图，不会被抢走。
+            v_ok = (f["vision_state"] == "已读图"
+                    and f["vision_fingerprint"] == f["fingerprint"])
+            o_ok = (f["ocr_state"] == "已OCR"
+                    and f["ocr_fingerprint"] == f["fingerprint"])
+            native = f["body"] if (f["parse_state"] == "已解析" and f["body"]) else ""
+            if v_ok and len(native) < (f["vision_chars"] or 0):
+                text, spans = vision.text_with_pages(f["file_id"])
+                source = "读图"
+            elif native:
+                text, source, spans = native, "原生文本", []
+            elif o_ok:
                 text, spans = ocr.text_with_pages(f["file_id"])
                 source = "OCR"
+            elif v_ok:
+                text, spans = vision.text_with_pages(f["file_id"])
+                source = "读图"
+            else:
+                # 闸是按三选一放进来的，走到这里说明哪一条都不成立——
+                # 真发生了要看得见，不要悄悄当成一份没有条款的文件。
+                per_file.append({"file_id": f["file_id"], "file_name": f["file_name"],
+                                 "kind": kind, "clauses": 0, "candidates": 0,
+                                 "text_source": None, "table_clauses": 0,
+                                 "strategy": "跳过",
+                                 "note": "三条取文路径都不可用（指纹对不上？）"})
+                continue
             strategy, clauses = pick_strategy(text)
             over = max(0, len(clauses) - MAX_CLAUSES_PER_FILE)
             if over:
@@ -648,11 +767,16 @@ def run_split(file_ids=None, only_changed=False):
 
 # ── 清单与统计 ──────────────────────────────────────────────────────────────
 def list_clauses(file_id=None, kind=None, feature=None, covered=None,
-                 q=None, limit=500):
+                 q=None, limit=500, instance_id=None):
+    from . import scope
+    iid = scope.require(instance_id)
+    # 条款自己没有 instance_id，归属经 doc_lib_file 推（0034 的结构）。
+    # 这里已经 JOIN 了文件表，加一个条件即可，不必再给条款表加冗余列——
+    # 冗余列要靠应用层保持同步，而同步漏一处，过滤就会静默失效。
     sql = ["""SELECT c.*, f.file_name, f.rel_path, f.fingerprint AS now_fingerprint
                 FROM doclib_clause c JOIN doc_lib_file f ON f.file_id=c.file_id
-               WHERE TRUE"""]
-    args = []
+               WHERE f.instance_id = %s"""]
+    args = [iid]
     if file_id:
         sql.append("AND c.file_id=%s"); args.append(file_id)
     if kind:
@@ -687,25 +811,44 @@ def list_clauses(file_id=None, kind=None, feature=None, covered=None,
     return rows
 
 
-def stats():
-    by_kind = db.query("SELECT doc_kind, count(*) AS n FROM doclib_clause "
-                       "GROUP BY doc_kind ORDER BY n DESC")
-    total = db.scalar("SELECT count(*) FROM doclib_clause") or 0
-    covered = db.scalar("SELECT count(*) FROM doclib_clause "
-                        "WHERE cardinality(covered_by) > 0") or 0
-    cand = db.scalar("""SELECT count(*) FROM doclib_clause
-                         WHERE doc_kind = ANY(%s) AND cardinality(covered_by)=0
-                           AND features && %s""",
-                     (list(CANDIDATE_KINDS), list(CANDIDATE_FEATURES))) or 0
+def stats(instance_id=None):
+    from . import scope
+    iid = scope.require(instance_id)
+    # 每一句都 join 回 doc_lib_file：这几个数是抽取那一页的主数字，
+    # 少过滤一句，页面上就会出现"条款 190 条、文件 0 份"这种自相矛盾的组合，
+    # 而看的人多半会以为是文件清单坏了，而不是数字串了实例。
+    by_kind = db.query("""SELECT c.doc_kind, count(*) AS n FROM doclib_clause c
+                            JOIN doc_lib_file f ON f.file_id=c.file_id
+                           WHERE f.instance_id=%s
+                           GROUP BY c.doc_kind ORDER BY n DESC""", (iid,))
+    total = db.scalar("""SELECT count(*) FROM doclib_clause c
+                           JOIN doc_lib_file f ON f.file_id=c.file_id
+                          WHERE f.instance_id=%s""", (iid,)) or 0
+    covered = db.scalar("""SELECT count(*) FROM doclib_clause c
+                             JOIN doc_lib_file f ON f.file_id=c.file_id
+                            WHERE f.instance_id=%s
+                              AND cardinality(c.covered_by) > 0""", (iid,)) or 0
+    cand = db.scalar("""SELECT count(*) FROM doclib_clause c
+                          JOIN doc_lib_file f ON f.file_id=c.file_id
+                         WHERE f.instance_id=%s
+                           AND c.doc_kind = ANY(%s) AND cardinality(c.covered_by)=0
+                           AND c.features && %s""",
+                     (iid, list(CANDIDATE_KINDS), list(CANDIDATE_FEATURES))) or 0
     stale = db.scalar("""SELECT count(*) FROM doclib_clause c
                           JOIN doc_lib_file f ON f.file_id=c.file_id
-                         WHERE c.file_fingerprint <> f.fingerprint""") or 0
-    feats = db.query("""SELECT unnest(features) AS feature, count(*) AS n
-                          FROM doclib_clause GROUP BY 1 ORDER BY n DESC""")
-    _, blind = coverage_index()
+                         WHERE f.instance_id=%s
+                           AND c.file_fingerprint <> f.fingerprint""", (iid,)) or 0
+    feats = db.query("""SELECT unnest(c.features) AS feature, count(*) AS n
+                          FROM doclib_clause c
+                          JOIN doc_lib_file f ON f.file_id=c.file_id
+                         WHERE f.instance_id=%s GROUP BY 1 ORDER BY n DESC""", (iid,))
+    _, blind = coverage_index(iid)
     return {"clauses": total, "covered": covered, "candidates": cand,
             "stale": stale, "by_kind": by_kind, "by_feature": feats,
-            "drafts": db.scalar("SELECT count(*) FROM doclib_draft") or 0,
+            "drafts": db.scalar("""SELECT count(*) FROM doclib_draft d
+                                     JOIN doclib_clause c ON c.clause_id=d.clause_id
+                                     JOIN doc_lib_file f ON f.file_id=c.file_id
+                                    WHERE f.instance_id=%s""", (iid,)) or 0,
             "coverage_blind": len(blind),
             "note": "coverage_blind 是来源条款没写清文件/条款号的规则条数。"
                     "本项目现有规则多数把 source_clause.file 记成「规则表」，"
@@ -714,7 +857,10 @@ def stats():
                     "不是制度里真有那么多漏网条款。**"}
 
 
-def list_tasks(limit=20):
+def list_tasks(limit=20, instance_id=None):
+    # doclib_extract_task 没有 instance_id 也没有能回溯实例的外键（它记的是
+    # "跑过一次抽取"这个动作，scope 列是文本）。**如实返回全部批次**，
+    # 不假装过滤过——给它加一列才能真过滤，那是另一笔改动。
     return db.query("SELECT * FROM doclib_extract_task ORDER BY started_at DESC LIMIT %s",
                     (max(1, min(200, int(limit))),))
 
@@ -860,7 +1006,8 @@ def ai_draft_one(clause_row, cfg, send_limit=SEND_CHAR_LIMIT):
     return draft, res, sent
 
 
-def run_ai(clause_ids=None, limit=AI_BATCH_DEFAULT, only_candidates=True, file_ids=None):
+def run_ai(clause_ids=None, limit=AI_BATCH_DEFAULT, only_candidates=True, file_ids=None,
+           instance_id=None):
     """对候选条款跑 AI 草稿。**真出网、真计费。**
 
     **不是把整个文件库丢给模型**：一来费用与耗时不可控，二来发出去的内容
@@ -876,6 +1023,12 @@ def run_ai(clause_ids=None, limit=AI_BATCH_DEFAULT, only_candidates=True, file_i
     空列表时判断为假 → 落进 else 分支 → 对全库候选调模型。
     「增量 0 条」变成「买 8 条草稿」，而且钱花了才看得出来。
     """
+    from . import scope
+
+    # **这个函数真出网、真计费，所以范围错了是真花钱。** 不限定实例的后果不是
+    # "多读几行"：822港航 点一次 AI 抽取，会把福建海运集团积压的候选条款
+    # 一起买成草稿——钱花了，而两边页面上谁都不会显示这件事。
+    iid = scope.require(instance_id)
     cfg = _extract_cfg()
     task_id = "dlx-" + uuid.uuid4().hex[:12]
     pick_clauses = clause_ids is not None
@@ -886,8 +1039,8 @@ def run_ai(clause_ids=None, limit=AI_BATCH_DEFAULT, only_candidates=True, file_i
 
     sql = ["""SELECT c.*, f.file_name FROM doclib_clause c
                 JOIN doc_lib_file f ON f.file_id=c.file_id
-               WHERE TRUE"""]
-    args = []
+               WHERE f.instance_id = %s"""]
+    args = [iid]
     if pick_files:
         # 空列表照样拼（`= ANY('{}')` 恒假），**不许跳过**
         sql.append("AND c.file_id = ANY(%s)"); args.append(list(file_ids))
@@ -962,13 +1115,18 @@ def run_ai(clause_ids=None, limit=AI_BATCH_DEFAULT, only_candidates=True, file_i
                     "是草稿里出现了条款原文中没有的数字——必须人工回查原文。"}
 
 
-def list_drafts(task_id=None, state=None, limit=200):
+def list_drafts(task_id=None, state=None, limit=200, instance_id=None):
+    from . import scope
+    iid = scope.require(instance_id)
+    # 草稿是"待人工确认"的队列。不按实例过滤，822港航 的待确认列表里会出现
+    # 福建海运集团的草稿——而确认一条草稿是**会往 rule 表写规则**的动作，
+    # 确认错了就是把别人的制度抽成了自己的规则。
     sql = ["""SELECT d.*, c.clause_no, c.title, c.body AS clause_body, f.file_name
                 FROM doclib_draft d
                 JOIN doclib_clause c ON c.clause_id=d.clause_id
                 JOIN doc_lib_file f ON f.file_id=c.file_id
-               WHERE TRUE"""]
-    args = []
+               WHERE f.instance_id = %s"""]
+    args = [iid]
     if task_id:
         sql.append("AND d.task_id=%s"); args.append(task_id)
     if state:
@@ -1250,7 +1408,7 @@ def resolve_conflict(conflict_id, state, who, resolution=None):
 
 
 # ── 增量预览：点之前要能看见这一下会动什么、会花多少钱 ──────────────────────
-def incremental_preview():
+def incremental_preview(instance_id=None):
     """「增量抽取」会处理哪些文件、会对多少条候选调模型。**只读，不出网。**
 
     为什么必须有这个预览：增量抽取的最后一步是 AI 草稿，**真出网、真计费**。
@@ -1263,9 +1421,15 @@ def incremental_preview():
     它们的候选数要等切完才知道。编出一个总数比给下限更糟——
     那会被当成预算用，而它是假的。
     """
-    from . import doclib
+    from . import doclib, scope
 
-    pend = doclib.pending_extract(limit=500)
+    # **必须带实例。** 这里原来是 pending_extract(limit=500)，即全库口径，
+    # 而这个函数正是抽取页顶上那一排数字的来源——一页本该显示「当前实例」的
+    # 界面，报的却是两个实例加起来的数。更糟的是下面 known 那条 SQL 按
+    # file_id 统计候选，file_id 跨实例，于是「本次将调模型 N 条」里会混进
+    # 对面实例的候选——**那一步是真出网真计费的**，数错了就是钱花错地方。
+    iid = scope.require(instance_id)
+    pend = doclib.pending_extract(limit=500, instance_id=iid)
     files = pend["items"]
     ids = [r["file_id"] for r in files]
     why = {}
@@ -1312,6 +1476,16 @@ def incremental_preview():
                    for k, v in sorted(why.items(), key=lambda kv: -kv[1])],
         "blocked": pend["blocked"],
         "blocked_total": sum(b["n"] for b in pend["blocked"]),
+        # **全量口径：在库 = 待抽取 + 已抽取 + 够不着，三个数要加得起来。**
+        # 这一页原来只报「待抽取 N 份」，而在库是 12 份时它显示 5——
+        # 看的人没有任何办法知道另外 7 份去哪了，也分不清「抽完了」
+        # 和「有 7 份系统根本够不着」。差额必须当场交代。
+        "in_lib": pend["in_lib"],
+        "extracted": pend["extracted"],
+        "coverage_note": pend["coverage_note"],
+        # 在库每一份一行。页面用这张清单代替一排数字——
+        # 「在库 12 / 待抽取 0 / 够不着 5」解释不了差额去哪了，清单不用解释。
+        "inventory": doclib.extract_inventory(iid),
         "ai_batch_limit": AI_BATCH_DEFAULT,
         "candidates_known": int(known),
         "candidates_unknown_files": unsplit,

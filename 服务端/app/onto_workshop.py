@@ -42,7 +42,7 @@
 """
 import time
 
-from . import agent_job, onto_build_orchestrator as borch, onto_orchestrator as orch
+from . import agent_job, onto_build_orchestrator as borch, onto_orchestrator as orch, onto_current
 from . import db, onto_coord as oc, onto_yaml as oy
 # 判据放在 onto_coord（onto_rule_cover 的归属模块），这里转引一下：
 # 反过来 import 会成环（onto_coord ← onto_orchestrator ← 这里）。
@@ -134,6 +134,12 @@ ONE_CLICK_LAST = 7          # 一键跑到第几步为止。改这个数要连�
 
 
 # ── 两个装载器的 runner ─────────────────────────────────────────────────────
+def _ws_iid():
+    """当前实例。本文件的统计句用它。"""
+    from . import scope
+    return scope.require()
+
+
 def _run_load_ontology(job, a, prev=None):
     t0 = time.time(); _phase(a, "S")
     before = db.scalar("SELECT count(*) FROM ontology_concept") or 0
@@ -167,6 +173,23 @@ def _run_load_ontology(job, a, prev=None):
 
 def _run_load_assets(job, a, prev=None):
     t0 = time.time(); _phase(a, "S")
+    # **不属于本实例的源文件：跳过这一步，不是让整个作业失败。**
+    # 这批资产是人按福建海运集团的制度整理的固定文件，别的实例没有等价物
+    # （理由见 rules/loader.py 顶上）。在 822港航 跑一键搭建时，
+    # ③ 本来就不该有产出——跳过并说清楚，比抛一个红色的「协同失败」有用：
+    # 后者会让人以为搭建坏了，而其实是这一步对这个实例不适用。
+    from app import scope as _scope
+    _iid = _scope.require()
+    if _iid != rules_loader.INSTANCE:
+        a["outputs"] = {"规则": 0, "可编译": 0, "演示可执行": 0, "标准限额": 0}
+        a["cost"] = "未执行"
+        a["note"] = ("跳过：这批规则资产的源文件属于实例「%s」，不装给「%s」。"
+                     "本实例的规则走「制度文件库 → 规则抽取 → 采纳进本体」那条路。"
+                     % (rules_loader.INSTANCE, _iid))
+        a["status"] = "skipped"
+        _phase_done(a, "S", t0)
+        return prev          # runner 的约定是把 prev 传下去，不是返回自己
+
     g = rules_loader.precheck()
     _phase_done(a, "S", t0)
 
@@ -178,7 +201,10 @@ def _run_load_assets(job, a, prev=None):
     _phase_done(a, "D", t0)
 
     t0 = time.time(); _phase(a, "A")
-    before = db.scalar("SELECT count(*) FROM rule WHERE version=1") or 0
+    # 装载脚本是福建海运集团专属的（rules/loader.py 里 INSTANCE 硬编码），
+    # 所以这里的"装载前/后"也只数它那一片，否则差额里混进了别家的规则。
+    before = db.scalar("SELECT count(*) FROM rule WHERE instance_id=%s AND version=1",
+                       (rules_loader.INSTANCE,)) or 0
     r = rules_loader.load_all(verbose=False)
     _phase_done(a, "A", t0)
 
@@ -187,8 +213,9 @@ def _run_load_assets(job, a, prev=None):
                     "演示可执行": r["executable"], "标准限额": r["standards"],
                     "装载前规则": before}
     a["cost"] = "规则引擎 · 不消耗"
-    kept = db.scalar("SELECT count(*) FROM rule WHERE version=1 "
-                     "AND created_by LIKE %s", ("onto_adopt%",)) or 0
+    kept = db.scalar("SELECT count(*) FROM rule WHERE instance_id=%s AND version=1 "
+                     "AND created_by LIKE %s",
+                     (rules_loader.INSTANCE, "onto_adopt%")) or 0
     warn = "；".join(w["detail"] for w in r.get("warnings") or [])
     a["note"] = ("人采纳进来的 %d 条保留，当前生效发布未动。草稿 %s"
                  % (kept, r.get("release"))) + (("。警告：" + warn) if warn else "")
@@ -243,10 +270,12 @@ def state():
     """
     src = oy.source_info()
     gate = rules_loader.precheck()
-    v = db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    v = onto_current.version()
     # 这两个数要给 cover_check() 用，所以提出来——它判的是「两个数对不对得上」。
-    n_rules = db.scalar("SELECT count(*) FROM rule WHERE version=1")
-    n_cover = db.scalar("SELECT count(*) FROM onto_rule_cover")
+    n_rules = db.scalar("SELECT count(*) FROM rule WHERE instance_id=%s AND version=1",
+                        (_ws_iid(),))
+    n_cover = db.scalar("SELECT count(*) FROM onto_rule_cover WHERE instance_id=%s",
+                        (_ws_iid(),))
     out = {
         "source": {"path": src["path"], "lines": src["lines"],
                    "sha256": src["sha256"], "written_by": src["written_by"],
@@ -260,23 +289,38 @@ def state():
                  "流程节点": db.scalar("SELECT count(*) FROM process_node WHERE version=%s", (v,)),
                  "流程迁移": db.scalar("SELECT count(*) FROM process_transition WHERE version=%s", (v,))},
         "assets": {"规则": n_rules,
-                   "可编译": db.scalar("SELECT count(*) FROM rule WHERE version=1 AND compiled"),
+                   "可编译": db.scalar("SELECT count(*) FROM rule WHERE instance_id=%s "
+                                     "AND version=1 AND compiled", (_ws_iid(),)),
                    # **带 version=1，和本体那侧对称。** 不带版本条件地 count，
                    # 等 rule 表出现第二个版本就会把两版加起来——本体那侧实测
                    # 踩过：17 实体 / 121 概念一度报成 34 / 240，而这个数是要写进汇报的。
                    # 今天 rule 表只有 version=1（实测 82 条、demo 12），所以这一行
                    # **现在一个数都不变**，防的是以后。
+                   # 这一屏是"本实例现在有多少东西"，每个数都要带实例，
+                   # 否则 822港航 的工场页会顶着福建海运集团的 82 条规则，
+                   # 而工场下一步的动作（重算候选、统一口径）写的是本实例。
                    "演示可执行": db.scalar(
-                       "SELECT count(*) FROM rule WHERE version=1 AND demo_executable"),
-                   "概念引用": db.scalar("SELECT count(*) FROM rule_concept"),
-                   "标准限额": db.scalar("SELECT count(*) FROM standard_limit"),
-                   "采纳进来的": db.scalar("SELECT count(*) FROM rule WHERE version=1 "
-                                     "AND created_by LIKE %s", ("onto_adopt%",))},
-        "candidates": {"候选": db.scalar("SELECT count(*) FROM onto_candidate"),
-                       "已处置": db.scalar("SELECT count(*) FROM onto_cand_action")},
-        "unify": {"对账": db.scalar("SELECT count(*) FROM onto_align"),
+                       "SELECT count(*) FROM rule WHERE instance_id=%s AND version=1 "
+                       "AND demo_executable", (_ws_iid(),)),
+                   "概念引用": db.scalar("SELECT count(*) FROM rule_concept "
+                                     "WHERE instance_id=%s", (_ws_iid(),)),
+                   "标准限额": db.scalar("SELECT count(*) FROM standard_limit "
+                                     "WHERE instance_id=%s", (_ws_iid(),)),
+                   "采纳进来的": db.scalar("SELECT count(*) FROM rule WHERE instance_id=%s "
+                                     "AND version=1 AND created_by LIKE %s",
+                                     (_ws_iid(), "onto_adopt%"))},
+        "candidates": {"候选": db.scalar("SELECT count(*) FROM onto_candidate "
+                                      "WHERE instance_id=%s", (_ws_iid(),)),
+                       "已处置": db.scalar("SELECT count(*) FROM onto_cand_action "
+                                       "WHERE instance_id=%s", (_ws_iid(),))},
+        "unify": {"对账": db.scalar("SELECT count(*) FROM onto_align WHERE instance_id=%s",
+                                  (_ws_iid(),)),
                   "规则覆盖": n_cover,
-                  "冲突": db.scalar("SELECT count(*) FROM doclib_conflict")},
+                  # 冲突表没有 instance_id，归属经 left_clause → 条款 → 文件 推
+                  "冲突": db.scalar("""SELECT count(*) FROM doclib_conflict c
+                                       JOIN doclib_clause cl ON cl.clause_id = c.left_clause
+                                       JOIN doc_lib_file f ON f.file_id = cl.file_id
+                                      WHERE f.instance_id=%s""", (_ws_iid(),))},
         "gate": gate,
     }
     # **库里的数对不对得上，要和「库里有什么」放在一起给。**

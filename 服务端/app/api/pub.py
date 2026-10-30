@@ -85,17 +85,58 @@ def _client(req):
     return req.headers.get("x-client") or req.headers.get("user-agent")
 
 
-def _resolve(version):
+def _pub_instance(instance=None):
+    """这次消费问的是哪个实例的资产。
+
+    **这里刻意不跟"当前实例"走。** 当前实例是界面上的全局单例，有人点一下就变；
+    而本模块第 ② 条纪律的内核是"对外给出去的东西必须是确定的"——
+    让外部系统的定时拉取跟着界面走，等于**某天夜里它拉到了另一家公司的规则集**，
+    而两边都不会报错。这正是本文件开头说的"最难查的一类事故"。
+
+    所以口径是：
+      · 传了 instance=xxx → 就用它（外部系统该显式说明自己要哪一家）；
+      · 没传 → **只有一个实例有对外可消费的版本时**才替它选那一个
+        （今天只有福建海运集团发布过，现有调用方因此一行都不用改）；
+      · 没传、而且有两家都发布过 → **400，要求点名**，不替它猜。
+        这一刻才是歧义真正出现的时刻，也正是必须吵出来的时刻；
+        静默选一个，对方会把另一家的口径写进自己的审核链。
+    """
+    if (instance or "").strip():
+        iid = instance.strip()
+        if not db.query_one("SELECT 1 FROM domain_instance WHERE instance_id=%s", (iid,)):
+            raise HTTPException(404, "没有这个实例：%s。可用实例见 /api/pub/v1" % iid)
+        return iid
+    rows = db.query("""SELECT DISTINCT instance_id FROM release
+                        WHERE status IN ('published','rolled_back')
+                        ORDER BY instance_id""")
+    if len(rows) == 1:
+        return rows[0]["instance_id"]
+    if not rows:
+        raise HTTPException(404, "还没有任何一版签字发布，没有可消费的资产。")
+    raise HTTPException(400,
+                        "有 %d 个实例都发布过版本（%s），**必须显式指定要哪一个**："
+                        "加 ?instance=<实例id>。不替调用方选：选错一次，"
+                        "你拉到的是另一家单位的审核口径，而两边都不会报错。"
+                        % (len(rows), "、".join(r["instance_id"] for r in rows)))
+
+
+def _resolve(version, instance=None):
     """版本号 / 发布号 / 字面量 current → release 行。**只认已发布的。**"""
+    iid = _pub_instance(instance)
     if version in ("current", "@current"):
-        r = rp.current_release()
+        r = rp.current_release(iid)
         if not r:
-            raise HTTPException(404, "现在没有生效版本。发布管理里把某一版「切为当前」。")
+            raise HTTPException(404, "实例 %s 现在没有生效版本。"
+                                     "发布管理里把某一版「切为当前」。" % iid)
         return r
+    # 版本号只在实例内唯一（0041），所以这里必须带实例——
+    # 不带的话两家同一天各发一版都叫 rs-2026xxxx-01 时，拉到哪一版取决于查询顺序。
     r = db.query_one("""SELECT * FROM release
-                         WHERE rule_set_version=%s OR release_id=%s""", (version, version))
+                         WHERE instance_id=%s
+                           AND (rule_set_version=%s OR release_id=%s)""",
+                     (iid, version, version))
     if not r:
-        raise HTTPException(404, "没有这个版本：%s" % version)
+        raise HTTPException(404, "实例 %s 里没有这个版本：%s" % (iid, version))
     if r["status"] not in ("published", "rolled_back"):
         raise HTTPException(404, "版本 %s 的状态是「%s」，不对外提供。"
                                  "**草稿不出门**：没签字的口径流出去，"
@@ -126,7 +167,22 @@ def index():
         # service_name 不叫 name：叫 name 的字段会被人名脱敏按字段名吃掉
         # （实测变成「福*********************」）。这是同一个坑的第三次，
         # 处方不变：改键名，不动策略——本系统里 name 绝大多数真是人名。
-        "service_name": "福建海运集团 · 差旅费审核口径资产（只读）",
+        "service_name": "差旅费审核口径资产（只读）",
+        # **可消费的实例清单必须在自描述里给出来。** 一个领域下可以有多家单位
+        # （审核 / 福建海运集团、审核 / 822港航），各自有独立的制度、规则与发布版本。
+        # 不列出来，集成方只能靠猜实例 id——而猜错一次拉到的是另一家的审核口径。
+        "instances": [
+            {"instance_id": r["instance_id"], "instance_label": r["label"],
+             "domain_label": r["domain_label"], "published_releases": r["n"]}
+            for r in db.query("""SELECT i.instance_id, i.label, d.label AS domain_label,
+                                        count(rel.release_id) AS n
+                                   FROM domain_instance i
+                                   JOIN domain d ON d.domain_id = i.domain_id
+                                   LEFT JOIN release rel
+                                          ON rel.instance_id = i.instance_id
+                                         AND rel.status IN ('published','rolled_back')
+                                  GROUP BY i.instance_id, i.label, d.label, i.sort_no
+                                  ORDER BY i.sort_no, i.instance_id""")],
         "triple_ontology": list(rp.TRIPLE),
         "layers": [{"layer": n, "ord": o, "alias": next(
             (a for a, v in ALIAS.items() if v == n), None), "note": note}
@@ -140,6 +196,11 @@ def index():
         ],
         "rules_of_the_road": {
             "版本": "{版本} 可以是版本号、发布号，或字面量 current",
+            "实例": "每个接口都接受 ?instance=<实例id>。**省略只在"
+                    "全库只有一个实例发布过版本时才成立**（那时不会有歧义）；"
+                    "一旦有两家都发布过，省略会直接回 400 要求点名——"
+                    "不替调用方猜：猜错一次，你拉到的是另一家单位的审核口径，"
+                    "而两边都不会报错。版本号也只在实例内唯一。",
             "快照": "一律读冻结快照，**不读活表**。同一个版本号永远拉到同一份内容",
             "草稿": "只有已发布的版本能消费；已撤回的仍给，但带 withdrawn=true",
             "鉴权": "**POC 里没有鉴权**。上生产前要加，这件事摆在这里不藏着",
@@ -157,55 +218,63 @@ def index():
 # 版本
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/releases")
-def releases(request: Request):
-    rows = db.query("""SELECT * FROM release WHERE status IN ('published','rolled_back')
-                        ORDER BY published_at DESC NULLS LAST""")
-    cur = rp.current_release()
+def releases(request: Request, instance: str = Query(None)):
+    iid = _pub_instance(instance)
+    rows = db.query("""SELECT * FROM release
+                        WHERE instance_id=%s AND status IN ('published','rolled_back')
+                        ORDER BY published_at DESC NULLS LAST""", (iid,))
+    cur = rp.current_release(iid)
     out = []
     for r in rows:
         m = _meta(r)
         m["is_current"] = bool(cur and cur["release_id"] == r["release_id"])
         out.append(m)
-    rp.log_access(None, "releases", _client(request), None)
-    return {"items": out, "count": len(out),
-            "note": "空清单不等于没做发布——可能是还没有任何一版签字发布。"}
+    rp.log_access(None, "releases", _client(request), None, instance_id=iid)
+    return {"items": out, "count": len(out), "instance": iid,
+            "note": "空清单不等于没做发布——可能是这个实例还没有任何一版签字发布。"}
 
 
 @router.get("/current")
-def current(request: Request):
-    r = rp.current_release()
+def current(request: Request, instance: str = Query(None)):
+    iid = _pub_instance(instance)
+    r = rp.current_release(iid)
     if not r:
-        raise HTTPException(404, "现在没有生效版本。")
-    rp.log_access(r["release_id"], "current", _client(request), None)
-    return _meta(r)
+        raise HTTPException(404, "实例 %s 现在没有生效版本。" % iid)
+    rp.log_access(r["release_id"], "current", _client(request), None, instance_id=iid)
+    return dict(_meta(r), instance=iid)
 
 
 @router.get("/releases/{version}")
-def manifest(version: str, request: Request):
-    r = _resolve(version)
+def manifest(version: str, request: Request, instance: str = Query(None)):
+    r = _resolve(version, instance)
     assets = db.query("""SELECT layer, ord, source_kind, source_ref, item_count,
                                 content_sha256, note
-                           FROM release_asset WHERE release_id=%s ORDER BY ord""",
-                      (r["release_id"],))
+                           FROM release_asset
+                          WHERE instance_id=%s AND release_id=%s ORDER BY ord""",
+                      (r["instance_id"], r["release_id"]))
     for a in assets:
         a["is_triple"] = a["layer"] in rp.TRIPLE
         a["alias"] = next((k for k, v in ALIAS.items() if v == a["layer"]), None)
-    rp.log_access(r["release_id"], "manifest", _client(request), None)
-    return dict(_meta(r), layers=assets, triple_ontology=list(rp.TRIPLE))
+    rp.log_access(r["release_id"], "manifest", _client(request), None,
+                  instance_id=r["instance_id"])
+    return dict(_meta(r), instance=r["instance_id"], layers=assets,
+                triple_ontology=list(rp.TRIPLE))
 
 
 @router.get("/releases/{version}/layers/{layer}")
-def layer(version: str, layer: str, request: Request):
+def layer(version: str, layer: str, request: Request, instance: str = Query(None)):
     """某一层的**快照原文**。层名可用中文或 ASCII 别名。"""
-    r = _resolve(version)
+    r = _resolve(version, instance)
     name = ALIAS.get(layer, layer)
     row = db.query_one("""SELECT layer, item_count, content_sha256, source_kind, source_ref,
                                  note, payload FROM release_asset
-                           WHERE release_id=%s AND layer=%s""", (r["release_id"], name))
+                           WHERE instance_id=%s AND release_id=%s AND layer=%s""",
+                       (r["instance_id"], r["release_id"], name))
     if not row:
         raise HTTPException(404, "版本 %s 里没有「%s」这一层。可用的层见 /api/pub/v1"
                                  % (version, layer))
-    rp.log_access(r["release_id"], "layer:" + name, _client(request), None)
+    rp.log_access(r["release_id"], "layer:" + name, _client(request), None,
+                  instance_id=r["instance_id"])
     return {"release": _meta(r), "layer": row["layer"], "alias": layer,
             "item_count": row["item_count"], "content_sha256": row["content_sha256"],
             "source_kind": row["source_kind"], "source_ref": row["source_ref"],
@@ -276,7 +345,8 @@ def _build_bundle(r):
     """打包。返回 (zip 字节, manifest 字典)。"""
     assets = db.query("""SELECT layer, ord, source_kind, source_ref, item_count,
                                 content_sha256, note, payload FROM release_asset
-                          WHERE release_id=%s ORDER BY ord""", (r["release_id"],))
+                          WHERE instance_id=%s AND release_id=%s ORDER BY ord""",
+                      (r["instance_id"], r["release_id"]))
     if not assets:
         raise HTTPException(409, "版本 %s 没有快照内容（frozen_at 为空的空壳）。"
                                  % r["rule_set_version"])
@@ -338,16 +408,20 @@ def _build_bundle(r):
 
 
 @router.get("/releases/{version}/bundle")
-def bundle(version: str, request: Request):
+def bundle(version: str, request: Request, instance: str = Query(None)):
     """整版资产包（zip）。**注意这是个旁路出口**：
 
     全局脱敏中间件按 content-type 放行非 JSON 响应，所以包内容在
     _build_bundle 里自己过了一遍按内容判定的脱敏。
     """
-    r = _resolve(version)
+    r = _resolve(version, instance)
     data, _m = _build_bundle(r)
-    rp.log_access(r["release_id"], "bundle", _client(request), len(data))
-    fname = "fjhy-%s.zip" % (r["rule_set_version"] or r["release_id"])
+    rp.log_access(r["release_id"], "bundle", _client(request), len(data),
+                  instance_id=r["instance_id"])
+    # 包名带实例：两家同一天各发一版很可能都叫 rs-2026xxxx-01，
+    # 下载到同一个目录里会**互相覆盖**，而文件名上看不出是哪一家的。
+    fname = "%s-%s.zip" % (r["instance_id"],
+                           r["rule_set_version"] or r["release_id"])
     return Response(content=data, media_type="application/zip",
                     headers={"content-disposition": _attachment(fname),
                              # release_id 也要过一遍：它同样来自人起的名字，
@@ -357,9 +431,11 @@ def bundle(version: str, request: Request):
 
 
 @router.get("/releases/{version}/bundle-manifest")
-def bundle_manifest(version: str, request: Request, pretty: bool = Query(False)):
+def bundle_manifest(version: str, request: Request, pretty: bool = Query(False),
+                    instance: str = Query(None)):
     """只要清单不要包：集成方先看一眼有什么、多大、哈希是多少。"""
-    r = _resolve(version)
+    r = _resolve(version, instance)
     _data, m = _build_bundle(r)
-    rp.log_access(r["release_id"], "bundle-manifest", _client(request), None)
+    rp.log_access(r["release_id"], "bundle-manifest", _client(request), None,
+                  instance_id=r["instance_id"])
     return m

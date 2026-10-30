@@ -27,7 +27,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import db, doclib, doclib_extract as dx, extract_orchestrator as orch  # noqa: E402
-from app import rule_detail  # noqa: E402
+from app import rule_detail, scope  # noqa: E402
 
 
 def _calls():
@@ -199,10 +199,18 @@ def test_切分跑完之后再算一次范围就是空的():
     run_split 每处理完一份就 mark_extracted()，所以它跑完之后
     pending_extract() 返回 0 份。下游要是自己再算一次，拿到的是空集。"""
     # 先确保有东西可抽：把一份文件的抽取指纹清掉，让它重新进增量
+    #
+    # **必须挑当前实例的文件。** 这里原来不带实例条件，只按 rel_path 取第一份——
+    # 库里只有一个实例时那和「当前实例的第一份」恰好同义，加了第二个实例就不是了：
+    # 2026-10-30 给 822港航 登记 12 份制度之后，排序第一的变成了 822港航 的文件，
+    # 而测试会话钉在 福建海运集团（conftest），L0 正确地把它过滤掉，
+    # 于是 frozen 是空的——**报出来的像是 L0 坏了，其实是这条取数问错了实例**。
+    iid = scope.require()
     fid = db.scalar("""SELECT file_id FROM doc_lib_file
                         WHERE NOT missing AND parse_state='已解析' AND body IS NOT NULL
-                        ORDER BY rel_path LIMIT 1""")
-    assert fid
+                          AND instance_id = %s
+                        ORDER BY rel_path LIMIT 1""", (iid,))
+    assert fid, "当前实例 %s 下没有可抽取的文件" % iid
     keep = db.query_one("SELECT extracted_at, extract_fingerprint FROM doc_lib_file "
                         "WHERE file_id=%s", (fid,))
     db.execute("UPDATE doc_lib_file SET extract_fingerprint=NULL WHERE file_id=%s", (fid,))
@@ -218,7 +226,9 @@ def test_切分跑完之后再算一次范围就是空的():
         # 范围没被改写
         assert job["scope"]["file_ids"] == frozen
         # 而重新算一次已经空了——这正是不能让下游自己算的原因
-        assert fid not in [r["file_id"] for r in doclib.pending_extract()["items"]]
+        # 同样要带实例：不带的话这条断言在「fid 属于另一个实例」时会白白通过。
+        assert fid not in [r["file_id"]
+                           for r in doclib.pending_extract(instance_id=iid)["items"]]
     finally:
         db.execute("UPDATE doc_lib_file SET extracted_at=%s, extract_fingerprint=%s "
                    "WHERE file_id=%s",

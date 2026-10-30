@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import db, onto_coord as oc  # noqa: E402
+from app import db, onto_coord as oc, scope  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,10 +97,17 @@ def test_不可比对文件里的条款不许判未落地():
 # 三、采纳的硬闸
 # ─────────────────────────────────────────────────────────────────────────────
 def test_有未裁决冲突的组不许采纳():
-    g = db.query_one("""SELECT a.group_key FROM onto_align a
-                         WHERE EXISTS (SELECT 1 FROM doclib_conflict c
-                                        WHERE c.group_key = a.group_key
-                                          AND c.state = '待裁决') LIMIT 1""")
+    # **选组的判据必须和闸的判据是同一个**，所以直接用 oc.pending_conflicts()。
+    # 这里原来自己写了一遍 SQL（按 group_key 找冲突、不带实例），而 doclib_conflict
+    # 没有 instance_id、group_key 又是跨实例会撞的文本键，于是 822港航 搭完本体
+    # 产生新冲突之后，测试选到了归属对面的那条——闸正确地不响，
+    # 报出来却像是闸坏了。两处各写一遍判据，迟早对不上。
+    iid = scope.require()
+    g = None
+    for row in db.query("SELECT group_key FROM onto_align WHERE instance_id = %s", (iid,)):
+        if oc.pending_conflicts(row["group_key"], iid):
+            g = row
+            break
     if not g:
         pytest.skip("当前没有带未裁决冲突的归并组")
     with pytest.raises(oc.AdoptError) as e:
@@ -108,6 +115,47 @@ def test_有未裁决冲突的组不许采纳():
                                         "rule_class": "hard", "control_type": "警告",
                                         "risk_class": "超标准"})
     assert "冲突" in str(e.value)
+
+
+def test_来源条款已不存在的陈旧冲突照样拦住采纳():
+    """**修过的 bug，而且失效方向是「放行」。**
+
+    doclib_conflict 没有 instance_id，只能经 left_clause → doclib_clause →
+    doc_lib_file 反推归属。而 clause_id 是内容定址的，**条款一重切就换号**，
+    旧冲突行就此悬空。原来的写法用 INNER JOIN，悬空行被直接丢掉，
+    count 变 0，闸就不响了。
+    2026-10-30 实测：9 条待裁决里 2 条悬空，「业务接待·审批」组实际有 1 条
+    待裁决而闸数出 0——于是它被成功采纳，还往 rule 表里落了一条。
+
+    这道闸必须 fail-closed：**判不出归属时算「有冲突」**。
+    拦错了人能看懂并去裁决；放过了没有任何人会发现。
+    """
+    iid = scope.require()
+    g = db.query_one("SELECT group_key FROM onto_align WHERE instance_id=%s LIMIT 1",
+                     (iid,))
+    if not g:
+        pytest.skip("没有归并组")
+    gk = g["group_key"]
+    had = db.query("SELECT conflict_id FROM doclib_conflict WHERE group_key=%s", (gk,))
+    # 造一条**来源条款不存在**的待裁决冲突
+    db.execute("""INSERT INTO doclib_conflict(conflict_id, group_key, kind, detail,
+                      left_clause, right_clause, state)
+                  VALUES ('zz-test-dangling', %s, '口径不一致', '测试用悬空冲突',
+                          'dlc-这个条款不存在', 'dlc-这个也不存在', '待裁决')""", (gk,))
+    try:
+        with pytest.raises(oc.AdoptError) as e:
+            oc.adopt(gk, "测试", {"name": "x", "dimension": "D1",
+                                 "rule_class": "hard", "control_type": "警告",
+                                 "risk_class": "超标准"})
+        assert "冲突" in str(e.value), \
+            "悬空冲突没拦住——闸在「放行」这一侧静默失效了：%s" % e.value
+    finally:
+        db.execute("DELETE FROM doclib_conflict WHERE conflict_id='zz-test-dangling'")
+        # 顺手确认没留下半成品规则
+        db.execute("DELETE FROM rule WHERE created_by LIKE %s AND name=%s",
+                   ("onto_adopt:测试%", "x"))
+    assert len(db.query("SELECT conflict_id FROM doclib_conflict WHERE group_key=%s",
+                        (gk,))) == len(had), "测试造的冲突没清干净"
 
 
 def test_采纳必须署名():
@@ -199,10 +247,10 @@ def test_采纳进来的规则不会被装载脚本删掉():
         cur = conn.cursor()
         sc = json.dumps({"file": "X", "clause": "第一条", "text": "t",
                          "confidence": "原生文本"}, ensure_ascii=False)
-        cur.execute("""INSERT INTO rule(rule_id, version, name, dimension, risk_class,
-                           rule_class, source_clause, scope, logic, priority, control_type,
-                           compiled, compiled_reason, status, created_by)
-                       VALUES ('TR-ZZ-99',1,'装载保护验证','D1','超标准','hard',%s,
+        cur.execute("""INSERT INTO rule(instance_id, rule_id, version, name, dimension,
+                           risk_class, rule_class, source_clause, scope, logic, priority,
+                           control_type, compiled, compiled_reason, status, created_by)
+                       VALUES ('fjhy','TR-ZZ-99',1,'装载保护验证','D1','超标准','hard',%s,
                                '{}','{}',50,'警告',FALSE,'未编译','draft','onto_adopt:test')""",
                     (sc,))
         cur.execute("DELETE FROM release_item")

@@ -103,13 +103,17 @@ def not_applicable(rule_id, why, evidence=None):
 # ─────────────────────────────────────────────────────────────────────────────
 class RuleSet:
     def __init__(self, rows, rule_set_version, ontology_version, lookups, excluded,
-                 release_id=None, effective_why=None):
+                 release_id=None, effective_why=None, instance_id=None):
         self.rules = rows
         self.by_id = {r["rule_id"]: r for r in rows}
         self.rule_set_version = rule_set_version
         self.ontology_version = ontology_version
         self.lookups = lookups
         self.excluded = excluded
+        # 这一份规则集是哪个实例的。**缓存必须按它分桶**：rule_set_version
+        # 在 0041 之后只在实例内唯一（两个实例同一天各发一版会撞号），
+        # 只用 release_id 当缓存 key 会让一个实例读到另一个实例的规则集。
+        self.instance_id = instance_id
         # 这一版是从哪个 release 认出来的。调用方（如 /api/ai-review 的缓存）
         # 拿它判断「库里的生效版本换了没有」，不必自己再去解析一遍阶梯。
         self.release_id = release_id
@@ -132,8 +136,15 @@ class RuleSet:
 _REL_COLS = "r.release_id, r.rule_set_version, r.ontology_version, r.status"
 
 
-def effective_release():
+def effective_release(instance_id=None):
     """哪一版正在生效。**全站只认这一个定义**，返回 (row, why)。
+
+    **按实例判。** 0041 之后 release / release_current 都带 instance_id
+    （release_current 的主键就是 instance_id——每个实例各有一个当前版本），
+    所以三级阶梯的每一级都要带上实例条件。不带的后果很直接：822港航切过去之后
+    引擎仍按福建海运集团的生效版本判单，而页面上写着的是 822港航——
+    「页面说的不是引擎在用的那一版」这个坑这个函数已经踩过一次（见下）。
+    instance_id 不传就取当前实例（app/scope.py），取不到抛 ScopeError。
 
     三级阶梯：
       ① `release_current` 指针——发布管理里点「切为当前」写的那条
@@ -152,47 +163,70 @@ def effective_release():
     新库里一版都没 published，不给这一级就连启动自检都过不去。
     但它会把草稿版本号写进结论，所以 why 要带回去，让调用方能说清楚。
     """
+    from .. import scope
+    iid = scope.require(instance_id)
     row = db.query_one("""SELECT %s FROM release_current c
-                          JOIN release r ON r.release_id = c.release_id""" % _REL_COLS)
+                          JOIN release r ON r.release_id = c.release_id
+                                        AND r.instance_id = c.instance_id
+                          WHERE c.instance_id = %%s""" % _REL_COLS, (iid,))
     if row:
         return row, "发布管理里「切为当前」指定的版本"
-    row = db.query_one("""SELECT %s FROM release r WHERE r.status = 'published'
-                          ORDER BY r.created_at DESC LIMIT 1""" % _REL_COLS)
+    row = db.query_one("""SELECT %s FROM release r
+                          WHERE r.status = 'published' AND r.instance_id = %%s
+                          ORDER BY r.created_at DESC LIMIT 1""" % _REL_COLS, (iid,))
     if row:
         return row, "没设当前指针，自动用最新的已发布版本"
-    row = db.query_one("""SELECT %s FROM release r
-                          ORDER BY r.created_at DESC LIMIT 1""" % _REL_COLS)
+    row = db.query_one("""SELECT %s FROM release r WHERE r.instance_id = %%s
+                          ORDER BY r.created_at DESC LIMIT 1""" % _REL_COLS, (iid,))
     if row:
         return row, "库里一版都没发布过，暂用最新的草稿版本（结论上的版本号是草稿号）"
-    return None, "库里没有任何 release"
+    return None, "这个实例下还没有任何 release（新建的实例是空的，先装载规则资产）"
 
 
-def load_ruleset(only_executable=True):
-    """从库里载入规则集。生效版本由 effective_release() 定，不在这里另立一套。"""
-    rel, why = effective_release()
+def load_ruleset(only_executable=True, instance_id=None):
+    """从库里载入规则集。生效版本由 effective_release() 定，不在这里另立一套。
+
+    **规则与查找表都按实例取。** 不按实例取的后果不是"多读了几行"，
+    而是**用另一个实例的规则判这个实例的单据**——而结论上写的版本号是本实例的，
+    事后对不出来。
+    """
+    from .. import scope
+    iid = scope.require(instance_id)
+    rel, why = effective_release(iid)
     if not rel:
-        raise RuntimeError("库里没有 release，先跑 app/rules/loader.py")
-    where = "WHERE version = 1" + (" AND demo_executable" if only_executable else "")
+        raise RuntimeError("实例 %s 下没有 release（新实例是空的）。"
+                           "规则资产装载见 app/rules/loader.py" % iid)
+    where = "WHERE instance_id = %s AND version = 1" + \
+            (" AND demo_executable" if only_executable else "")
     rows = db.query("""SELECT rule_id, name, dimension, risk_class, rule_class, control_type,
                        priority, scope, logic, exception, source_clause, external_table,
                        demo_scope, compiled, compiled_reason, demo_blocker, binding_node
-                       FROM rule %s ORDER BY priority DESC, rule_id""" % where)
+                       FROM rule %s ORDER BY priority DESC, rule_id""" % where, (iid,))
     excluded = db.query("""SELECT rule_id, name, control_type, compiled, compiled_reason,
                            demo_blocker, binding_node FROM rule
-                           WHERE version = 1 AND NOT demo_executable
-                           ORDER BY rule_id""")
-    lookups = load_lookups()
+                           WHERE instance_id = %s AND version = 1 AND NOT demo_executable
+                           ORDER BY rule_id""", (iid,))
+    lookups = load_lookups(iid)
     return RuleSet(rows, rel["rule_set_version"], rel["ontology_version"], lookups, excluded,
-                   release_id=rel["release_id"], effective_why=why)
+                   release_id=rel["release_id"], effective_why=why, instance_id=iid)
 
 
-def load_lookups():
-    """把查找表读成内存结构。规则实现通过 ctx.lookup(...) 取。"""
+def load_lookups(instance_id=None):
+    """把查找表读成内存结构。规则实现通过 ctx.lookup(...) 取。
+
+    按实例取：两个实例都会有一张叫"必要附件决策表"的表（table_id 是固定中文名），
+    0041 之后它们靠 (instance_id, table_id) 区分，不带实例条件会把两边的行拌在一起，
+    而决策表拌错一行就是对一批单据误报或漏报。
+    """
+    from .. import scope
+    iid = scope.require(instance_id)
     out = {}
-    for t in db.query("SELECT table_id, kind, on_miss, key_fields, row_count FROM lookup_table"):
+    for t in db.query("""SELECT table_id, kind, on_miss, key_fields, row_count
+                         FROM lookup_table WHERE instance_id = %s""", (iid,)):
         rows = db.query("""SELECT row_key, row_value, enabled, confidence, source_rows,
                            must_hit, must_not_hit, conflict, gap_id, note
-                           FROM lookup_row WHERE table_id = %s ORDER BY id""", (t["table_id"],))
+                           FROM lookup_row WHERE instance_id = %s AND table_id = %s
+                           ORDER BY id""", (iid, t["table_id"]))
         out[t["table_id"]] = {"meta": t, "rows": rows}
     return out
 

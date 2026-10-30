@@ -17,11 +17,11 @@
 在本体里没有节点。这 10 次就是漂移的全部证据，
 而它们正是「本体是设计出来的还是数出来的」这个问题的答案。
 """
-from . import db
+from . import db, onto_current
 
 
 def _version():
-    return db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    return onto_current.version()
 
 
 def build():

@@ -11,7 +11,7 @@
 """
 import time
 
-from . import agent_job, doclib, doclib_extract as dx, rule_detail
+from . import agent_job, doclib, doclib_extract as dx, rule_detail, scope
 from .agent_job import PHASES, blank_agent, phase as _phase, phase_done as _phase_done  # noqa: F401
 
 # ── 编排图（没开跑时也要能画）──────────────────────────────────────────────
@@ -86,9 +86,17 @@ def _scope_of(job):
 def _run_l0(job, a, prev=None):
     """L0 感知：看见哪些文件该抽了，并**把范围定下来**。只看见，不判断。"""
     only_changed = bool((job.get("opts") or {}).get("only_changed", True))
+    # **实例也在这里定死，和 file_ids 一起进 job["scope"]。**
+    # 原来这一行是 `doclib.pending_extract(limit=500)`——不带实例，
+    # 而那个函数的签名本来就支持 instance_id、不传就是**全库**。
+    # 单实例时代看不出问题；有第二个实例之后，L0 感知到的"待抽取"范围会横跨
+    # 两个实例，于是下游一次切分就把两家的制度条款搅在一起，
+    # 而台账上只记着"处理了 N 份文件"。
+    iid = (job.get("opts") or {}).get("instance_id") or scope.require()
+    job["instance_id"] = iid
 
     t0 = time.time(); _phase(a, "S")
-    pend = doclib.pending_extract(limit=500)
+    pend = doclib.pending_extract(limit=500, instance_id=iid)
     _phase_done(a, "S", t0)
 
     t0 = time.time(); _phase(a, "D")
@@ -147,7 +155,8 @@ def _run_split(job, a, prev):
     sc = _scope_of(job)
     # 范围来自 job["scope"]（L0 算定），**不在这里重算**——重算拿到的是空集，
     # 因为 run_split 自己会 mark_extracted()。见本文件上方的不变式说明。
-    r = dx.run_split(file_ids=sc["file_ids"], only_changed=sc["only_changed"])
+    r = dx.run_split(file_ids=sc["file_ids"], only_changed=sc["only_changed"],
+                     instance_id=job.get("instance_id"))
     _phase_done(a, "A", t0)
     _JOB.emit(job, a, "fjhy_clause_ready",
               {"clauses": r["clauses"], "candidates": r["candidates"]})
@@ -190,7 +199,7 @@ def _run_detail(job, a, prev):
     # 同一个范围。注意 rule_detail.run 的第三路（已采纳草稿投影）**刻意不受限定**：
     # 采纳是人在别的时候点的，和这次增量是哪几份文件无关；限定了会让
     # 「我明明采纳了，明细里没有」。那一路是幂等 UPSERT，重复跑不多产出。
-    r = rule_detail.run(file_ids=sc["file_ids"])
+    r = rule_detail.run(file_ids=sc["file_ids"], instance_id=job.get("instance_id"))
     _phase_done(a, "A", t0)
     _JOB.emit(job, a, "fjhy_detail_ready",
               {"mapped": r["table"]["mapped"], "projected": r["draft"]["projected"]})
@@ -257,7 +266,8 @@ def _run_draft(job, a, prev):
                 "model": None, "items": []}
 
     t0 = time.time(); _phase(a, "A")
-    r = dx.run_ai(limit=8, file_ids=sc["file_ids"])
+    r = dx.run_ai(limit=8, file_ids=sc["file_ids"],
+                  instance_id=job.get("instance_id"))
     _phase_done(a, "A", t0)
     _JOB.emit(job, a, "fjhy_draft_ready", {"drafted": r["drafted"]})
 

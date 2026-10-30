@@ -57,16 +57,32 @@ async def lifespan(_app):
     # 结果 9 条没有实现的规则在执行集里待了很久，每张单都产出一条
     # 「代码缺口」待人工，而报告上看着它们在正常工作。
     # 契约校验（第一道）只比对「该不该跑」，比不出「有没有实现」，两道都要有。
-    rs = engine.load_ruleset()
-    missing = rs.missing_impl
-    print("规则集 %s / 本体 %s：执行集 %d 条，缺实现 %d"
-          % (rs.rule_set_version, rs.ontology_version, len(rs), len(missing)))
-    if missing:
-        raise RuntimeError(
-            "执行集里有 %d 条规则没有实现，拒绝启动：%s%s%s"
-            % (len(missing), ", ".join(missing), chr(10),
-               "   契约校验说它该跑，而代码里没有对应实现——它既不在剔除名单里、"
-               "也不会产生任何结论，报告上看不出少了一条。"))
+    #
+    # **逐实例检查，不是只检当前实例**（0041 之后 rule/release 按实例隔离）。
+    # 只检当前实例的话这道闸会被「切实例」绕过：切实例是运行时动作、不重启，
+    # 于是另一个实例的缺实现规则永远不会被这道闸看到——而那正是它要防的事。
+    # **空实例跳过且明说**：新建的实例按设计就是空的（0040 口径），
+    # 一条规则都没有不是故障；但"跳过了"必须打在启动日志里，
+    # 否则下一个人会以为所有实例都过了闸。
+    insts = db.query("""SELECT i.instance_id, i.label FROM domain_instance i
+                        ORDER BY i.domain_id, i.sort_no""")
+    for inst in insts:
+        iid, label = inst["instance_id"], inst["label"]
+        rel, _why = engine.effective_release(iid)
+        if not rel:
+            print("规则集 [%s %s]：无 release，空实例，跳过缺实现检查" % (iid, label))
+            continue
+        rs = engine.load_ruleset(instance_id=iid)
+        missing = rs.missing_impl
+        print("规则集 [%s %s] %s / 本体 %s：执行集 %d 条，缺实现 %d"
+              % (iid, label, rs.rule_set_version, rs.ontology_version,
+                 len(rs), len(missing)))
+        if missing:
+            raise RuntimeError(
+                "实例 %s（%s）的执行集里有 %d 条规则没有实现，拒绝启动：%s%s%s"
+                % (iid, label, len(missing), ", ".join(missing), chr(10),
+                   "   契约校验说它该跑，而代码里没有对应实现——它既不在剔除名单里、"
+                   "也不会产生任何结论，报告上看不出少了一条。"))
     if config.MASK_MODE != "on":
         print("** 警告：FJHY_MASK_MODE=%s。脱敏已关闭，生产环境绝不允许。"
               % config.MASK_MODE)

@@ -284,14 +284,31 @@ def test_待抽取随文件变化自动进出(lib):
 
 
 def test_取不到正文的文件不算待抽取但要报数(lib):
-    """「抽完了」不等于「制度都抽过了」。取不到正文的那批必须单独报出来。"""
+    """「抽完了」不等于「制度都抽过了」。取不到正文的那批必须单独报出来。
+
+    **0042 起「有正文」不再等于 parse_state='已解析'。** 这里原来断言的是
+    「待抽取列表里每一行都是已解析」，那在当时和「有正文」同义；
+    加了 OCR 与多模态读图两条取文路径之后就不是了——一份 parse_state='需OCR'
+    的扫描件，读过图之后**应该**出现在待抽取里，那正是这次改动的目的。
+    所以这里改成按真正的意图断言：**没有任何可用正文的那一份进不来**，
+    而且它必须出现在 blocked 的报数里。
+    """
     root, rid = lib
-    make_pdf(str(root / "制度" / "扫描件.pdf"))      # 没有文字层
+    make_pdf(str(root / "制度" / "扫描件.pdf"))      # 没有文字层，也没 OCR、没读图
     doclib.scan([rid])
+    fid = db.scalar("""SELECT file_id FROM doc_lib_file
+                        WHERE root_id=%s AND file_name='扫描件.pdf'""", (rid,))
+    assert fid
     p = doclib.pending_extract()
-    assert all(r["parse_state"] == "已解析" for r in p["items"])
+    assert fid not in [r["file_id"] for r in p["items"]], \
+        "一条取文路径都没有的扫描件进了待抽取——抽取会对它切出 0 条，" \
+        "看起来像「这份制度里没有条款」"
     states = {b["parse_state"]: b["n"] for b in p["blocked"]}
     assert states.get("需OCR", 0) >= 1, states
+    # 反过来也要钉住：**进得来的每一行都得说得出正文从哪来**
+    for r in p["items"]:
+        assert r["text_source"] in ("原生文本", "OCR", "读图"), \
+            "%s 进了待抽取却说不出正文来源" % r["file_name"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

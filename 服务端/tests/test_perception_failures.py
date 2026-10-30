@@ -34,8 +34,8 @@ PREFIX = "FJHY-TEST-PFAIL-"
 def att():
     """一张挂在测试单上的附件。不需要磁盘原图——本模块一次模型都不调。"""
     bill = PREFIX + "0001"
-    db.execute("""INSERT INTO expense_bill(bill_no, doc_type, biz_type, is_demo)
-                  VALUES (%s,'差旅费报账单','国内差旅费',FALSE)
+    db.execute("""INSERT INTO expense_bill(instance_id, bill_no, doc_type, biz_type, is_demo)
+                  VALUES ('fjhy',%s,'差旅费报账单','国内差旅费',FALSE)
                   ON CONFLICT (bill_no) DO NOTHING""", (bill,))
     aid = db.scalar("""INSERT INTO attachment(bill_no, file_name, stored_path, seq,
                                               sha256, source_kind)

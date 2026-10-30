@@ -840,6 +840,12 @@ process:
       actor: —
       ai_entry: false
 
+    - id: N07
+      name: 共享审核
+      alias: []
+      note: |
+        由「本体构建」协同采纳。证据：审批记录出现 125 次，涉及 41 张单。
+        **这个节点的 actor 与前后迁移待业务侧确认**——迁移没补全时它在流程图上是个孤点。
   bypasses:
     - id: B01
       name: 撤回

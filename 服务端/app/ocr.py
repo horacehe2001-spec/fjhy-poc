@@ -228,24 +228,25 @@ def _ocr_image(img, exe, tessdata):
     return text, mean, low, len(words)
 
 
-def ocr_pdf(path, dpi=DEFAULT_DPI, keep_images=True, file_id=None, max_pages=MAX_PAGES):
-    """对一份 PDF 逐页 OCR。→ [{page_no, text, mean_conf, ...}]
+def iter_rendered_pages(path, dpi=DEFAULT_DPI, keep_images=True, file_id=None,
+                        max_pages=MAX_PAGES):
+    """逐页渲 PNG 并判表格，**不做任何文字识别**。逐页 yield。
 
-    每页都渲 PNG 并留下来：表格页 OCR 不可信时，人眼读图是项目里唯一拿到过
-    完整 15 行费率的办法，图得在手上才能读。
+    从 ocr_pdf() 里拆出来的（0042）。原来渲页和 tesseract 识别缠在一个循环里，
+    于是「我只想要页面图」这件事做不到——多模态读图为了拿到图，
+    必须先跑一遍本机 OCR，既慢，又会在 doc_lib_ocr 里留下一份谁也不会用的
+    垃圾文本（纯扫描件 tesseract 出来的那种逐字带空格的东西）。
+    拆开之后，OCR 和读图是**两条平级的取文路径**，共用同一套渲页实现。
+
+    做成生成器是为了内存：27 页 200dpi 的 PNG 一次全持有是几十 MB，
+    而调用方每次只用一页。
+
+    **每个 dict 都带 total_pages**——生成器没法再 return 一个总数，
+    而调用方要拿它写 ocr_pages / vision_pages。截断到 max_pages 时这个数
+    仍然是文件的真实页数，不是实际渲出来的页数：前者才是「这份文件有多少页」。
     """
     import fitz
     from PIL import Image
-
-    exe = tesseract_exe()
-    if not exe:
-        raise RuntimeError("本机没找到 tesseract，无法 OCR")
-    tessdata = (VENDOR_TESSDATA
-                if os.path.exists(os.path.join(VENDOR_TESSDATA, "chi_sim.traineddata"))
-                else None)
-    engine = "tesseract %s + %s%s" % (
-        (engine_info().get("version") or "?").replace("tesseract ", ""),
-        LANG, "（tessdata_best）" if tessdata else "")
 
     img_dir = os.path.join(out_dir(), file_id or os.path.basename(path)[:40])
     if keep_images:
@@ -253,7 +254,7 @@ def ocr_pdf(path, dpi=DEFAULT_DPI, keep_images=True, file_id=None, max_pages=MAX
 
     doc = fitz.open(path)
     try:
-        pages = []
+        total = doc.page_count
         for i, page in enumerate(doc, 1):
             if i > max_pages:
                 break
@@ -276,24 +277,56 @@ def ocr_pdf(path, dpi=DEFAULT_DPI, keep_images=True, file_id=None, max_pages=MAX
                     f.write(png)
             img = Image.open(io.BytesIO(png))
             px_table, hor, ver = detect_table_image(img)
-            tables = vec_tables or (1 if px_table else 0)
-            text, mean, low, wc = _ocr_image(img, exe, tessdata)
-            pages.append({
-                "page_no": i, "text": text, "chars": len(text),
-                "mean_conf": mean, "low_conf_words": low, "word_cnt": wc,
-                "has_table": tables > 0,
-                "table_note": (
-                    "检测到表格（%s；横线 %d 竖线 %d）。**OCR 会丢掉行列对应关系**——"
-                    "数字可能都在，但「哪个城市、哪个职级、多少钱」对不上。"
-                    "实测这类页的置信度也明显更低（本份文件文本页 88~91，表格页 53~84）。"
-                    "请人眼读图（PNG 已渲好：%s）或上多模态模型，不要直接拿去抽规则。"
-                    % ("矢量线条" if vec_tables else "像素线条", hor, ver,
-                       img_path or "未保存")) if tables else None,
-                "engine": engine, "dpi": dpi, "image_path": img_path,
-            })
-        return pages, doc.page_count
+            yield {"page_no": i, "total_pages": total, "img": img,
+                   "image_path": img_path, "dpi": dpi,
+                   "vec_tables": vec_tables, "px_table": px_table,
+                   "hor": hor, "ver": ver,
+                   "has_table": bool(vec_tables or px_table)}
     finally:
         doc.close()
+
+
+def table_note_of(r):
+    """表格页的那句警告。渲页和 OCR 拆开之后两边都要用，所以抽成一处。"""
+    if not r["has_table"]:
+        return None
+    return ("检测到表格（%s；横线 %d 竖线 %d）。**OCR 会丢掉行列对应关系**——"
+            "数字可能都在，但「哪个城市、哪个职级、多少钱」对不上。"
+            "实测这类页的置信度也明显更低（本份文件文本页 88~91，表格页 53~84）。"
+            "请人眼读图（PNG 已渲好：%s）或上多模态模型，不要直接拿去抽规则。"
+            % ("矢量线条" if r["vec_tables"] else "像素线条", r["hor"], r["ver"],
+               r["image_path"] or "未保存"))
+
+
+def ocr_pdf(path, dpi=DEFAULT_DPI, keep_images=True, file_id=None, max_pages=MAX_PAGES):
+    """对一份 PDF 逐页 OCR。→ ([{page_no, text, mean_conf, ...}], 总页数)
+
+    渲页在 iter_rendered_pages()，这里只做识别。
+    每页的 PNG 都留着：表格页 OCR 不可信时，人眼读图是项目里唯一拿到过
+    完整 15 行费率的办法，图得在手上才能读。
+    """
+    exe = tesseract_exe()
+    if not exe:
+        raise RuntimeError("本机没找到 tesseract，无法 OCR")
+    tessdata = (VENDOR_TESSDATA
+                if os.path.exists(os.path.join(VENDOR_TESSDATA, "chi_sim.traineddata"))
+                else None)
+    engine = "tesseract %s + %s%s" % (
+        (engine_info().get("version") or "?").replace("tesseract ", ""),
+        LANG, "（tessdata_best）" if tessdata else "")
+
+    pages, total = [], 0
+    for r in iter_rendered_pages(path, dpi=dpi, keep_images=keep_images,
+                                 file_id=file_id, max_pages=max_pages):
+        total = r["total_pages"]
+        text, mean, low, wc = _ocr_image(r["img"], exe, tessdata)
+        pages.append({
+            "page_no": r["page_no"], "text": text, "chars": len(text),
+            "mean_conf": mean, "low_conf_words": low, "word_cnt": wc,
+            "has_table": r["has_table"], "table_note": table_note_of(r),
+            "engine": engine, "dpi": dpi, "image_path": r["image_path"],
+        })
+    return pages, total
 
 
 # ── 入库 ────────────────────────────────────────────────────────────────────

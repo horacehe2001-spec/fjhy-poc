@@ -34,39 +34,54 @@ import json
 import re
 import uuid
 
-from . import db, doclib_extract as dx
+from . import db, doclib_extract as dx, onto_current
 
 # ── 来源代号能不能钉到唯一一份文件 ──────────────────────────────────────────
 SRC_CODES = ("规则表", "要点", "制度", "场景表", "配置器", "解答")
 
 
-def code_targets():
+def code_targets(instance_id=None):
     """类别代号 → 文件库里名字含该代号的文件。**唯一命中才算可比对。**
 
     这不是相似度匹配：代号是规则清单里原样写着的字符串，
     「名字里含这个代号」是能复核的硬条件。但**命中 0 份或多份都不算钉上**——
     多份命中时选一份就是猜，而猜错会把一条规则挂到错的制度文件上，
     给出一条看起来有据可查、实际指错地方的证据链。
+
+    **必须按实例过滤。** 这里原来是全库查的，而「唯一命中」这个判据
+    对文件池的大小极其敏感：2026-10-30 给 822港航 登记 12 份制度之后，
+    代号「制度」在全库里从命中 1 份变成命中 3 份（另两份是 822港航 的
+    《三重一大决策制度》和《备用金管理办法》），于是**福建海运集团 的
+    《国资委差旅制度》反而不算「钉上了」**，它的落地对账跟着失真。
+    一个实例的文件改变另一个实例的对账结果，正是隔离要防的事。
     """
+    iid = _iid(instance_id)
     files = [r["file_name"] for r in
-             db.query("SELECT file_name FROM doc_lib_file WHERE NOT missing")]
+             db.query("""SELECT file_name FROM doc_lib_file
+                          WHERE NOT missing AND instance_id = %s""", (iid,))]
     return {code: [f for f in files if code in f] for code in SRC_CODES}
 
 
-def comparable_files():
+def comparable_files(instance_id=None):
     """可比对文件集：至少被一个代号唯一命中的文件。
 
     不在这个集合里的文件（实测：《差旅管理实施细则》《业务接待管理办法》
     和三份 xlsx），规则清单里压根没有能钉到它的来源写法——
     所以这些文件里的条款**既不能判已落地，也不能判未落地**。
     """
-    t = code_targets()
+    t = code_targets(instance_id)
     return {hit[0] for hit in t.values() if len(hit) == 1}, t
 
 
 # ── 制度 → 落地 ─────────────────────────────────────────────────────────────
-def _group_rows():
-    """归并组的成员条款，带文件名、条款号、覆盖规则、切分策略。"""
+def _group_rows(instance_id=None):
+    """归并组的成员条款，带文件名、条款号、覆盖规则、切分策略。
+
+    **按实例过滤**：group_key 是人读的文本键（「伙食补助费·标准」这类），
+    两个实例各自归并必然撞上同名的组。不过滤的话，对面实例的条款会以
+    「同一个组的成员」身份出现在本实例的对账里——而它们来自另一家单位的制度。
+    """
+    iid = _iid(instance_id)
     return db.query("""
         SELECT s.group_key, s.clause_id, s.source_kind, s.confidence,
                c.clause_no, c.covered_by, c.split_strategy, c.title, c.numbers,
@@ -74,16 +89,26 @@ def _group_rows():
           FROM doclib_rule_source s
           JOIN doclib_clause c ON c.clause_id = s.clause_id
           JOIN doc_lib_file  f ON f.file_id   = s.file_id
-         ORDER BY s.group_key, f.file_name, c.seq""")
+         WHERE f.instance_id = %s
+         ORDER BY s.group_key, f.file_name, c.seq""", (iid,))
 
 
-def align_forward():
+def align_forward(instance_id=None):
     """→ [onto_align 行]。每个归并组对上了哪几条规则。"""
-    comparable, _ = comparable_files()
+    iid = _iid(instance_id)
+    comparable, _ = comparable_files(iid)
+    # 冲突也只看本实例的：待裁决冲突会挡住采纳，把对面的冲突算进来，
+    # 本实例会出现"有 N 处冲突没裁决"而页面上一条都找不到的死局。
+    # 冲突表**没有 clause_id 列**，它记的是冲突双方 left_clause / right_clause
+    # （0020 的结构）。按 left_clause 回溯文件即可定归属：一处冲突的两条条款
+    # 必然来自同一个归并组，而归并组不跨实例。
     conflict_groups = {r["group_key"] for r in db.query(
-        "SELECT DISTINCT group_key FROM doclib_conflict WHERE state = '待裁决'")}
+        """SELECT DISTINCT c.group_key FROM doclib_conflict c
+             JOIN doclib_clause cl ON cl.clause_id = c.left_clause
+             JOIN doc_lib_file f ON f.file_id = cl.file_id
+            WHERE c.state = '待裁决' AND f.instance_id = %s""", (iid,))}
     by = {}
-    for r in _group_rows():
+    for r in _group_rows(iid):
         by.setdefault(r["group_key"], []).append(r)
 
     out = []
@@ -116,19 +141,21 @@ def align_forward():
 
 
 # ── 规则 → 依据 ─────────────────────────────────────────────────────────────
-def align_reverse():
+def align_reverse(instance_id=None):
     """→ [onto_rule_cover 行]。每条规则找不找得到制度出处。"""
-    _, codes = comparable_files()
+    iid = _iid(instance_id)
+    _, codes = comparable_files(iid)
 
     cited, by_file = {}, {}
     for c in db.query("""SELECT c.clause_no, c.covered_by, c.split_strategy, f.file_name
                            FROM doclib_clause c
-                           JOIN doc_lib_file f ON f.file_id = c.file_id"""):
+                           JOIN doc_lib_file f ON f.file_id = c.file_id
+                          WHERE f.instance_id = %s""", (iid,)):
         by_file.setdefault(c["file_name"], set()).add(c["clause_no"])
         for rid in (c["covered_by"] or []):
             cited.setdefault(rid, []).append(c)
     groups_of = {}
-    for r in _group_rows():
+    for r in _group_rows(iid):
         for rid in (r["covered_by"] or []):
             groups_of.setdefault(rid, set()).add(r["group_key"])
 
@@ -136,7 +163,8 @@ def align_reverse():
     for r in db.query("""SELECT rule_id, version,
                                 source_clause->>'file'   AS src_file,
                                 source_clause->>'clause' AS src_clause
-                           FROM rule WHERE version = 1 ORDER BY rule_id"""):
+                           FROM rule WHERE instance_id = %s AND version = 1
+                           ORDER BY rule_id""", (iid,)):
         rid, code, cno = r["rule_id"], r["src_file"], r["src_clause"]
         hits = cited.get(rid) or []
         if hits:
@@ -186,31 +214,45 @@ def save_align(fwd, rev):
         return _save_align_locked(fwd, rev)
 
 
-def _save_align_locked(fwd, rev):
-    db.execute("DELETE FROM onto_align")
+def _save_align_locked(fwd, rev, instance_id=None):
+    iid = _iid(instance_id)
+    # 这两张是"算出来的"台账，每次重算整表覆盖（0021 的口径）。
+    # **"整表"现在只能是"本实例那一片"**：不带实例条件，本实例跑一次统一口径
+    # 就会把 822港航 的对账结果清空，而它那边页面上只显示"还没跑过对账"，
+    # 看不出是被谁清的。
+    db.execute("DELETE FROM onto_align WHERE instance_id = %s", (iid,))
     for a in fwd:
-        db.execute("""INSERT INTO onto_align(group_key, verdict, rule_ids, match_basis,
-                          n_sources, evidence, has_conflict, has_ocr)
-                      VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                   (a["group_key"], a["verdict"], a["rule_ids"], a["match_basis"],
+        db.execute("""INSERT INTO onto_align(instance_id, group_key, verdict, rule_ids,
+                          match_basis, n_sources, evidence, has_conflict, has_ocr)
+                      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                   (iid, a["group_key"], a["verdict"], a["rule_ids"], a["match_basis"],
                     a["n_sources"], a["evidence"], a["has_conflict"], a["has_ocr"]))
-    db.execute("DELETE FROM onto_rule_cover")
+    db.execute("DELETE FROM onto_rule_cover WHERE instance_id = %s", (iid,))
     for c in rev:
-        db.execute("""INSERT INTO onto_rule_cover(rule_id, version, state, group_keys, basis)
-                      VALUES (%s,%s,%s,%s,%s)""",
-                   (c["rule_id"], c["version"], c["state"], c["group_keys"], c["basis"]))
+        db.execute("""INSERT INTO onto_rule_cover(instance_id, rule_id, version, state,
+                          group_keys, basis)
+                      VALUES (%s,%s,%s,%s,%s,%s)""",
+                   (iid, c["rule_id"], c["version"], c["state"], c["group_keys"],
+                    c["basis"]))
     return len(fwd), len(rev)
 
 
 # ── 清单与统计 ──────────────────────────────────────────────────────────────
-def list_align(verdict=None, limit=300):
+def list_align(verdict=None, limit=300, instance_id=None):
+    iid = _iid(instance_id)
+    # 两个子查询也要带实例：group_key 是按条款内容算出来的稳定键，
+    # 两个实例的制度文件里出现同一段话（同一份国标/省财政厅解答）完全可能，
+    # 那时 group_key 字面相同——不限定实例，这里会把对面的采纳动作
+    # 显示成"本组已采纳"，而本实例的规则本体里找不到那条规则。
     sql = ["""SELECT a.*,
-                     (SELECT action FROM onto_adoption d WHERE d.group_key = a.group_key
+                     (SELECT action FROM onto_adoption d
+                       WHERE d.instance_id = a.instance_id AND d.group_key = a.group_key
                        ORDER BY d.adopted_at DESC LIMIT 1) AS last_action,
-                     (SELECT d.rule_id FROM onto_adoption d WHERE d.group_key = a.group_key
+                     (SELECT d.rule_id FROM onto_adoption d
+                       WHERE d.instance_id = a.instance_id AND d.group_key = a.group_key
                        AND d.action = '采纳' LIMIT 1) AS adopted_rule
-                FROM onto_align a WHERE TRUE"""]
-    args = []
+                FROM onto_align a WHERE a.instance_id = %s"""]
+    args = [iid]
     if verdict:
         sql.append("AND a.verdict = %s")
         args.append(verdict)
@@ -219,14 +261,16 @@ def list_align(verdict=None, limit=300):
     return db.query(" ".join(sql), tuple(args))
 
 
-def list_cover(state=None, limit=300):
+def list_cover(state=None, limit=300, instance_id=None):
+    iid = _iid(instance_id)
     sql = ["""SELECT c.*, r.name AS rule_name, r.dimension, r.control_type, r.rule_class,
                      r.source_clause->>'file'   AS src_file,
                      r.source_clause->>'clause' AS src_clause
                 FROM onto_rule_cover c
                 JOIN rule r ON r.rule_id = c.rule_id AND r.version = c.version
-               WHERE TRUE"""]
-    args = []
+                           AND r.instance_id = c.instance_id
+               WHERE c.instance_id = %s"""]
+    args = [iid]
     if state:
         sql.append("AND c.state = %s")
         args.append(state)
@@ -282,14 +326,22 @@ def summary():
     （要新增规则），另一侧是「规则找不到制度出处」（要补台账或改规则），
     责任方和下一步动作完全不同。
     """
+    iid = _iid()
     fwd = {r["verdict"]: r["n"] for r in db.query(
-        "SELECT verdict, count(*) n FROM onto_align GROUP BY 1")}
+        "SELECT verdict, count(*) n FROM onto_align WHERE instance_id = %s GROUP BY 1",
+        (iid,))}
     rev = {r["state"]: r["n"] for r in db.query(
-        "SELECT state, count(*) n FROM onto_rule_cover GROUP BY 1")}
+        "SELECT state, count(*) n FROM onto_rule_cover WHERE instance_id = %s GROUP BY 1",
+        (iid,))}
+    # doclib_conflict 自己没有 instance_id（归属经 clause → file 推），join 过去数。
     conf = {r["state"]: r["n"] for r in db.query(
-        "SELECT state, count(*) n FROM doclib_conflict GROUP BY 1")}
+        """SELECT c.state, count(*) n FROM doclib_conflict c
+             JOIN doclib_clause cl ON cl.clause_id = c.left_clause
+             JOIN doc_lib_file f ON f.file_id = cl.file_id
+            WHERE f.instance_id = %s GROUP BY 1""", (iid,))}
     ado = {r["action"]: r["n"] for r in db.query(
-        "SELECT action, count(*) n FROM onto_adoption GROUP BY 1")}
+        "SELECT action, count(*) n FROM onto_adoption WHERE instance_id = %s GROUP BY 1",
+        (iid,))}
     return {
         "forward": {"已落地": fwd.get("已落地", 0), "未落地": fwd.get("未落地", 0),
                     "判不出": fwd.get("判不出", 0), "总计": sum(fwd.values())},
@@ -300,9 +352,11 @@ def summary():
                       "已忽略": conf.get("已忽略", 0)},
         "adoptions": {"采纳": ado.get("采纳", 0), "驳回": ado.get("驳回", 0),
                       "暂缓": ado.get("暂缓", 0)},
-        "rules": db.scalar("SELECT count(*) FROM rule WHERE version = 1"),
+        "rules": db.scalar("SELECT count(*) FROM rule WHERE instance_id = %s "
+                           "AND version = 1", (iid,)),
         "adopted_rules": db.scalar(
-            "SELECT count(*) FROM rule WHERE version = 1 AND created_by LIKE 'onto_adopt%%'"),
+            "SELECT count(*) FROM rule WHERE instance_id = %s AND version = 1 "
+            "AND created_by LIKE 'onto_adopt%%'", (iid,)),
         "note": "两个方向并列，**不合成一个覆盖率**：左边缺口是「制度要求没变成规则」，"
                 "右边缺口是「规则找不到制度出处」，责任方和下一步动作完全不同。",
         # **这一页也要报。** 反向那一列全是 0 的时候，这一页看起来是
@@ -310,7 +364,8 @@ def summary():
         # 把这张表级联清空了，第⑦步还没补跑。本体工场那一页已经报了，
         # 但客户是在这一页看覆盖数的，只报一处等于没报。
         "freshness": [cover_check(
-            db.scalar("SELECT count(*) FROM rule WHERE version = 1"), sum(rev.values()))],
+            db.scalar("SELECT count(*) FROM rule WHERE instance_id = %s AND version = 1",
+                      (iid,)), sum(rev.values()))],
     }
 
 
@@ -325,7 +380,7 @@ def relations():
       规则↔概念   引用关系，其中阈值位（role=threshold）契约校验更严
       归并组↔规则 统一口径算出来的新关系：同一条规则的多个出处
     """
-    v = db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    v = onto_current.version()
     ent = db.query("""SELECT r.from_entity, r.to_entity, r.rel_type, r.cardinality,
                              r.source, r.note, ef.name AS from_name, et.name AS to_name
                         FROM ontology_relation r
@@ -368,7 +423,7 @@ def relations():
 # 并且把「取不到字段的实体」显式标出来——
 # 一个连不上数据的实体在表格里和别的实体长得一样，在图上一眼就看得出是孤点。
 def graph():
-    v = db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    v = onto_current.version()
     ents = db.query("""SELECT e.entity_id, e.name AS entity_name, e.source,
                               count(c.concept_id) AS concepts,
                               sum(CASE WHEN c.availability = '可得' THEN 1 ELSE 0 END) AS avail,
@@ -506,25 +561,73 @@ def pending_adoption(limit=100):
     return out
 
 
-def _next_rule_id(dim):
+def _next_rule_id(dim, instance_id=None):
     """沿用现有编号口径 TR-D{n}-{nn}，取该维度现有最大号 +1。
 
     **不另起一套编号**：规则号是和客户配置器对账的锚点，
     新造一套前缀会让「这条规则在配置器里对应哪个算法」多出一层翻译。
+
+    **按实例各自排号**（0041 之后 rule 主键含 instance_id，两边可以有同号规则）：
+    每个实例对的是它自己客户的配置器，为了避让对面而跳号会让人以为
+    中间那一号被删了。
     """
+    iid = _iid(instance_id)
     mx = 0
-    for r in db.query("SELECT rule_id FROM rule WHERE dimension = %s", (dim,)):
+    for r in db.query("SELECT rule_id FROM rule WHERE instance_id = %s AND dimension = %s",
+                      (iid, dim)):
         m = re.match(r"^TR-%s-(\d+)$" % dim, r["rule_id"])
         if m:
             mx = max(mx, int(m.group(1)))
     return "TR-%s-%02d" % (dim, mx + 1)
 
 
+def _iid(instance_id=None):
+    """这次对账/采纳算哪个实例的。没传取当前实例，取不到抛（不挑默认值）。
+
+    **采纳是会往 rule 表写一条规则的动作**，归属错了的后果是：规则落在
+    另一个实例名下，而本实例页面上看不到它；更糟的是 0041 之后 rule 的主键是
+    (instance_id, rule_id, version)，归属错了还可能和对面的同号规则撞主键，
+    报出一个和"采纳"毫无关系的错误。
+    """
+    from . import scope
+    return scope.require(instance_id)
+
+
 class AdoptError(ValueError):
     pass
 
 
-def adopt(group_key, by, form):
+def pending_conflicts(group_key, instance_id=None):
+    """这个归并组**归属于本实例**的未裁决冲突有几条。
+
+    **fail-closed：判不出归属时算「有冲突」，不算「没冲突」。**
+
+    doclib_conflict 没有 instance_id，归属只能经 left_clause → doclib_clause →
+    doc_lib_file 反推。而 clause_id 是内容定址的——**条款一重切就换号，
+    旧冲突行就此悬空**。原来 adopt() 里用的是 INNER JOIN，悬空行被直接丢掉，
+    count 变 0，采纳闸就不响了。2026-10-30 实测：9 条待裁决里 2 条悬空，
+    「业务接待·审批」这个组实际有 1 条待裁决而闸数出 0，于是它被成功采纳。
+    一道安全闸静默失效在「放行」这一侧，比没有这道闸更危险——界面上它还在。
+
+    **抽成函数是为了让调用方和测试共用同一个判据。**
+    各写一遍的后果当天就出现了：测试按 group_key 找冲突（不带实例），
+    闸按实例找，而 group_key 是跨实例会撞的文本键，于是
+    「测试说这个组有冲突，闸说没有」——报出来像闸坏了，其实是两边问的不是同一件事。
+    """
+    iid = _iid(instance_id)
+    return db.scalar("""SELECT count(*) FROM doclib_conflict c
+                         WHERE c.group_key = %s AND c.state = '待裁决'
+                           AND (
+                                 EXISTS (SELECT 1 FROM doclib_clause cl
+                                           JOIN doc_lib_file f ON f.file_id = cl.file_id
+                                          WHERE cl.clause_id = c.left_clause
+                                            AND f.instance_id = %s)
+                              OR NOT EXISTS (SELECT 1 FROM doclib_clause cl
+                                              WHERE cl.clause_id = c.left_clause)
+                           )""", (group_key, iid)) or 0
+
+
+def adopt(group_key, by, form, instance_id=None):
     """把一个归并组采纳成一条规则（status=draft、未编译）。
 
     **三条硬闸**，都返回明确的错误而不是落一条半成品：
@@ -532,19 +635,23 @@ def adopt(group_key, by, form):
       2. 控制类型 / 规则类型 / 维度 / 风险类别必须人填，不给默认值
       3. 软规则不许标禁止（库里也有 CHECK，但这里先拦，给人看得懂的话）
     """
-    a = db.query_one("SELECT * FROM onto_align WHERE group_key = %s", (group_key,))
+    iid = _iid(instance_id)
+    a = db.query_one("SELECT * FROM onto_align WHERE instance_id = %s AND group_key = %s",
+                     (iid, group_key))
     if not a:
-        raise AdoptError("没有这个归并组：%s。先跑一次统一口径" % group_key)
-    if db.query_one("SELECT 1 FROM onto_adoption WHERE group_key = %s AND action = '采纳'",
-                    (group_key,)):
+        raise AdoptError("本实例里没有这个归并组：%s。先跑一次统一口径" % group_key)
+    if db.query_one("""SELECT 1 FROM onto_adoption
+                        WHERE instance_id = %s AND group_key = %s AND action = '采纳'""",
+                    (iid, group_key)):
         raise AdoptError("这个组已经采纳过了。重复采纳会在本体里长出两条同源规则，"
                          "对同一张单给出两条结论，而两条都「有制度依据」")
-    n_conf = db.scalar("SELECT count(*) FROM doclib_conflict "
-                       "WHERE group_key = %s AND state = '待裁决'", (group_key,))
+    n_conf = pending_conflicts(group_key, iid)
     if n_conf:
         raise AdoptError("这个组有 %d 处口径冲突还没裁决。**口径没统一就采纳，"
                          "等于替客户把一方口径当成了结论**——先去冲突裁决，"
-                         "或者标「暂缓」把理由记下来" % n_conf)
+                         "或者标「暂缓」把理由记下来。"
+                         "（其中若有「来源条款已不存在」的陈旧冲突，说明条款被重切过，"
+                         "去冲突裁决页把它裁掉即可）" % n_conf)
     if not (by or "").strip():
         raise AdoptError("采纳必须署名：没有署名的采纳在审计上等于没发生")
 
@@ -573,7 +680,8 @@ def adopt(group_key, by, form):
                          FROM doclib_rule_source s
                          JOIN doclib_clause c ON c.clause_id = s.clause_id
                          JOIN doc_lib_file  f ON f.file_id   = s.file_id
-                        WHERE s.group_key = %s ORDER BY f.file_name""", (group_key,))
+                        WHERE s.group_key = %s AND f.instance_id = %s
+                        ORDER BY f.file_name""", (group_key, iid))
     if not srcs:
         raise AdoptError("这个组没有来源条款，采纳出来的规则会没有证据链")
     # 来源条款取**可信度最高**的那条（原生文本优于 OCR），其余进 also_source。
@@ -587,7 +695,7 @@ def adopt(group_key, by, form):
              "text": (s["excerpt"] or "")[:500], "confidence": s["confidence"]}
             for s in rest]
 
-    rid = _next_rule_id(dim)
+    rid = _next_rule_id(dim, iid)
     logic = {"kind": "待编译", "group_key": group_key,
              "note": "采纳入本体时未编译：判定逻辑与概念绑定待规则管理员补。"
                      "未声明 concepts，契约校验会把它列进剔除名单并写明原因"}
@@ -596,13 +704,14 @@ def adopt(group_key, by, form):
     reason = ("采纳入本体时未编译：判定逻辑与概念绑定待规则管理员补"
               + ("；来源可信度为 OCR，数值不得直接当硬阈值"
                  if first["confidence"] == "OCR" else ""))
-    db.execute("""INSERT INTO rule(rule_id, version, name, dimension, risk_class, rule_class,
+    db.execute("""INSERT INTO rule(instance_id, rule_id, version, name, dimension,
+                      risk_class, rule_class,
                       source_clause, also_source, scope, logic, exception, priority, owner,
                       control_type, configurator_status, compiled, compiled_reason,
                       demo_executable, demo_blocker, note, status, created_by)
-                  VALUES (%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'建议新增',FALSE,%s,
+                  VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'建议新增',FALSE,%s,
                           FALSE,'未编译',%s,'draft',%s)""",
-               (rid, name, dim, risk, cls,
+               (iid, rid, name, dim, risk, cls,
                 json.dumps(sc, ensure_ascii=False), json.dumps(also, ensure_ascii=False),
                 json.dumps(scope, ensure_ascii=False), json.dumps(logic, ensure_ascii=False),
                 (form.get("exception") or None), int(form.get("priority") or 50),
@@ -611,18 +720,23 @@ def adopt(group_key, by, form):
                 "onto_adopt:" + by.strip()))
     # 已裁决的冲突落成规则关系：**裁决结论要留在本体里**，
     # 不然三个月后看这条规则，只看到一个口径，看不到当时还有另一个。
-    for cf in db.query("""SELECT kind, detail, resolution, resolved_by FROM doclib_conflict
-                           WHERE group_key = %s AND state = '已裁决'""", (group_key,)):
-        db.execute("""INSERT INTO rule_relation(rule_id, version, rel_type, other_rule,
-                          note, needs_confirm, gap_id)
-                      VALUES (%s,1,'conflicts_with',%s,%s,FALSE,NULL)""",
-                   (rid, (cf["kind"] or "")[:60],
+    for cf in db.query("""SELECT c.kind, c.detail, c.resolution, c.resolved_by
+                            FROM doclib_conflict c
+                            JOIN doclib_clause cl ON cl.clause_id = c.left_clause
+                            JOIN doc_lib_file f ON f.file_id = cl.file_id
+                           WHERE c.group_key = %s AND c.state = '已裁决'
+                             AND f.instance_id = %s""", (group_key, iid)):
+        db.execute("""INSERT INTO rule_relation(instance_id, rule_id, version, rel_type,
+                          other_rule, note, needs_confirm, gap_id)
+                      VALUES (%s,%s,1,'conflicts_with',%s,%s,FALSE,NULL)""",
+                   (iid, rid, (cf["kind"] or "")[:60],
                     json.dumps({"detail": cf["detail"], "resolution": cf["resolution"],
                                 "resolved_by": cf["resolved_by"]}, ensure_ascii=False)))
     aid = "ado-" + uuid.uuid4().hex[:10]
-    db.execute("""INSERT INTO onto_adoption(adoption_id, group_key, action, rule_id,
-                      rule_version, adopted_by) VALUES (%s,%s,'采纳',%s,1,%s)""",
-               (aid, group_key, rid, by.strip()))
+    db.execute("""INSERT INTO onto_adoption(instance_id, adoption_id, group_key, action,
+                      rule_id, rule_version, adopted_by)
+                  VALUES (%s,%s,%s,'采纳',%s,1,%s)""",
+               (iid, aid, group_key, rid, by.strip()))
     return {"adoption_id": aid, "rule_id": rid, "group_key": group_key,
             "sources": len(srcs), "status": "draft",
             "note": "已写入本体：status=draft、未编译、不在执行集。"
@@ -630,8 +744,9 @@ def adopt(group_key, by, form):
                     "必须有签字人（0005 的 ck_release_signed 卡着）"}
 
 
-def dispose(group_key, action, by, reason):
+def dispose(group_key, action, by, reason, instance_id=None):
     """驳回 / 暂缓。两者都必须写理由（库里也有 CHECK 兜着）。"""
+    iid = _iid(instance_id)
     if action not in ("驳回", "暂缓"):
         raise AdoptError("只能是「驳回」或「暂缓」；采纳走 adopt()")
     if not (by or "").strip():
@@ -639,10 +754,12 @@ def dispose(group_key, action, by, reason):
     if not (reason or "").strip():
         raise AdoptError("必须写理由：「为什么不采纳」比「采纳了什么」更容易被时间冲掉，"
                          "三个月后再看这个组，没有理由就只剩一个标签")
-    if not db.query_one("SELECT 1 FROM onto_align WHERE group_key = %s", (group_key,)):
+    if not db.query_one("SELECT 1 FROM onto_align WHERE instance_id = %s AND group_key = %s",
+                        (iid, group_key)):
         raise AdoptError("没有这个归并组：%s" % group_key)
     aid = "ado-" + uuid.uuid4().hex[:10]
-    db.execute("""INSERT INTO onto_adoption(adoption_id, group_key, action, adopted_by, reason)
+    db.execute("""INSERT INTO onto_adoption(instance_id, adoption_id, group_key, action,
+                      adopted_by, reason)
                   VALUES (%s,%s,%s,%s,%s)""", (aid, group_key, action, by.strip(), reason))
     return {"adoption_id": aid, "group_key": group_key, "action": action}
 

@@ -20,7 +20,7 @@ import time
 
 from fastapi import APIRouter
 
-from .. import config, db
+from .. import config, db, scope
 from ..demo import generator
 from ..rules import engine
 from ..perception import reader
@@ -39,20 +39,28 @@ def _load_engine():
     release_current 换了，而跑着的进程还拿着上一版的 RuleSet——
     页面显示切成功了，审核结果却仍按旧版判，一直到重启才生效。
     这正是「切为当前不好用」里最难发现的那一半：指针写对了，用的人没换。
+
+    **缓存 key 必须带实例**（0041 之后）：release_id / rule_set_version 只在
+    实例内唯一，两个实例同一天各发一版很可能都叫 rs-2026xxxx-01。只认
+    release_id 的话，切到 822港航 后缓存认为"版本没变"，于是**用福建海运集团的
+    规则集判 822港航 的单据**——而结论里写的版本号是 822港航 的，事后对不出来。
     """
-    eff, _why = engine.effective_release()
+    from .. import scope
+    iid = scope.require()
+    eff, _why = engine.effective_release(iid)
     eff_id = eff["release_id"] if eff else None
-    if _cache.get("release_id") != eff_id:
+    if _cache.get("key") != (iid, eff_id):
         _cache.clear()
     if "ruleset" not in _cache:
         ac = yaml_loader.load(verbose=False)
         if not ac.ok or not ac.agents:
             raise RuntimeError("Agent 配置校验失败：" + "; ".join(ac.errors))
         _cache["agent_cfg"] = list(ac.agents.values())[0]
-        _cache["ruleset"] = engine.load_ruleset()
-        _cache["standards"] = reader.standards()
-        _cache["tier_map"] = reader.tier_map()
+        _cache["ruleset"] = engine.load_ruleset(instance_id=iid)
+        _cache["standards"] = reader.standards(instance_id=iid)
+        _cache["tier_map"] = reader.tier_map(instance_id=iid)
         _cache["release_id"] = _cache["ruleset"].release_id
+        _cache["key"] = (iid, _cache["ruleset"].release_id)
     return _cache
 
 
@@ -73,8 +81,12 @@ def audit_demo_bills(bill_nos=None, reason="AI智能审核手动触发"):
     """
     c = _load_engine()
     if bill_nos is None:
+        # **只跑本实例的演示单。** 不限定实例，822港航 点一次"智能审核"会把
+        # 福建海运集团的 29 张演示单重跑一遍并覆盖它们的审核结论——
+        # 而那边页面上的 KPI 会无声无息地变成另一次运行的结果。
         bill_nos = [r["bill_no"] for r in db.query(
-            "SELECT bill_no FROM expense_bill WHERE is_demo ORDER BY bill_no")]
+            "SELECT bill_no FROM expense_bill WHERE instance_id=%s AND is_demo "
+            "ORDER BY bill_no", (scope.require(),))]
     out = []
     for bill_no in bill_nos:
         out.append(pipeline.run_cycle(
@@ -96,7 +108,8 @@ def run_batch():
 
     # 2. 取出所有演示单
     bill_nos = [r["bill_no"] for r in db.query(
-        "SELECT bill_no FROM expense_bill WHERE is_demo ORDER BY bill_no")]
+        "SELECT bill_no FROM expense_bill WHERE instance_id=%s AND is_demo "
+        "ORDER BY bill_no", (scope.require(),))]
     if not bill_nos:
         return {"ok": False, "error": "演示数据生成失败，库里查不到演示单"}
 

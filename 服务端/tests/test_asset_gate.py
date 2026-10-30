@@ -175,16 +175,46 @@ def _executed_sql():
 
 
 def test_只删自己的规则():
-    """无条件 DELETE FROM rule 会把人采纳进来的规则静默删掉。"""
-    assert "DELETE FROM rule WHERE created_by = %s" in SRC
+    """无条件 DELETE FROM rule 会把人采纳进来的规则静默删掉。
+
+    **查的是真会执行的 SQL，不是源码文本**（理由同 _executed_sql 的 docstring：
+    这份文件的注释里留着历史写法，扫文本会被自己的注释绊倒）。
+    """
+    dels = [q for q in _executed_sql() if q.startswith("DELETE FROM rule")]
+    assert dels, "一句 DELETE FROM rule 都没捞到，解析写错了"
+    for q in dels:
+        assert "created_by" in q, \
+            "装载脚本的地盘是 created_by='asset_loader'，少这个条件会删掉采纳进来的规则：" + q
+        assert "instance_id" in q, \
+            "0041 之后两个实例的规则同在一张 rule 表里，少实例条件会删掉别的实例的规则：" + q
     assert "'asset_loader'" in SRC
+
+
+def test_装载脚本的删除一律限定在本实例():
+    """**这是 0040/0041 之后新增的地盘边界。**
+
+    装载器是福建海运集团专属的（它读的是那几份手工整理的固定文件），
+    但它删的那些表现在是两个实例共用的。少一个 instance_id 条件的后果不是报错，
+    是把 822港航 的同类数据静默清空——最狠的一句是 load_standards() 里原来的
+    整表 `DELETE FROM standard_limit`：限额标准一空，超标判定不会报错，
+    只会**永远判不出超标**，而本函数末尾那组断言只检本次装进去的行，
+    对面被清空这件事一个字都不会说。
+    """
+    scoped = ("rule", "rule_concept", "rule_entity", "rule_relation",
+              "release", "release_item", "lookup_table", "standard_limit")
+    for q in _executed_sql():
+        if not q.startswith("DELETE FROM "):
+            continue
+        tbl = q[len("DELETE FROM "):].split()[0]
+        if tbl in scoped:
+            assert "instance_id" in q, "这句 DELETE 没限定实例，会删到别的实例：" + q
 
 
 def test_只删自己的草稿release():
     """已发布 / 审阅中 / 已回滚的版本一律不碰；当前生效指针更不碰。"""
     sql = _executed_sql()
-    assert any("DELETE FROM release WHERE created_by = 'asset_loader'" in q
-               and "status = 'draft'" in q for q in sql),         "删 release 必须同时限定 created_by 和 draft，少一个就会碰到别人的版本"
+    assert any("DELETE FROM release WHERE instance_id = %s AND created_by = 'asset_loader'" in q
+               and "status = 'draft'" in q for q in sql),         "删 release 必须同时限定 instance_id、created_by 和 draft，少一个就会碰到别人的版本"
     # **查的是真会执行的 SQL，不是源码文本。** 文件里有两处写着
     # 「原来这里是 DELETE FROM release_current」——一处注释、一处模块
     # docstring，那段历史要留着，不然下一个人会把它改回去。

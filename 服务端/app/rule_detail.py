@@ -272,7 +272,7 @@ def _blank(clause, origin, source_kind):
 
 
 # ── 第一路：表格行按列映射（确定性，不出网、不计费）─────────────────────────
-def from_table_rows(file_ids=None):
+def from_table_rows(file_ids=None, instance_id=None):
     """把「表格行」策略切出来的条款按表头映射成规则明细。
 
     重新解析一次文件正文，是为了拿到**表头和逐列原值**——
@@ -281,9 +281,11 @@ def from_table_rows(file_ids=None):
     到那时「明细第 5 行」和「条款第 5 行」就不是同一行了，
     而证据链全靠这个对应关系。
     """
+    from . import scope
+    iid = scope.require(instance_id)
     sql = ["""SELECT file_id, file_name, body FROM doc_lib_file
-               WHERE NOT missing AND body IS NOT NULL"""]
-    args = []
+               WHERE NOT missing AND body IS NOT NULL AND instance_id = %s"""]
+    args = [iid]
     # **file_ids=[]（空列表）表示「没有要处理的文件」，不是「全部」。**
     # 第一版是 `if file_ids:`，于是增量集合为空时过滤条件整个被跳过，
     # 一次「增量 0 份」变成全量重映射。同类陷阱在 doclib_extract 的
@@ -361,7 +363,7 @@ def from_table_rows(file_ids=None):
 
 
 # ── 第二路：场景表的「专用审核要点」拆条 ────────────────────────────────────
-def from_scenario(file_ids=None):
+def from_scenario(file_ids=None, instance_id=None):
     """场景表 → 规则明细。确定性，不出网、不计费。
 
     和列映射分开成两路（origin='场景拆条'），因为证据链长相不同：
@@ -373,9 +375,11 @@ def from_scenario(file_ids=None):
     控制类型、规则类型、风险类别源表也没有——**留空，不猜**，
     清单上的「要素完整度」标签会直接显示还差哪几项。
     """
+    from . import scope
+    iid = scope.require(instance_id)
     sql = ["""SELECT file_id, file_name, body FROM doc_lib_file
-               WHERE NOT missing AND body IS NOT NULL"""]
-    args = []
+               WHERE NOT missing AND body IS NOT NULL AND instance_id = %s"""]
+    args = [iid]
     # **file_ids=[]（空列表）表示「没有要处理的文件」，不是「全部」。**
     # 第一版是 `if file_ids:`，于是增量集合为空时过滤条件整个被跳过，
     # 一次「增量 0 份」变成全量重映射。同类陷阱在 doclib_extract 的
@@ -428,7 +432,7 @@ def from_scenario(file_ids=None):
 
 
 # ── 第三路：把 AI 草稿投影进同一张明细表 ────────────────────────────────────
-def from_drafts():
+def from_drafts(instance_id=None):
     """已成稿的 AI 草稿 → 规则明细。**只投影，不重新调模型。**
 
     模型给的取值不一定落在本体的闭集合里：实测两次调用给出的「审核维度」
@@ -436,10 +440,18 @@ def from_drafts():
     而本体的维度是 D1..D10。**对不上的不硬塞**，原值进 note 并标出来——
     硬塞会让一条维度错的规则看起来填得整整齐齐。
     """
+    from . import scope
+    iid = scope.require(instance_id)
+    # 这一路**不受 file_ids 限定是刻意的**（采纳是人在别的时候点的，与本次增量
+    # 无关），但**不受实例限定是错的**：那会把另一个实例采纳的草稿投影进本实例
+    # 的规则明细表，而明细是规则的直接上游——串进来一条，本实例就会多出一条
+    # 看着"有制度依据"、实际依据是别人家制度的规则。
     rows = db.query("""SELECT d.*, c.file_id, c.numbers, c.text_source, c.clause_id
-                         FROM doclib_draft d JOIN doclib_clause c ON c.clause_id=d.clause_id
-                        WHERE d.rulable IS TRUE
-                        ORDER BY d.created_at""")
+                         FROM doclib_draft d
+                         JOIN doclib_clause c ON c.clause_id=d.clause_id
+                         JOIN doc_lib_file f ON f.file_id=c.file_id
+                        WHERE d.rulable IS TRUE AND f.instance_id = %s
+                        ORDER BY d.created_at""", (iid,))
     n = 0
     for r in rows:
         draft = r["draft"] or {}
@@ -480,7 +492,7 @@ def from_drafts():
                     "列映射是确定性的，模型这一路要逐条核数值、核闭集合。"}
 
 
-def run(file_ids=None):
+def run(file_ids=None, instance_id=None):
     """三路都跑一遍。**不出网**（from_drafts 只读已有草稿，不调模型）。
 
     `file_ids` 限定前两路（确定性列映射与场景拆条）。
@@ -492,16 +504,20 @@ def run(file_ids=None):
 
     `file_ids=[]`（空列表）表示「没有要处理的文件」，不是「全部」，见下面两路的注释。
     """
-    a = from_table_rows(file_ids)
-    sc = from_scenario(file_ids)
-    b = from_drafts()
+    from . import scope
+    iid = scope.require(instance_id)
+    a = from_table_rows(file_ids, iid)
+    sc = from_scenario(file_ids, iid)
+    b = from_drafts(iid)
     # 两路确定性映射合并上报：页面上「列映射」这一栏要能对上明细条数
     table = {"mapped": a["mapped"] + sc["mapped"],
              "flagged": a["flagged"] + sc["flagged"],
              "per_file": a["per_file"] + sc["per_file"],
              "note": a["note"] + " " + sc["note"]}
     return {"table": table, "scenario": sc, "draft": b,
-            "total": db.scalar("SELECT count(*) FROM doclib_rule_detail") or 0}
+            "total": db.scalar("""SELECT count(*) FROM doclib_rule_detail d
+                                    JOIN doc_lib_file f ON f.file_id=d.file_id
+                                   WHERE f.instance_id=%s""", (iid,)) or 0}
 
 
 # ── 出处与标签 ──────────────────────────────────────────────────────────────
@@ -598,14 +614,16 @@ def tag_cloud():
 
 # ── 清单 / 统计 / 审定 ──────────────────────────────────────────────────────
 def list_details(origin=None, state=None, mapped=None, file_id=None, q=None,
-                 tag=None, dim=None, limit=500):
+                 tag=None, dim=None, limit=500, instance_id=None):
+    from . import scope
+    iid = scope.require(instance_id)
     sql = ["""SELECT d.*, f.file_name, c.clause_no, c.body AS clause_body,
                      c.split_strategy
                 FROM doclib_rule_detail d
                 JOIN doc_lib_file f ON f.file_id = d.file_id
                 JOIN doclib_clause c ON c.clause_id = d.clause_id
-               WHERE TRUE"""]
-    args = []
+               WHERE f.instance_id = %s"""]
+    args = [iid]
     if origin:
         sql.append("AND d.origin=%s"); args.append(origin)
     if state:
@@ -637,24 +655,33 @@ def list_details(origin=None, state=None, mapped=None, file_id=None, q=None,
     return rows
 
 
-def stats():
-    by = db.query("""SELECT origin, source_kind, count(*) AS n,
-                            sum(CASE WHEN mapped_ok THEN 1 ELSE 0 END) AS mapped,
-                            sum(CASE WHEN review_state='采纳' THEN 1 ELSE 0 END) AS adopted
-                       FROM doclib_rule_detail GROUP BY 1,2 ORDER BY n DESC""")
-    total = db.scalar("SELECT count(*) FROM doclib_rule_detail") or 0
+def stats(instance_id=None):
+    from . import scope
+    iid = scope.require(instance_id)
+    by = db.query("""SELECT d.origin, d.source_kind, count(*) AS n,
+                            sum(CASE WHEN d.mapped_ok THEN 1 ELSE 0 END) AS mapped,
+                            sum(CASE WHEN d.review_state='采纳' THEN 1 ELSE 0 END) AS adopted
+                       FROM doclib_rule_detail d
+                       JOIN doc_lib_file f ON f.file_id = d.file_id
+                      WHERE f.instance_id = %s
+                      GROUP BY 1,2 ORDER BY n DESC""", (iid,))
+    total = db.scalar("""SELECT count(*) FROM doclib_rule_detail d
+                           JOIN doc_lib_file f ON f.file_id = d.file_id
+                          WHERE f.instance_id = %s""", (iid,)) or 0
     # **mapped 只数确定性那两路（列映射 + 场景拆条）。**
     # 把 AI 草稿也算进去，页面上就会出现「确定性映射 57」而实际只有 49——
     # 模型那一路根本没有「列」，mapped_ok 对它永远是 true。
+    # 这四个数和上面的 total 必须同口径（都按实例）：混了之后页面上会出现
+    # 「明细 0 条、其中已采纳 37 条」这种自相矛盾的组合。
+    _scoped = """SELECT count(*) FROM doclib_rule_detail d
+                   JOIN doc_lib_file f ON f.file_id = d.file_id
+                  WHERE f.instance_id = %s AND """
     return {"total": total,
-            "mapped": db.scalar("SELECT count(*) FROM doclib_rule_detail "
-                                "WHERE mapped_ok AND origin IN ('列映射','场景拆条')") or 0,
-            "flagged": db.scalar("SELECT count(*) FROM doclib_rule_detail "
-                                 "WHERE NOT mapped_ok") or 0,
-            "adopted": db.scalar("SELECT count(*) FROM doclib_rule_detail "
-                                 "WHERE review_state='采纳'") or 0,
-            "into_onto": db.scalar("SELECT count(*) FROM doclib_rule_detail "
-                                   "WHERE adopted_rule_id IS NOT NULL") or 0,
+            "mapped": db.scalar(_scoped + "d.mapped_ok "
+                                "AND d.origin IN ('列映射','场景拆条')", (iid,)) or 0,
+            "flagged": db.scalar(_scoped + "NOT d.mapped_ok", (iid,)) or 0,
+            "adopted": db.scalar(_scoped + "d.review_state='采纳'", (iid,)) or 0,
+            "into_onto": db.scalar(_scoped + "d.adopted_rule_id IS NOT NULL", (iid,)) or 0,
             "by": by,
             "note": "「采纳」只是标记这条明细可用，**不等于进了规则库**。"
                     "写进本体要填维度、优先级、绑定节点这些明细里没有的东西，"

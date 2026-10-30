@@ -355,6 +355,42 @@ def vision_read(body: dict = Body(...)):
         raise HTTPException(400, str(e))
 
 
+@router.get("/vision/files")
+def vision_files(instance_id: str = Query(None), include_thin: bool = Query(True)):
+    """该**整份**读图的文件：取不到正文的，以及只取到一点点的。
+
+    和 /vision/pages 的分工：那个按页挑（前提是先跑过 OCR），
+    这个按份挑，不依赖 OCR。
+    """
+    iid = _guard(doclib.resolve_instance, instance_id)["instance_id"]
+    rows = vis.files_to_read(instance_id=iid, include_thin=include_thin)
+    need = [r for r in rows if r["need_read"]]
+    return {"items": rows, "total": len(rows), "need_read": len(need),
+            "instance_id": iid,
+            "note": "「只取到 N 字，正文基本是图」那档是**混合型 PDF**："
+                    "封面有薄薄一层文字层，正文全是扫描图。它们绕过了「需OCR」，"
+                    "既不会被 OCR 捡起来，又会带着那几个字进抽取然后切出 0 条——"
+                    "**看起来像这份制度里没有条款**。所以这里必须把它们一起列出来。"}
+
+
+@router.post("/vision/read-file")
+def vision_read_file(body: dict = Body(...)):
+    """**整份**读图：渲一页、读一页、落一行，最后钉到文件上。
+
+    **这一下会出网、会按页计费**，一份 26 页的 PDF 就是 26 次调用。
+    读完这份文件就能进抽取了（和原生文字层同等对待，见 0042 的决策记录）。
+    """
+    b = body or {}
+    if not b.get("file_id"):
+        raise HTTPException(400, "file_id 必填")
+    try:
+        return vis.read_file(b["file_id"], config_id=b.get("config_id"),
+                             dpi=b.get("dpi"), max_pages=b.get("max_pages"),
+                             only_missing_text=bool(b.get("only_missing_text")))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @router.get("/vision/page")
 def vision_page(file_id: str = Query(...), page_no: int = Query(...)):
     """一页的全部读图结果 + 两个模型的互相印证。"""

@@ -44,8 +44,17 @@ def test_种子数据齐全():
     ids = {d["domain_id"] for d in st["domains"]}
     assert {"audit", "report"} <= ids
     audit = [d for d in st["domains"] if d["domain_id"] == "audit"][0]
-    assert [i["instance_id"] for i in audit["instances"]] == ["fjhy"]
-    assert audit["instances"][0]["is_default"] is True
+    insts = [i["instance_id"] for i in audit["instances"]]
+    # **不写死成完整相等**（原来是 == ["fjhy"]）：这一页允许用户用「添加实例」
+    # 建新实例，写死全等会让这条测试在每次加实例时变红——而它要钉的不是
+    # "审核领域下只有一个实例"，是"种子数据在"。
+    # 822gh（822港航）是 0040 的种子，也一起钉住：它是第一个验证按实例隔离
+    # 真的生效的实例，被人误删了要立刻红。
+    assert {"fjhy", "822gh"} <= set(insts)
+    # 默认实例仍然必须是福建海运集团：现有全部资产都归它，
+    # 默认指向空实例会让新打开页面的人看到一片 0。
+    dft = [i for i in audit["instances"] if i["is_default"]]
+    assert [i["instance_id"] for i in dft] == ["fjhy"]
     report = [d for d in st["domains"] if d["domain_id"] == "report"][0]
     assert [i["label"] for i in report["instances"]] == ["华电集团"]
 
@@ -165,8 +174,18 @@ def test_概览的生效版本与引擎一致():
     assert o["current_release"] == (rel["release_id"] if rel else None)
 
 
-def test_概览标明数字是全库口径():
-    """本期不按实例过滤。**这件事必须写在返回里**——
-    让人以为「这是当前实例筛出来的数」，等于埋一个将来说不清的坑。"""
+def test_概览标明哪些数按实例过滤哪些没有():
+    """**口径必须写在返回里。**
+
+    原来这条钉的是"尚未按实例过滤"——那是只有一个实例时的实话。
+    2026-10-29 加了第二个实例并做完隔离（迁移 0040/0041）之后，实话变了：
+    制度文件/条款/规则/单据这几个数是当前实例的，**本体那两个数仍是全库的**
+    （ontology_* 还没有 instance_id，两实例共用同一份本体投影）。
+    真正要防的不是某句措辞，是**让人把全库数字当成本实例数字**，
+    所以这里钉的是"差别有没有被说出来"。
+    """
     o = dm.overview()
-    assert "尚未按实例过滤" in o["scope_note"]
+    note = o["scope_note"]
+    assert "已按当前实例过滤" in note, "过滤了就要说，不说等于让人自己猜"
+    assert "全库" in note and "本体" in note, \
+        "本体仍是全库数字这件事必须明写，否则下一个人会以为本体也隔离了"

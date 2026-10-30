@@ -192,12 +192,20 @@ def all_bill_nos(include_demo=True):
     return [r["bill_no"] for r in db.query(sql + " ORDER BY doc_date, bill_no")]
 
 
-def standards():
+def standards(instance_id=None):
+    """限额标准。**按实例取**：住宿费标准这类数字是各单位自己的制度定的，
+    拿另一个实例的限额判这个实例的单据，会直接判错超标与否。"""
+    from .. import scope
+    iid = scope.require(instance_id)
     return db.query("""SELECT std_type, tier, region, limit_amount, unit,
                               confidence, cross_checked, source_clause
-                       FROM standard_limit ORDER BY std_type, region""")
+                       FROM standard_limit WHERE instance_id = %s
+                       ORDER BY std_type, region""", (iid,))
 
 
-def tier_map():
+def tier_map(instance_id=None):
+    """职级↔档位映射。按实例取，理由同 standards()——职级体系各单位不一样。"""
+    from .. import scope
+    iid = scope.require(instance_id)
     return db.query("""SELECT subject, rank_level, tier, on_unknown, clause, confidence
-                       FROM rank_tier_map ORDER BY id""")
+                       FROM rank_tier_map WHERE instance_id = %s ORDER BY id""", (iid,))

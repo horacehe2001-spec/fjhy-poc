@@ -206,6 +206,11 @@ def load_assets():
     before = db.scalar("SELECT count(*) FROM rule WHERE version=1")
     try:
         out = rules_loader.load_all(verbose=False)
+    except rules_loader.WrongInstanceError as e:
+        # 第三道 409：**这批源文件不属于当前实例**。
+        # 不拦的话会出现「在 822港航 点一下，福建海运集团 的 82 条规则被重装」，
+        # 而接口还回 200 说「rules: 82」——两边页面都不显示这件事。
+        raise HTTPException(409, str(e))
     except db.TableBusy as e:
         # 和上面的 precheck 一样用 409：两道都是「现在不能装」，
         # 区别只在一个是顺序没到、一个是别人正在装。

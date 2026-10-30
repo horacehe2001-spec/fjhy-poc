@@ -33,6 +33,11 @@ MATERIAL = os.path.join(config.PROJECT_ROOT, "材料", "单据明细表与审批
 SINGLE_XLSX = os.path.join(MATERIAL, "差旅报账单明细表.xlsx")
 MULTI_XLSX = os.path.join(MATERIAL, "多人差旅报账单明细表.xlsx")
 
+# **真实样本只属于福建海运集团，实例硬编码不做参数**（理由同 rules/loader.py）：
+# 这个脚本读的是客户给的那两份 xlsx 导出（单人单/多人单），是海运集团的真实单据。
+# 822港航 要有自己的业务数据，得有它自己的导出文件，那是另一件事。
+INSTANCE = "fjhy"
+
 ORG_ID = "ORG-CZFGS"
 ORG_NAME = "福建省港口集团有限责任公司财智分公司"
 
@@ -71,13 +76,48 @@ def clear(conn):
     # 「40 张单全都没有附件」——和已被推翻的缺口 G-29 长得一模一样。
     # 重跑一次 app/perception/attachment_extract.py 即可（它是幂等的），
     # 而 /api/attachments/status 会把「磁盘 219 / 库里 0」这个差额直接报出来。
-    for t in ("review_finding", "manual_review", "review_run",
-              "expense_allocation", "meeting_notice", "authority_approval",
-              "attachment", "approval_record", "transport_voucher",
-              "hotel_invoice", "invoice", "trip_calendar", "trip_application",
-              "expense_detail", "expense_bill", "budget", "employee", "org",
-              "load_quarantine"):
-        cur.execute("DELETE FROM %s" % t)
+    #
+    # **每一句都限定在本实例（0040 之后）。** 这个函数原来是 19 句无条件
+    # `DELETE FROM <表>`，在只有一个实例的年代等价于"清掉我自己导入的那批"。
+    # 审核领域有了第二个实例之后，那个写法会把 **822港航 的全部业务数据
+    # 一次清空**——而装载脚本的输出里只会打印它自己导入了多少行，
+    # 对面消失了多少行一个字都不会说。这是本文件里最危险的一个函数。
+    #
+    # 只有 expense_bill / org 自己带 instance_id（业务主键按用户决策维持全局
+    # 唯一，所以子表不加这一列），子表一律经它们的主键回溯：
+    # 这样"作用域"写在 SQL 里，而不是写在"反正库里只有我这一批数据"的假设里。
+    bills = "SELECT bill_no FROM expense_bill WHERE instance_id = %s"
+    orgs = "SELECT org_id FROM org WHERE instance_id = %s"
+    plan = [
+        ("review_finding", "WHERE run_id IN (SELECT run_id FROM review_run "
+                           "WHERE bill_no IN (%s))" % bills),
+        ("manual_review", "WHERE bill_no IN (%s)" % bills),
+        ("review_run", "WHERE bill_no IN (%s)" % bills),
+        ("expense_allocation", "WHERE bill_no IN (%s)" % bills),
+        ("meeting_notice", "WHERE bill_no IN (%s)" % bills),
+        ("authority_approval", "WHERE bill_no IN (%s)" % bills),
+        ("attachment", "WHERE bill_no IN (%s)" % bills),
+        ("approval_record", "WHERE bill_no IN (%s)" % bills),
+        ("transport_voucher", "WHERE bill_no IN (%s)" % bills),
+        ("hotel_invoice", "WHERE invoice_id IN (SELECT invoice_id FROM invoice "
+                          "WHERE bill_no IN (%s))" % bills),
+        ("invoice", "WHERE bill_no IN (%s)" % bills),
+        ("trip_calendar", "WHERE app_no IN (SELECT app_no FROM trip_application "
+                          "WHERE bill_no IN (%s))" % bills),
+        ("trip_application", "WHERE bill_no IN (%s)" % bills),
+        ("expense_detail", "WHERE bill_no IN (%s)" % bills),
+        ("expense_bill", "WHERE instance_id = %s"),
+        ("budget", "WHERE org_id IN (%s)" % orgs),
+        ("employee", "WHERE org_id IN (%s)" % orgs),
+        ("org", "WHERE instance_id = %s"),
+    ]
+    for t, where in plan:
+        cur.execute("DELETE FROM %s %s" % (t, where), (INSTANCE,))
+    # load_quarantine 没有任何能回溯到实例的列（它装的是外键对不上的孤行，
+    # target/source 是自由文本）。**如实整表清**：这张表只在本脚本导入时写入，
+    # 留着上一轮的孤行会让"这次导入干净不干净"判不出来。
+    # 口径写在这里，不然下一个人会以为这是漏掉了一句。
+    cur.execute("DELETE FROM load_quarantine")
 
 
 def load(verbose=True):
@@ -88,8 +128,8 @@ def load(verbose=True):
         clear(conn)
 
         # ── 核算主体与出差人 ────────────────────────────────────────────────
-        cur.execute("""INSERT INTO org (org_id, name, city, is_internal)
-                       VALUES (%s,%s,NULL,TRUE)""", (ORG_ID, ORG_NAME))
+        cur.execute("""INSERT INTO org (instance_id, org_id, name, city, is_internal)
+                       VALUES (%s,%s,%s,NULL,TRUE)""", (INSTANCE, ORG_ID, ORG_NAME))
         # city 留空：财智分公司的办公地在材料里没有明确出现，不猜。
         # 住宿费标准按市定额，猜错一位就选错档。
 
@@ -125,11 +165,11 @@ def load(verbose=True):
             sub, cla = g("提单人"), g("报账人")
             bills[bill_no] = True
             cur.execute("""INSERT INTO expense_bill
-                (bill_no, doc_type, doc_date, submitter_no, claimant_no, claim_dept,
-                 org_id, bill_status, bearing_dept, biz_type, amount, pay_amount,
-                 currency, tax, summary, is_multi_person, is_demo)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,FALSE,FALSE)""",
-                (bill_no, str(g("单据类型")), g("单据日期"),
+                (instance_id, bill_no, doc_type, doc_date, submitter_no, claimant_no,
+                 claim_dept, org_id, bill_status, bearing_dept, biz_type, amount,
+                 pay_amount, currency, tax, summary, is_multi_person, is_demo)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,FALSE,FALSE)""",
+                (INSTANCE, bill_no, str(g("单据类型")), g("单据日期"),
                  _emp(str(sub).strip()) if sub else None,
                  _emp(str(cla).strip()) if cla else None,
                  g("报账部门"), ORG_ID, str(g("单据状态")) if g("单据状态") else None,
@@ -147,11 +187,11 @@ def load(verbose=True):
             # **这四列写 NULL，不拿单人单的值去填**——
             # 「导出时没带上」和「业务上没有」是两件事，填了就分不清了。
             cur.execute("""INSERT INTO expense_bill
-                (bill_no, doc_type, doc_date, submitter_no, claimant_no, claim_dept,
-                 org_id, bill_status, bearing_dept, biz_type, amount, pay_amount,
-                 currency, tax, summary, is_multi_person, is_demo)
-                VALUES (%s,%s,%s,%s,NULL,%s,%s,NULL,NULL,%s,%s,%s,%s,%s,%s,TRUE,FALSE)""",
-                (bill_no, str(g("单据类型")), g("单据日期"),
+                (instance_id, bill_no, doc_type, doc_date, submitter_no, claimant_no,
+                 claim_dept, org_id, bill_status, bearing_dept, biz_type, amount,
+                 pay_amount, currency, tax, summary, is_multi_person, is_demo)
+                VALUES (%s,%s,%s,%s,%s,NULL,%s,%s,NULL,NULL,%s,%s,%s,%s,%s,%s,TRUE,FALSE)""",
+                (INSTANCE, bill_no, str(g("单据类型")), g("单据日期"),
                  _emp(str(sub).strip()) if sub else None, g("报账部门"), ORG_ID,
                  str(g("业务类型")), g("报账金额"), g("付款金额"),
                  g("币种"), g("税金"), g("摘要")))
