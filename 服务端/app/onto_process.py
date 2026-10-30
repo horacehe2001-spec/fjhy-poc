@@ -20,17 +20,39 @@
 from . import db, onto_current
 
 
-def _version():
-    return onto_current.version()
+def _iid(instance_id=None):
+    """当前实例。本模块每一句查询都要用它——原因见下。"""
+    from . import scope
+    return scope.require(instance_id)
 
 
-def build():
+def _version(instance_id=None):
+    return onto_current.version(instance_id)
+
+
+# ── 为什么这个模块每一句都必须带 instance_id（2026-10-31 补）──────────────
+# 原来整个模块只按 version 过滤。**而两个实例的当前本体版本号都叫「0.1」**，
+# 所以「按版本过滤」看着像过滤了，其实一点没过滤掉另一家。
+# 实测后果：822港航 的 process_node 是 0 行、福建海运集团有 10 行，
+# 于是 822港航 的流程本体页**显示的是福建海运集团的 10 个节点和 12 条迁移**
+# ——另一家客户的流程出现在这家客户的页面上，而且页面上没有任何异常迹象，
+# 看起来就像「822港航 的流程本体已经建好了」。
+# approval_record 同理：漂移核对拿的是全库 388 条审批记录去对，
+# 「实测节点名」里混着另一家的节点名，核对结论整段不可信。
+# 按版本过滤挡不住跨实例——**实例和版本是两个维度，每一句都要带两个**。
+
+
+def build(instance_id=None):
     """本体建设：节点与迁移是从哪儿来的、和真实记录差多少。"""
-    v = _version()
+    iid = _iid(instance_id)
+    v = _version(iid)
     nodes = db.query("""SELECT node_id, name, is_bypass, occurrences, note, alias
-                          FROM process_node WHERE version = %s ORDER BY node_id""", (v,))
+                          FROM process_node
+                         WHERE version = %s AND instance_id = %s
+                         ORDER BY node_id""", (v, iid))
     measured = db.query("""SELECT node, count(*) n, count(DISTINCT bill_no) bills
-                             FROM approval_record GROUP BY 1 ORDER BY 2 DESC""")
+                             FROM approval_record WHERE instance_id = %s
+                            GROUP BY 1 ORDER BY 2 DESC""", (iid,))
     names = {n["name"]: n for n in nodes}
     # **别名也算对上。** 这一条是实测补的：审批记录里的「开始」出现 103 次，
     # 本体里 N01 提单 带 alias: [开始]，但装载脚本一直没把 alias 写进库，
@@ -61,12 +83,15 @@ def build():
 
     return {
         "version": v,
-        "source": {"审批记录": db.scalar("SELECT count(*) FROM approval_record"),
-                   "覆盖单据": db.scalar("SELECT count(DISTINCT bill_no) FROM approval_record"),
+        "source": {"审批记录": db.scalar("SELECT count(*) FROM approval_record "
+                                     "WHERE instance_id = %s", (iid,)),
+                   "覆盖单据": db.scalar("SELECT count(DISTINCT bill_no) FROM approval_record "
+                                     "WHERE instance_id = %s", (iid,)),
                    "实测节点名": len(measured),
                    "本体节点": len(nodes),
                    "本体迁移": db.scalar("SELECT count(*) FROM process_transition "
-                                     "WHERE version = %s", (v,))},
+                                     "WHERE version = %s AND instance_id = %s",
+                                     (v, iid))},
         "built_by": "确定性解析器（app/perception），不是智能体协同，也不调模型",
         "drift": drift,
         "unseen_nodes": unseen,
@@ -90,21 +115,27 @@ def build():
     }
 
 
-def graph():
+def graph(instance_id=None):
     """流程图谱：节点 + 迁移，带实测次数与分层。
 
     **分层在后端算**（从提单 N01 出发按迁移做 BFS），不在前端估：
     前端估出来的层次会随数据变，而两次打开页面图形不一样，
     人就无法把「图变了」当成「本体变了」的信号。
     """
-    v = _version()
+    iid = _iid(instance_id)
+    v = _version(iid)
     nodes = db.query("""SELECT node_id, name AS node_name, is_bypass, note
-                          FROM process_node WHERE version = %s ORDER BY node_id""", (v,))
+                          FROM process_node
+                         WHERE version = %s AND instance_id = %s
+                         ORDER BY node_id""", (v, iid))
     edges = db.query("""SELECT from_node, to_node, cond, blocking, note
-                          FROM process_transition WHERE version = %s
-                         ORDER BY from_node, to_node""", (v,))
+                          FROM process_transition
+                         WHERE version = %s AND instance_id = %s
+                         ORDER BY from_node, to_node""", (v, iid))
     cnt = {}
-    for d in build()["drift"]:
+    # **把 iid 传下去**：不传就是再取一次「当前实例」，显式传了别的实例的
+    # 调用方会拿到「本实例的节点 + 当前实例的实测次数」，两边不是一家。
+    for d in build(iid)["drift"]:
         if d["node_id"]:
             cnt[d["node_id"]] = cnt.get(d["node_id"], 0) + d["n"]
 
@@ -147,11 +178,16 @@ STORAGE = [
 ]
 
 
-def storage():
+def storage(instance_id=None):
+    iid = _iid(instance_id)
     rows = []
     for t, what, who, on_recalc, why in STORAGE:
         try:
-            n = db.scalar("SELECT count(*) FROM " + t)
+            # 四张表都有 instance_id，**存储页报的行数必须是本实例的**：
+            # 不带实例，822港航 的存储页会报 process_node 10 行，
+            # 而它自己一行都没有——看起来像建好了。
+            n = db.scalar("SELECT count(*) FROM " + t
+                          + " WHERE instance_id = %s", (iid,))
         except Exception:                                      # noqa: BLE001
             n = None
         rows.append({"table_name": t, "what": what, "written_by": who,

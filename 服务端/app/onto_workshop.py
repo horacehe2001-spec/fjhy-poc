@@ -142,7 +142,20 @@ def _ws_iid():
 
 def _run_load_ontology(job, a, prev=None):
     t0 = time.time(); _phase(a, "S")
-    before = db.scalar("SELECT count(*) FROM ontology_concept") or 0
+    # **实例和版本都要带**。这个数和下面 outputs 里的「概念」并排摆着，而
+    # 那个数来自 loader 的 stats——它只算**本实例的当前版本**。少任何一个
+    # 过滤条件，这两个数就不是一个口径：
+    #   都不带：全库 252 ⟷ 822港航 当前版 12，看着像删了 240 个
+    #   只带实例：fjhy 240（当前版 121 + 旧草稿版 119）⟷ 121，还是对不上
+    # 文件里「17 实体 / 121 概念一度报成 34 / 240」那条注释说的就是后一种。
+    # 一个装载作业把「装载前」报成「装载后」的两倍，第一反应一定是「它把
+    # 本体删了」——而真相只是两个数的口径不同。
+    before = db.scalar("""SELECT count(*) FROM ontology_concept c
+                           WHERE c.instance_id = %s
+                             AND c.version = (SELECT version FROM ontology_version
+                                               WHERE instance_id = c.instance_id
+                                                 AND is_current)""",
+                       (_ws_iid(),)) or 0
     _phase_done(a, "S", t0)
 
     t0 = time.time(); _phase(a, "D")
@@ -281,13 +294,28 @@ def state():
                    "sha256": src["sha256"], "written_by": src["written_by"],
                    "in_sync": bool(src["loaded"]["in_sync"]),
                    "db_version": src["loaded"]["version"]},
+        # **版本和实例都要带。** 这一屏下面几块（assets/candidates/unify）早就
+        # 带实例了，只有本体这一块漏了——而且漏得最难看见：
+        # **两个实例的当前版本号都叫「0.1」**，所以按 version 过滤看着像过滤了，
+        # 其实是把两家加在一起。实测 822港航 的工场页报「实体 18 / 概念 133 /
+        # 枚举 27」（= 822港航 1/12/6 + 福建海运集团 17/121/21），而它自己只有
+        # 1/12/6。这个数是要写进汇报的，而「18 个实体」会让人以为本体已经建厚了，
+        # 实际上那是一张骨架。
+        # 同一个坑的前一次是「不带 version 把两版加起来，17/121 报成 34/240」，
+        # 下面 assets 那块的注释记着。这次是同一个形状换了一个维度。
         "onto": {"version": v,
-                 "实体": db.scalar("SELECT count(*) FROM ontology_entity WHERE version=%s", (v,)),
-                 "概念": db.scalar("SELECT count(*) FROM ontology_concept WHERE version=%s", (v,)),
-                 "枚举": db.scalar("SELECT count(*) FROM ontology_enum WHERE version=%s", (v,)),
-                 "枚举取值": db.scalar("SELECT count(*) FROM ontology_enum_value WHERE version=%s", (v,)),
-                 "流程节点": db.scalar("SELECT count(*) FROM process_node WHERE version=%s", (v,)),
-                 "流程迁移": db.scalar("SELECT count(*) FROM process_transition WHERE version=%s", (v,))},
+                 "实体": db.scalar("SELECT count(*) FROM ontology_entity "
+                                 "WHERE version=%s AND instance_id=%s", (v, _ws_iid())),
+                 "概念": db.scalar("SELECT count(*) FROM ontology_concept "
+                                 "WHERE version=%s AND instance_id=%s", (v, _ws_iid())),
+                 "枚举": db.scalar("SELECT count(*) FROM ontology_enum "
+                                 "WHERE version=%s AND instance_id=%s", (v, _ws_iid())),
+                 "枚举取值": db.scalar("SELECT count(*) FROM ontology_enum_value "
+                                   "WHERE version=%s AND instance_id=%s", (v, _ws_iid())),
+                 "流程节点": db.scalar("SELECT count(*) FROM process_node "
+                                   "WHERE version=%s AND instance_id=%s", (v, _ws_iid())),
+                 "流程迁移": db.scalar("SELECT count(*) FROM process_transition "
+                                   "WHERE version=%s AND instance_id=%s", (v, _ws_iid()))},
         "assets": {"规则": n_rules,
                    "可编译": db.scalar("SELECT count(*) FROM rule WHERE instance_id=%s "
                                      "AND version=1 AND compiled", (_ws_iid(),)),

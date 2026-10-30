@@ -165,13 +165,55 @@ def test_现状报的是当前版本不是两版加总():
 
     不带 version 条件地 count，会把两版加起来——实测一度把
     17 实体 / 121 概念报成了 34 / 240，而这个数是要写进汇报的。
+
+    **2026-10-31 改**：原来这里断言 `概念 == count(WHERE version=v)`，
+    那个断言**把一个错的行为钉住了**——两个实例的当前版本号都叫「0.1」，
+    所以这么数是把两家加在一起。实测 822港航 的工场页报 概念 133
+    （= 它自己 12 + 福建海运集团 121）。断言写成「等于那个加总值」之后，
+    谁去修这个 bug 反倒会把测试搞红。
+    用例钉的必须是**对的口径**，不是当时的实际输出。
     """
     from app import db
+    from app import onto_workshop as w
     st = client.get("/api/onto/workshop/state").json()
     v = st["onto"]["version"]
+    iid = w._ws_iid()
     assert st["onto"]["概念"] == db.scalar(
-        "SELECT count(*) FROM ontology_concept WHERE version=%s", (v,))
+        "SELECT count(*) FROM ontology_concept WHERE version=%s AND instance_id=%s",
+        (v, iid))
+    # 两个方向都要小于：既不能把别的版本加进来，也不能把别的实例加进来
     assert st["onto"]["概念"] < db.scalar("SELECT count(*) FROM ontology_concept")
+    assert st["onto"]["概念"] <= db.scalar(
+        "SELECT count(*) FROM ontology_concept WHERE version=%s", (v,))
+
+
+def test_工场现状里的本体计数每一个都带实例():
+    """**所有出口一起守，不只守概念那一个。**
+
+    这一屏有 6 个本体计数（实体/概念/枚举/枚举取值/流程节点/流程迁移），
+    逐个写断言的下场是下一个新计数再漏一次——`demo_executable` 那条用例
+    就是这么来的。所以这里扫源码。
+
+    为什么「按 version 过滤」看着对其实不对：两个实例的当前版本号都是
+    「0.1」，按版本过滤过不掉另一个实例。实例和版本是两个维度，都要带。
+    """
+    import pathlib
+    import re
+    # **开窗看，不要只看匹配到的那一段**：项目里的 SQL 普遍是跨多个字符串
+    # 字面量拼的（"SELECT count(*) FROM x " "WHERE ..."），正则一碰到引号
+    # 就停，于是刚补好 instance_id 的那几行照样被报成问题。第一版就这么
+    # 误报了 6 处。窗口法和 test_数演示可执行的地方都带版本 一致。
+    bad = []
+    for f in pathlib.Path("app").rglob("*.py"):
+        txt = f.read_text(encoding="utf-8")
+        for m in re.finditer(
+                r"count\(\*\)\s*FROM\s+(ontology_\w+|process_node|process_transition)",
+                txt):
+            seg = txt[m.start():m.end() + 220]
+            if "instance_id" not in seg:
+                bad.append("%s:%d %s" % (f, txt[:m.start()].count(chr(10)) + 1,
+                                         m.group(1)))
+    assert not bad, "这些地方数本体表没带 instance_id，会把两个实例加起来：%s" % bad
 
 
 # ── 感知 Agent 读的键，必须真的在 perceive() 的产出里 ──────────────────────

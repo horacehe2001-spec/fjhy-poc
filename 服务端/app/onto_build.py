@@ -664,11 +664,17 @@ def perceive():
         "单据明细表": len(bill_sheets()),
         "条款": db.scalar("SELECT count(*) FROM doclib_clause"),
         "审批记录": db.scalar("SELECT count(*) FROM approval_record"),
-        "本体实体": db.scalar("SELECT count(*) FROM ontology_entity WHERE version=%s", (v,)),
-        "本体概念": db.scalar("SELECT count(*) FROM ontology_concept WHERE version=%s", (v,)),
-        "本体枚举取值": db.scalar(
-            "SELECT count(*) FROM ontology_enum_value WHERE version=%s", (v,)),
-        "流程节点": db.scalar("SELECT count(*) FROM process_node WHERE version=%s", (v,)),
+        # 这四个数和下一行的「现有候选」摆在同一块里，而那一行是按实例数的。
+        # 只按 version 过滤挡不住跨实例（两个实例的当前版本号都叫「0.1」），
+        # 于是这块会出现「本实例的候选数 + 两家加总的本体规模」。
+        "本体实体": db.scalar("SELECT count(*) FROM ontology_entity "
+                           "WHERE version=%s AND instance_id=%s", (v, _scope_iid())),
+        "本体概念": db.scalar("SELECT count(*) FROM ontology_concept "
+                           "WHERE version=%s AND instance_id=%s", (v, _scope_iid())),
+        "本体枚举取值": db.scalar("SELECT count(*) FROM ontology_enum_value "
+                             "WHERE version=%s AND instance_id=%s", (v, _scope_iid())),
+        "流程节点": db.scalar("SELECT count(*) FROM process_node "
+                           "WHERE version=%s AND instance_id=%s", (v, _scope_iid())),
         "现有候选": db.scalar("SELECT count(*) FROM onto_candidate WHERE instance_id=%s",
                              (_scope_iid(),)),
     }

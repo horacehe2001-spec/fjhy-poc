@@ -151,17 +151,36 @@ def test_切换留痕():
     assert who == "测试员"
 
 
-def test_概览的本体数不含旧草稿版():
+def test_概览的本体数不含旧草稿版也不含别的实例():
     """ontology_entity 里躺着 0.1 与 v0.1-draft 两版，各 17 行。
     直接 count(*) 得 34；按 max(version) 取「最新」会选中 **v0.1-draft**
-    （TEXT 比大小 v > 0）。两种写法都错，必须走 ontology_version.is_current。"""
+    （TEXT 比大小 v > 0）。两种写法都错，必须走 ontology_version.is_current。
+
+    **2026-10-31 补第三个维度：实例。** 原来这里断言
+    `onto_entities == count(WHERE version=cur_ver)`，**把一个错的行为钉住了**：
+    两个实例的当前版本号都叫「0.1」，所以那个数是两家加总。实测概览页报
+    18 实体 / 133 概念，而 822港航 自己只有 1 / 12——一张骨架看着像建厚了。
+    而且这个用例里 `SELECT version FROM ontology_version WHERE is_current`
+    在多实例下有两行，取到哪一行靠运气。
+    用例钉的必须是**对的口径**，不是当时的实际输出。
+    """
+    from app import scope
+    iid = scope.require()
     o = dm.overview()
     total_all = db.scalar("SELECT count(*) FROM ontology_entity")
-    cur_ver = db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    cur_ver = db.scalar("""SELECT version FROM ontology_version
+                            WHERE is_current AND instance_id = %s""", (iid,))
     assert o["onto_version"] == cur_ver
     assert o["counts"]["onto_entities"] < total_all
     assert o["counts"]["onto_entities"] == db.scalar(
+        """SELECT count(*) FROM ontology_entity
+            WHERE version = %s AND instance_id = %s""", (cur_ver, iid))
+    # 版本和实例各自都要真的起作用：去掉任一个条件，数都应该变大（或相等，
+    # 但绝不能更小）——写成 <= 是因为单实例/单版本的库里本来就相等。
+    assert o["counts"]["onto_entities"] <= db.scalar(
         "SELECT count(*) FROM ontology_entity WHERE version = %s", (cur_ver,))
+    assert o["counts"]["onto_entities"] <= db.scalar(
+        "SELECT count(*) FROM ontology_entity WHERE instance_id = %s", (iid,))
 
 
 def test_概览的生效版本与引擎一致():

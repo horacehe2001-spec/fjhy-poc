@@ -247,10 +247,19 @@ def overview():
         #     而页面上那个数会被当成「本体有多大」来读；
         #   · version 是 TEXT，用 max(version) 选「最新版」会按文本比大小，
         #     选中的是 'v0.1-draft'（v > 0）——**正好是草稿那版**。
+        # **实例也要带。** 上面两条注释讲的是「版本」这个维度的两个坑，
+        # 但还有第三个：**两个实例的当前版本号都叫「0.1」**，所以只按版本
+        # 过滤等于没过滤掉另一家。实测概览页报 18 实体 / 133 概念
+        # （= 822港航 1/12 + 福建海运集团 17/121），而这个数在页面上是被当成
+        # 「本实例的本体有多大」来读的——会让一张骨架看起来像建厚了。
         "onto_entities": db.scalar(
-            "SELECT count(*) FROM ontology_entity WHERE version = %s", (_onto_cur,)) or 0,
+            "SELECT count(*) FROM ontology_entity "
+            "WHERE version = %s AND instance_id = %s",
+            (_onto_cur, iid)) or 0 if iid else 0,
         "onto_concepts": db.scalar(
-            "SELECT count(*) FROM ontology_concept WHERE version = %s", (_onto_cur,)) or 0,
+            "SELECT count(*) FROM ontology_concept "
+            "WHERE version = %s AND instance_id = %s",
+            (_onto_cur, iid)) or 0 if iid else 0,
         "bills_real": db.scalar(
             "SELECT count(*) FROM expense_bill WHERE instance_id = %s AND NOT is_demo",
             (iid,)) or 0 if iid else 0,
