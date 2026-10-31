@@ -115,6 +115,43 @@ def build(instance_id=None):
     }
 
 
+def _start_nodes(nodes, edges, adj):
+    """推分层 BFS 的起点，返回 (起点列表, 用了哪条规则)。
+
+    原来这里写死的是 `["N01"]`——那是**福建海运集团**的提单节点号。
+    822港航 的提单是 P01，于是它 10 个节点全都 rank=None、全被当成旁路
+    画在单独一行；而图还是画得出来的，页面上看不出哪里错了。
+    这是「写死另一家的编号」这一类 bug 的第 N 次，所以这里不再写死。
+
+    为什么不直接用「没有入边的节点」：**福建海运集团的 N01 有入边**
+    （实测：退回之后回到提单，是个环），用这条规则它会退化成 0 个起点，
+    整张图的层次一起没了——比写死更糟。所以按三级阶梯：
+
+      ① 非旁路节点里名字叫「提单」或别名含「开始」的，恰好一个 → 用它
+      ② 否则取「没有入边但有出边」的节点（有向无环图的正常情形）
+      ③ 都不成立 → 退化成最小的非旁路节点号，并在 how 里说明是退化的
+
+    推不出来就返回空列表：**猜错的层次比没有层次更坏**，
+    页面按「排不进层次」画，起码是实话。
+    """
+    named = [n["node_id"] for n in nodes
+             if not n["is_bypass"] and (n["node_name"] == "提单"
+                                        or "开始" in (n.get("alias") or []))]
+    if len(named) == 1:
+        return named, "起点按节点名「提单」/别名「开始」认定：%s" % named[0]
+    has_in = {e["to_node"] for e in edges}
+    roots = [n["node_id"] for n in nodes
+             if n["node_id"] not in has_in and n["node_id"] in adj]
+    if roots:
+        return roots, "起点按「没有入边但有出边」认定：%s" % "、".join(roots)
+    plain = sorted(n["node_id"] for n in nodes if not n["is_bypass"])
+    if plain:
+        return plain[:1], ("**起点是退化推定的**（既没有名叫「提单」的节点，"
+                           "也没有无入边的节点，图里有环）：取最小节点号 %s"
+                           % plain[0])
+    return [], "**推不出起点**：这个实例没有非旁路节点，层次一律留空"
+
+
 def graph(instance_id=None):
     """流程图谱：节点 + 迁移，带实测次数与分层。
 
@@ -124,7 +161,7 @@ def graph(instance_id=None):
     """
     iid = _iid(instance_id)
     v = _version(iid)
-    nodes = db.query("""SELECT node_id, name AS node_name, is_bypass, note
+    nodes = db.query("""SELECT node_id, name AS node_name, is_bypass, note, alias
                           FROM process_node
                          WHERE version = %s AND instance_id = %s
                          ORDER BY node_id""", (v, iid))
@@ -142,7 +179,8 @@ def graph(instance_id=None):
     adj = {}
     for e in edges:
         adj.setdefault(e["from_node"], []).append(e["to_node"])
-    rank, frontier, seen = {}, ["N01"], {"N01"}
+    roots, how = _start_nodes(nodes, edges, adj)
+    rank, frontier, seen = {}, list(roots), set(roots)
     depth = 0
     while frontier:
         nxt = []
@@ -159,11 +197,25 @@ def graph(instance_id=None):
         # 旁路节点（撤回、审批人=报账人跳过）没有入边，排不进层次——
         # **这不是数据缺陷，是旁路的本来面目**，页面上单独一行画
         n["off_path"] = n["rank"] is None
+    # 说明从**本实例的数据**生成。原来这里是一段写死的文字，讲的是
+    # 福建海运集团那条 N04→N05 的非阻断边；822港航 没有 N04 也没有 N05，
+    # 可它的流程页照样显示这段话——又一处「另一家的结论画在这一家页面上」。
+    name_of = {n["node_id"]: n["node_name"] for n in nodes}
+    bits = [how]
+    soft = [e for e in edges if not e["blocking"]]
+    if soft:
+        bits.append(
+            "非阻断的边 %d 条：%s。**阻断与否标错，整个定位就错了**——"
+            "AI 结论是参考，闸门在人工手里。"
+            % (len(soft), "；".join(
+                "%s %s → %s %s（%s）" % (
+                    e["from_node"], name_of.get(e["from_node"], ""),
+                    e["to_node"], name_of.get(e["to_node"], ""),
+                    e["cond"] or "无条件") for e in soft[:3])))
+    else:
+        bits.append("本实例没有非阻断的边：每一条迁移都是必过的。")
     return {"version": v, "nodes": nodes, "edges": edges,
-            "note": "N04 AI审核 → N05 共享审核 的 blocking=false 是实测结论："
-                    "有单在 17:25:03 得到「AI审核不通过」，17:35:41 仍进入共享审核"
-                    "并由人工给出退回理由。**AI 结论是参考，闸门在人工手里**——"
-                    "这条边的 blocking 标错，整个 POC 的定位就错了。"}
+            "note": "｜".join(bits)}
 
 
 STORAGE = [

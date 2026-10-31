@@ -111,7 +111,14 @@ def load(version=None, make_current=True, verbose=True, instance_id=None):
     enums = biz["enums"]
     relations = biz.get("relations") or []
     proc = onto.get("process") or {}
-    nodes = (proc.get("nodes") or []) + (proc.get("bypasses") or [])
+    # `bypasses:` 下面的节点**就是旁路**，这里给它打上标记。
+    # 原来两个列表直接相加，而 is_bypass 只认节点自己写的 `bypass: true`——
+    # 福建海运集团的 B01 撤回 / B02 审批人和报账人相同跳过都写在 bypasses: 下面、
+    # 都没写 bypass 字段，于是入库时 is_bypass=false，前端那条「旁路画虚线」
+    # 的样式一直没生效。**分组本身就是声明**，不该再要求写一遍。
+    nodes = list(proc.get("nodes") or [])
+    for n in (proc.get("bypasses") or []):
+        nodes.append(dict(n, bypass=True))
     transitions = proc.get("transitions") or []
 
     n_concepts = sum(len(e.get("concepts") or []) for e in entities)
