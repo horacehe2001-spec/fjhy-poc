@@ -158,52 +158,75 @@ def test_来源条款已不存在的陈旧冲突照样拦住采纳():
                         (gk,))) == len(had), "测试造的冲突没清干净"
 
 
+
+# ── 取归并组一律按**当前实例**取 ─────────────────────────────────────────────
+# 2026-11-01：下面几条用例原来写的是 `SELECT group_key FROM onto_align LIMIT 1`，
+# **不带实例**。而 oc.adopt / oc.dispose 是按**当前实例**查这个组的。
+# onto_align 里现在 12 个组全属 822港航，于是只要跑到这几条时当前实例不是它，
+# 就会报「本实例下没有这个归并组」——而用例想验的是署名/缺项/软规则那几件事。
+# 当前实例是全局单例，谁都可能在前面把它切走，所以**不能依赖它恰好是哪一个**。
+# 改成按当前实例取组：取不到就跳过，取到的一定是 adopt 查得到的那一个。
+def _a_group(where=""):
+    """随便取一个归并组，**连它属于哪个实例一起返回**。
+
+    第一版写的是「按当前实例取」，结果三条用例从 FAILED 变成了 SKIPPED
+    ——**跳过的用例什么都不验，那是把问题藏起来不是修好**。
+    原因是当前实例是全局单例，pytest 里被别的 fixture 切走了，
+    而 onto_align 的组全属另一个实例，于是取不到就跳过。
+
+    正确做法：用例不依赖「当前实例恰好是哪一个」，
+    自己把 instance_id 显式传给 adopt/dispose。
+    """
+    row = db.query_one(
+        "SELECT group_key, instance_id FROM onto_align WHERE TRUE " + where
+        + " LIMIT 1")
+    return row
+
 def test_采纳必须署名():
     with pytest.raises(oc.AdoptError) as e:
         oc.adopt("随便一个组", "", {})
     # 组不存在也会报错，但署名这条必须独立成立：换一个存在的组再试
-    g = db.query_one("SELECT group_key FROM onto_align LIMIT 1")
+    g = _a_group()
     if g:
         with pytest.raises(oc.AdoptError) as e2:
-            oc.adopt(g["group_key"], "   ", {"name": "x"})
+            oc.adopt(g["group_key"], "   ", {"name": "x"},
+                     instance_id=g["instance_id"])
         assert "署名" in str(e2.value) or "冲突" in str(e2.value)
     assert e.value
 
 
 def test_控制类型等四项不给默认值():
-    g = db.query_one("""SELECT group_key FROM onto_align
-                         WHERE group_key NOT IN
-                           (SELECT group_key FROM doclib_conflict WHERE state = '待裁决')
-                         LIMIT 1""")
-    if not g:
-        pytest.skip("没有可用的归并组")
+    g = _a_group(
+        """AND group_key NOT IN
+             (SELECT group_key FROM doclib_conflict WHERE state = '待裁决')""")
+    assert g, "库里一个可用的归并组都没有，这条用例要重新找锚点"
     with pytest.raises(oc.AdoptError) as e:
-        oc.adopt(g["group_key"], "测试", {"name": "只给了名称"})
+        oc.adopt(g["group_key"], "测试", {"name": "只给了名称"},
+                 instance_id=g["instance_id"])
     msg = str(e.value)
     for must in ("审核维度", "规则类型", "控制类型", "风险类别"):
         assert must in msg, "缺项提示里没有「%s」：%s" % (must, msg)
 
 
 def test_软规则不许标禁止():
-    g = db.query_one("""SELECT group_key FROM onto_align
-                         WHERE group_key NOT IN
-                           (SELECT group_key FROM doclib_conflict WHERE state = '待裁决')
-                         LIMIT 1""")
-    if not g:
-        pytest.skip("没有可用的归并组")
+    g = _a_group(
+        """AND group_key NOT IN
+             (SELECT group_key FROM doclib_conflict WHERE state = '待裁决')""")
+    assert g, "库里一个可用的归并组都没有，这条用例要重新找锚点"
     with pytest.raises(oc.AdoptError) as e:
         oc.adopt(g["group_key"], "测试", {"name": "x", "dimension": "D1",
                                         "rule_class": "soft", "control_type": "禁止",
-                                        "risk_class": "超标准"})
+                                        "risk_class": "超标准"},
+                 instance_id=g["instance_id"])
     assert "软规则" in str(e.value)
 
 
 def test_驳回暂缓必须写理由():
-    g = db.query_one("SELECT group_key FROM onto_align LIMIT 1")
-    if not g:
-        pytest.skip("没有归并组")
+    g = _a_group()
+    assert g, "库里一个归并组都没有，这条用例要重新找锚点"
     with pytest.raises(oc.AdoptError) as e:
-        oc.dispose(g["group_key"], "驳回", "测试", "")
+        oc.dispose(g["group_key"], "驳回", "测试", "",
+                   instance_id=g["instance_id"])
     assert "理由" in str(e.value)
 
 

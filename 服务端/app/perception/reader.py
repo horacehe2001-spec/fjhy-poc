@@ -85,6 +85,34 @@ def _snapshot(cur, bill_no):
                            WHERE bill_no = %s ORDER BY ord""", (bill_no,))
     counts["bill_traveler"] = len(travelers)
 
+    # 业务招待明细（E18）。迁移 0053 新建的表，**建表时这个装配函数还没改**——
+    # 不装进 fact，接待类规则在 D 阶段就读不到它，而规则实现里不许查库。
+    # 招待对象名单那一列**不取**：整列不出明文（外部人员姓名与职务黏连，
+    # 脱敏闭集合切不出来，见 app/mask.py 的 roster 策略）。
+    # 规则要的是「名单里有几个人」，所以这里只给算出来的人数。
+    entertains = _q(cur, """SELECT line_no, amount, entertain_type, entertain_way,
+                                   companion_level, place, happen_date,
+                                   guest_count, companion_count, liquor_amount,
+                                   CASE WHEN guest_list IS NULL THEN NULL
+                                        WHEN guest_list ~ '[、,，;；]'
+                                        THEN array_length(
+                                             regexp_split_to_array(
+                                               guest_list, '[、,，;；]+'), 1)
+                                        ELSE NULL END AS guest_list_count
+                              FROM entertain_detail WHERE bill_no = %s
+                             ORDER BY line_no, id""", (bill_no,))
+    counts["entertain_detail"] = len(entertains)
+
+    # 出差日历（E04）。挂在 trip_application 上，没有 bill_no 列，要经审批单关联。
+    # 伙食补助与市内交通费规则靠它判「接待单位有没有安排餐/提供车辆」。
+    trip_days = _q(cur, """SELECT c.cal_date, c.meal_slot, c.has_meal, c.has_car,
+                                  c.place
+                             FROM trip_calendar c
+                             JOIN trip_application t ON t.app_no = c.app_no
+                            WHERE t.bill_no = %s
+                            ORDER BY c.cal_date, c.meal_slot""", (bill_no,))
+    counts["trip_calendar"] = len(trip_days)
+
     # 住宿发票的住宿明细（C0604 住宿晚数）。挂在 invoice 上，没有 bill_no 列，
     # 要经 invoice 关联。TR-D4-14 的「200 元/晚」按晚数算，拿天数代替会差一晚。
     hotel_invoices = _q(cur, """SELECT h.invoice_id, h.check_in, h.check_out,
@@ -125,6 +153,8 @@ def _snapshot(cur, bill_no):
         "attachments": attachments,
         "trip": trip,
         "invoices": invoices,
+        "entertain_details": entertains,
+        "trip_days": trip_days,
         "hotel_invoices": hotel_invoices,
         "transport_vouchers": transport_vouchers,
         "travelers": travelers,

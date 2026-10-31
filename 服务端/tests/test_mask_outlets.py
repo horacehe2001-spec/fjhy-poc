@@ -37,15 +37,27 @@ client = TestClient(app, raise_server_exceptions=False)
 # test_detection 先跑的话，这里拿到的 run_id 就失效了，测试报 404。
 # 那种红是「测试之间互相干扰」，不是「接口有问题」，排查起来最费时间。
 def _sample_ids():
+    # **取样 id 必须限定在当前实例内。**
+    # 2026-11-01：822港航 建了第一个 release（rel-0001）之后，
+    # 这里的 `SELECT release_id FROM release LIMIT 1` 取到了它，
+    # 而接口是按**当前实例**查的，于是返回 400「本实例里没有这个发布」，
+    # 用例报「接口坏了」——坏的是取样，不是接口。
+    # rule_id / doc_id / table_id 同理：0041 之后这些编号只在实例内唯一，
+    # 取到别家的就会得到一个本实例查不到的 id。
+    from app import scope
+    iid = scope.require(None)
     bill = db.scalar("SELECT bill_no FROM expense_bill WHERE NOT is_demo "
-                     "ORDER BY bill_no LIMIT 1")
+                     "AND instance_id=%s ORDER BY bill_no LIMIT 1", (iid,))
     run = db.scalar("""SELECT r.run_id FROM review_run r
                        JOIN expense_bill b ON b.bill_no = r.bill_no
-                       WHERE NOT b.is_demo ORDER BY r.started_at DESC LIMIT 1""")
-    rule = db.scalar("SELECT rule_id FROM rule WHERE version=1 ORDER BY rule_id LIMIT 1")
-    doc = db.scalar("SELECT doc_id FROM policy_doc LIMIT 1")
-    rel = db.scalar("SELECT release_id FROM release LIMIT 1")
-    tbl = db.scalar("SELECT table_id FROM lookup_table ORDER BY table_id LIMIT 1")
+                       WHERE NOT b.is_demo AND b.instance_id=%s
+                       ORDER BY r.started_at DESC LIMIT 1""", (iid,))
+    rule = db.scalar("""SELECT rule_id FROM rule WHERE version=1 AND instance_id=%s
+                         ORDER BY rule_id LIMIT 1""", (iid,))
+    doc = db.scalar("SELECT doc_id FROM policy_doc WHERE instance_id=%s LIMIT 1", (iid,))
+    rel = db.scalar("SELECT release_id FROM release WHERE instance_id=%s LIMIT 1", (iid,))
+    tbl = db.scalar("""SELECT table_id FROM lookup_table WHERE instance_id=%s
+                        ORDER BY table_id LIMIT 1""", (iid,))
     return {"bill_no": bill, "subject_id": bill, "run_id": run, "rule_id": rule,
             "doc_id": doc or "none", "release_id": rel or "none",
             "table_id": tbl or "none", "task_id": "none", "config_id": "none"}

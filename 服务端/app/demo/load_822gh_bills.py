@@ -306,10 +306,27 @@ for zf, main_sheet, alloc_sheet, doc_type, own_sheet in SRC:
         bills.append(b)
         if rej:
             reviews.append({"bill_no": bn, "reason": rej})
+    # **分摊区每一行在源文件里都重复了一遍。** 实测 2026-11-01：
+    # 差旅那份 118 行去重后 61 行，57 行各出现两次。
+    # 判据不是「看着像重复」，是**去重后明细合计正好等于报销金额**：
+    #   29 张单里，去重后合计 == 报销金额 的有 **29 张**；
+    #   不去重的话只有 1 张对得上。
+    # 不去重的代价是实打实的：市内交通费 160 被算成 320，
+    # 而 2 天的包干上限是 160——规则会报「超标一倍」，**而单据完全合规**。
+    # 第一次跑引擎时就是这样报出 4 条假违规的。
+    #
+    # 去重按**整行相同**，不按业务键：同一张单上确实可能有两笔金额相同的
+    # 同类费用（比如两段同价的车票），那种情况下其余列（责任部门、预算科目）
+    # 多半不同；整行都一样才判定是导出重复。
+    _seen_alloc = set()
     for a in allocs:
         bn = str(a.get("单据号") or "").strip()
         if not bn:
             continue
+        _key = tuple(sorted((k, str(v)) for k, v in a.items()))
+        if _key in _seen_alloc:
+            continue
+        _seen_alloc.add(_key)
         details.append({
             "bill_no": bn,
             "expense_item": str(a.get("业务小类") or "").strip() or None,
@@ -360,6 +377,19 @@ amt = sum(b["amount"] for b in bills)
 p("  金额合计 %.2f 元，均单 %.2f 元" % (amt, amt / max(1, len(bills))))
 nod = [b for b in bills if not b["period"]]
 p("  入账期间还原不出的: %d 张" % len(nod))
+p("")
+p("=== 明细合计 vs 报销金额（这一条是闸，不是统计）===")
+_sum = {}
+for d in details:
+    _sum[d["bill_no"]] = _sum.get(d["bill_no"], 0) + (d["amount"] or 0)
+_bad = [(b["bill_no"], b["amount"], _sum.get(b["bill_no"], 0)) for b in bills
+        if abs(_sum.get(b["bill_no"], 0) - b["amount"]) >= 0.01]
+p("  明细合计等于报销金额的: %d/%d 张" % (len(bills) - len(_bad), len(bills)))
+for b, a, s in _bad[:5]:
+    p("    · %s 单据 %.2f / 明细 %.2f" % (b, a, s))
+p("  （分摊区源文件里每行重复一遍，已按整行去重。不去重的话只有 1/29 对得上，")
+p("   而且规则会把合规的市内交通费报成「超标一倍」——第一次跑引擎就是这样误报了 4 条。）")
+assert not _bad, "明细合计与报销金额对不上，先查去重口径：%s" % _bad[:3]
 p("")
 p("=== 支付区 / 归属区（2026-10-31 补读）===")
 p("  收款人落到字段的 %d/%d 张；支付方式 %d 张；付款用途 %d 张；付款金额 %d 张"
@@ -508,6 +538,47 @@ if os.environ.get("WRITE") == "1":
         # 可重入：先清掉本实例这批。**只清 822gh**，别家一行不动。
         # 顺序要紧：expense_bill.submitter_no 有外键指向 employee，
         # 先删员工会被外键拦住，所以单据先走。
+        #
+        # ── 删之前先看一眼要删掉什么 ──────────────────────────────────
+        # **2026-11-01 的事故**：重跑一次这个程序，附件链被整个级联删掉：
+        #   attachment 147 / invoice 53 / trip_application 15 /
+        #   trip_calendar 87 / attachment_vision 198 → 全部归零。
+        # 原因是这几张表的 bill_no 都是 ON DELETE CASCADE 指向 expense_bill，
+        # 而它们是**另一个装载程序**（load_822gh_attachments.py）写的。
+        # 前四张能重建（源文件还在，解析是确定性的）；
+        # **attachment_vision 重建不了**——那是读图调用的台账，
+        # 「哪些客户凭证离开过本系统」的唯一证据，重建只能重新调模型花钱。
+        #
+        # 所以这里先数一遍、报出来，并且**默认拒绝**。
+        # 确实要重跑就设 CASCADE_OK=1，但那时你已经看过要损失什么了。
+        _casc = {}
+        for _t, _sql in (
+                ("attachment", "SELECT count(*) FROM attachment WHERE instance_id=%s"),
+                ("invoice", "SELECT count(*) FROM invoice WHERE instance_id=%s"),
+                ("trip_application",
+                 "SELECT count(*) FROM trip_application WHERE instance_id=%s"),
+                ("trip_calendar",
+                 "SELECT count(*) FROM trip_calendar WHERE instance_id=%s"),
+                ("attachment_vision",
+                 """SELECT count(*) FROM attachment_vision v
+                      JOIN attachment a ON a.id = v.attachment_id
+                     WHERE a.instance_id = %s""")):
+            cur.execute(_sql, (IID,))
+            _casc[_t] = cur.fetchone()[0]
+        if any(_casc.values()):
+            p("")
+            p("!! 重跑会**级联删掉**下面这些（它们是别的装载程序写的）：")
+            for _t, _n in _casc.items():
+                p("     %-20s %d 行%s" % (_t, _n,
+                   "  ← 重建只能重新调模型" if _t == "attachment_vision" else ""))
+            if os.environ.get("CASCADE_OK") != "1":
+                raise SystemExit(
+                    "拒绝执行：重跑会级联删掉 %s。\n"
+                    "  要么先确认这些能重建（attachment/invoice/trip_* 可以：\n"
+                    "    python -m app.demo.load_822gh_attachments），\n"
+                    "  要么设 CASCADE_OK=1 明确接受损失。\n"
+                    "  **attachment_vision 重建不了**，它是读图调用的台账。"
+                    % "、".join("%s %d 行" % (k, v) for k, v in _casc.items() if v))
         cur.execute("DELETE FROM manual_review WHERE bill_no IN "
                     "(SELECT bill_no FROM expense_bill WHERE instance_id=%s)", (IID,))
         cur.execute("DELETE FROM expense_bill WHERE instance_id=%s", (IID,))

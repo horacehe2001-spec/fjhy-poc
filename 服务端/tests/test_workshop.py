@@ -332,11 +332,20 @@ def test_演示可执行按当前版本算():
     version=1（实测 82 条、demo_executable 12），所以这一条
     **今天两边都是 12，断言的是口径而不是当下的差值**——
     等 rule 表出现第二个版本时它才会分出真假，而那时候没人会想起来查。
+
+    **2026-11-01 补实例维度**：这条断言原来拿页面值（按实例取的）去比一个
+    **不带 instance_id** 的全库 count。822港航 有了 7 条可执行规则之后，
+    页面报 28、全库是 35，用例红了——**红的是用例，不是页面**。
+    这正是本轮一直在修的那类 bug，只不过这次出现在用例自己身上：
+    守「按版本算」的时候把「按实例算」漏了。
     """
     from app import db
+    from app import scope
     st = client.get("/api/onto/workshop/state").json()
     assert st["assets"]["演示可执行"] == db.scalar(
-        "SELECT count(*) FROM rule WHERE version=1 AND demo_executable")
+        """SELECT count(*) FROM rule
+            WHERE version=1 AND demo_executable AND instance_id=%s""",
+        (scope.require(None),))
 
 
 def test_数演示可执行的地方都带版本():
