@@ -75,7 +75,10 @@ _BOOKKEEPING = ("id", "instance_id", "created_at", "updated_at", "loaded_at",
 
 
 def _where(table, instance_id):
-    s = _SCOPE[table]
+    # _KIND_COLS 里有不在 _SCOPE 的表（lookup_table 是资产表不是业务表，
+    # 不该进「业务数据可得性」那张清单，但判「某一类标准在不在」要查它）。
+    # 这类表都自带 instance_id，直表过滤。
+    s = _SCOPE.get(table)
     return ("instance_id = %s", (instance_id,)) if s is None else (s, (instance_id,))
 
 
@@ -127,6 +130,11 @@ _KIND_COLS = (
     ("expense_detail", "expense_item"),
     ("expense_bill", "doc_type"),
     ("expense_bill", "biz_type"),
+    # 参照表：**不是每一类标准都是金额**。交通工具等级标准的值是「允许坐
+    # 什么等级」，塞不进 standard_limit.limit_amount（NUMERIC），
+    # 所以它在 lookup_table 里。判「这一类标准有没有」要连这张表一起看，
+    # 只看 standard_limit 会把已经做好的一类报成缺失。
+    ("lookup_table", "table_id"),
 )
 
 

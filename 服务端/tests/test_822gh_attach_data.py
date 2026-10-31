@@ -184,33 +184,87 @@ def test_复核发现的缺口必须进清单_不许只留在文字里():
     317 行，看着像标准都在，而 317 行**全是住宿费限额**。
     """
     p = rf.unlock_plan(IID)
-    ours = {x["要补的"] for x in p["ours"]}
-    assert ours == {"标准表里缺这一类：交通工具等级标准",
-                    "标准表里缺这一类：伙食补助费标准",
-                    "标准表里缺这一类：市内交通费标准"}, ours
+    # 2026-11-01：这三类标准当天就抽进库了，所以我方清单又空了。
+    # **空不是这条用例的重点**——重点是「复核发现的缺口要能被 unlock_plan
+    # 看见」这条路还通着，下面 test_表里有行不等于有那一类行 钉的就是它。
+    assert {x["要补的"] for x in p["ours"]} == set(), [x["要补的"] for x in p["ours"]]
     assert p["undecided"] == []
     assert len(p["theirs"]) >= 20
-    # 这三类在库里确实 0 行，而住宿费那一类有 317 行
-    kinds = rf.da.snapshot(IID)["kinds"]["standard_limit.std_type"]
-    assert kinds == {"住宿费限额标准"}, kinds
-    # 归属是我方（制度里有，抽取没落到标准表），不许算到客户头上
+    # 四类标准现在都在库里了：三类在 standard_limit，交通工具等级在 lookup_table
+    # （它的值是「允许坐什么等级」不是金额，塞不进 limit_amount）
+    kinds = rf.da.snapshot(IID)["kinds"]
+    assert kinds["standard_limit.std_type"] == {
+        "住宿费限额标准", "伙食补助费标准", "市内交通费标准"}, kinds["standard_limit.std_type"]
+    assert "交通工具等级标准" in kinds["lookup_table.table_id"]
+    # 归属仍然是我方（制度里有，是我方抽取），**不许因为做完了就改成客户**
     for n in ("交通工具等级标准", "伙食补助费标准", "市内交通费标准"):
         owner, ev = rf.source_of(n)
         assert owner == rf.IN_HAND, (n, owner)
-        assert "0 行" in ev or "抽取" in ev, (n, ev)
 
 
 def test_表里有行不等于有那一类行():
-    """只按表行数判，这三类规则会显示「数据齐备」而一条都判不了。
+    """standard_limit 有 317 行时看着像「标准都在」，而 317 行全是住宿费限额。
     这是同一个坑的第四次：自报 auto_judgeable → 自报 need_fields 齐备
-    → 字段有值但无适用单据 → 表有行但没有那一类行。"""
-    snap = rf.da.snapshot(IID)
-    assert snap["tables"]["standard_limit"] == 317
-    v, bl, nf, un, pa, ok = rf.judge(["交通工具等级标准"], snap)
+    → 字段有值但无适用单据 → 表有行但没有那一类行。
+
+    **用构造的快照验这个机制**，不依赖当下的库：三类标准 2026-11-01 已经
+    抽进库了，拿实数据验就验不到「缺这一类」那条分支，而那条分支正是
+    这个机制的全部意义。"""
+    snap = {"tables": {"standard_limit": 317}, "columns": {},
+            "kinds": {"standard_limit.std_type": {"住宿费限额标准"},
+                      "lookup_table.table_id": set()}}
+    v, bl, nf, un, pa, ok = rf.judge(["伙食补助费标准"], snap)
     assert v == "判不了", v
-    assert bl and "没有「交通工具等级标准」这一类" in bl[0], bl
-    v2 = rf.judge(["住宿费限额标准"], snap)[0]
-    assert v2 == "未发现数据缺口·待复核", v2
+    assert bl and "没有「伙食补助费标准」这一类" in bl[0], bl
+    assert not nf, "缺一类行不是缺字段，两者给人的动作不同"
+    # 有那一类行就算具备
+    assert rf.judge(["住宿费限额标准"], snap)[0] == "未发现数据缺口·待复核"
+    # 交通工具等级标准查的是 lookup_table 那一列，不是 standard_limit
+    assert rf.judge(["交通工具等级标准"], snap)[0] == "判不了"
+    snap["kinds"]["lookup_table.table_id"] = {"交通工具等级标准"}
+    assert rf.judge(["交通工具等级标准"], snap)[0] == "未发现数据缺口·待复核"
+
+
+def test_三类标准是从本实例自己的制度抽的():
+    """取值和福建海运集团**完全相同**（100/120/100、80），
+    但来源必须是 822港航 自己的条款号——同值只是交叉核对，不是出处。
+    来源记错了，制度改版时就不知道该跟着哪一份改。"""
+    rows = db.query("""SELECT std_type, region, limit_amount, source_clause,
+                              confidence, cross_checked
+                         FROM standard_limit WHERE instance_id = %s
+                          AND std_type IN ('伙食补助费标准','市内交通费标准')
+                        ORDER BY std_type, region""", (IID,))
+    assert len(rows) == 4, rows
+    for r in rows:
+        assert "闽港发资财〔2026〕3号" in r["source_clause"], r["source_clause"]
+        assert r["confidence"] == "原生文本"
+        assert r["cross_checked"] is True, "新旧两版逐条对过，这一列应为 True"
+    amts = {(r["std_type"], r["region"]): float(r["limit_amount"]) for r in rows}
+    assert amts[("伙食补助费标准", "省内")] == 100.0
+    assert amts[("伙食补助费标准", "省外（西藏、青海、新疆）")] == 120.0
+    assert amts[("市内交通费标准", "")] == 80.0
+
+
+def test_交通工具等级不进金额表():
+    """那张表的值是「允许坐什么等级」，不是钱。塞进 standard_limit 就得把
+    等级写进 region 或另造一列——又是一列两种语义，这个项目为此踩过三次。"""
+    assert db.scalar("""SELECT count(*) FROM standard_limit
+                         WHERE instance_id=%s AND std_type='交通工具等级标准'""",
+                     (IID,)) == 0
+    n = db.scalar("""SELECT count(*) FROM lookup_row WHERE instance_id=%s
+                      AND table_id='交通工具等级标准'""", (IID,))
+    assert n == 8, "2 个级别 × 4 种交通工具 = 8 行，实际 %d" % n
+    # 级别名原样抄制度，**没有往住宿费档位（EN21）上映射**
+    tiers = {r["row_key"]["tier"] for r in db.query(
+        """SELECT row_key FROM lookup_row WHERE instance_id=%s
+            AND table_id='交通工具等级标准'""", (IID,))}
+    assert len(tiers) == 2, tiers
+    en21 = {r["value"] for r in db.query(
+        "SELECT value FROM enum_value_current WHERE instance_id=%s AND enum_id='EN21'",
+        (IID,))}
+    assert not (tiers & en21) or tiers != en21, (
+        "交通工具等级表的档位被映射成住宿费档位了——两张表不是一套档位，"
+        "两个「其他人员」是不是同一群人还没问过客户")
 
 
 # ── 复核结论本身 ────────────────────────────────────────────────────────
@@ -249,3 +303,41 @@ def test_真能判的那几条范围要和库里数得出来的一致():
     assert n_inv_bills == 2, n_inv_bills
     for rid in ("TR-接待-10", "TR-接待-11", "TR-接待-13", "TR-接待-14"):
         assert rf.MANUAL_REVIEW[rid]["scope"].startswith("2/29"), rid
+
+
+def test_标准入库后重核的几条范围也要对得上库():
+    """三类标准 2026-11-01 入库后，7 条规则的复核结论从「缺标准」重写过。
+    **重写的结论同样要能被库里的数验证**，否则就只是换了一段好听的话。"""
+    # 明确非领导（部门负责人/员工/其他员工）且有火车票的单据数
+    n_clear = db.scalar("""
+        SELECT count(DISTINCT b.bill_no) FROM expense_bill b
+          JOIN invoice i ON i.bill_no = b.bill_no
+          JOIN employee e ON e.emp_no = b.submitter_no
+         WHERE b.instance_id = %s AND i.inv_type = '铁路电子客票'
+           AND e.rank_level IN ('部门负责人','员工','其他员工')""", (IID,))
+    assert n_clear == 12, n_clear
+    for rid in ("TR-差旅-02", "TR-差旅-17"):
+        assert rf.MANUAL_REVIEW[rid]["scope"].startswith("12/29"), rid
+    # 这 12 张单的火车票必须全是二等座——否则「判了不会误报」那句话不成立
+    seats = {r["detail_text"] for r in db.query("""
+        SELECT i.detail_text FROM expense_bill b
+          JOIN invoice i ON i.bill_no = b.bill_no
+          JOIN employee e ON e.emp_no = b.submitter_no
+         WHERE b.instance_id = %s AND i.inv_type = '铁路电子客票'
+           AND e.rank_level IN ('部门负责人','员工','其他员工')""", (IID,))}
+    assert all("二等座" in (s or "") for s in seats), (
+        "有非领导坐了二等座以外的席别，TR-差旅-02 的「全部合规」结论要重写")
+    # 有审批单且有市内交通费明细 / 伙食补助费明细的单据数
+    n_city = db.scalar("""
+        SELECT count(DISTINCT b.bill_no) FROM expense_bill b
+          JOIN trip_application t ON t.bill_no = b.bill_no
+          JOIN expense_detail d ON d.bill_no = b.bill_no
+         WHERE b.instance_id = %s AND d.expense_item LIKE '市内交通%%'""", (IID,))
+    n_meal = db.scalar("""
+        SELECT count(DISTINCT b.bill_no) FROM expense_bill b
+          JOIN trip_application t ON t.bill_no = b.bill_no
+          JOIN expense_detail d ON d.bill_no = b.bill_no
+         WHERE b.instance_id = %s AND d.expense_item = '伙食补助费'""", (IID,))
+    assert (n_city, n_meal) == (10, 12), (n_city, n_meal)
+    assert rf.MANUAL_REVIEW["TR-差旅-20"]["scope"].startswith("10/29")
+    assert rf.MANUAL_REVIEW["TR-差旅-15"]["scope"].startswith("12/29")
