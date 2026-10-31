@@ -43,3 +43,5 @@ __pycache__/
 .idea/
 Thumbs.db
 desktop.ini
+# Word 开着文档时生成的属主锁文件（~$xxx.docx），关掉就没了，不是产物
+~$*

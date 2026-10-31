@@ -229,3 +229,96 @@ def test_判不了的规则演示范围必须写零而不是留空():
     assert rows
     for r in rows:
         assert r["demo_scope"].startswith("0/"), (r["rule_id"], r["demo_scope"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 「库里有没有」和「该谁动」是两个维度
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-10-31 的第二次错判：第一版只判「库里有没有」，然后把所有「没有」
+# 一律当成「找客户要」。据此排出来的客户需求清单，涉及规则数前三名是
+# 出差审批单(26) / 附件(24) / 发票明细(16)——而这三样的原始材料早就在
+# 材料/822港航、单据、数据/ 下面躺着，是我方没解析：
+# 570 个附件文件一个没入库、报账单 5 个分区只读了 1 个、
+# 招待明细区库里没建表、员工「差旅级别」没映射成职级。
+# 差一点让客户去补他们已经给过的东西——那是最贵的一类错误，
+# 客户照着做完回来，发现问题还在。
+def test_材料在手的不许算到客户头上():
+    """这条用例守的就是那次错判。附件、发票、出差审批单、支付区、
+    员工职级——这些的原始材料都在，归属必须是我方。"""
+    for need in ("附件清单", "票据附件", "发票日期", "发票明细",
+                 "出差审批单", "出差天数", "审批单目的地",
+                 "收款人", "支付方式", "付款用途", "人员职级",
+                 "业务招待清单"):
+        owner, ev = rf.source_of(need)
+        assert owner == rf.IN_HAND, "%s 被算成了 %s" % (need, owner)
+        assert len(ev) > 8, "%s 的归属没写证据：%r" % (need, ev)
+
+
+def test_真缺的要留在客户清单里():
+    for need in ("审批完成时间", "业务发生日期", "单据提交时间",
+                 "出差日历", "员工常驻地址", "职级标准", "采购金额"):
+        owner, ev = rf.source_of(need)
+        assert owner == rf.NEED_CLIENT, "%s 被算成了 %s" % (need, owner)
+        assert ev, "%s 没写为什么是真缺" % need
+
+
+def test_没核过材料的一律待定不许默认成任何一方():
+    """默认成我方会让客户清单漏项；默认成客户会让客户去补已经给过的东西。
+    两种默认都错，所以认不出就说认不出。"""
+    owner, ev = rf.source_of("一个还没核过的数据项")
+    assert owner == rf.UNDECIDED, owner
+    assert ev
+
+
+def test_每个已登记的数据项都核过材料():
+    """**待定项必须是 0。** 留着待定项，它既不在我方清单也不在客户清单，
+    于是两边都不会做——这种漏项比排错清单还难发现。
+    新加数据项而没核材料时，这条会红。
+    """
+    rep = rf.report(IID)
+    undecided = sorted({n for x in rep["rules"]
+                        for n, o, _ in x["sources"] if o == rf.UNDECIDED})
+    assert not undecided, "这些数据项还没核过材料在不在手：%s" % undecided
+
+
+def test_清单按归属分开给():
+    """合在一张表里排序，我方的活和客户的活会交替出现，
+    而这份东西要发给客户——客户看到自己清单里有「我们已经给过的附件」，
+    下一句就是「这不是给过了吗」。"""
+    p = rf.unlock_plan(IID)
+    assert p["ours"] and p["theirs"]
+    assert not p["undecided"], p["undecided"]
+    assert len(p["ours"]) + len(p["theirs"]) + len(p["undecided"]) == len(p["items"])
+    # 附件必须在我方那张
+    assert any("attachment" in x["要补的"] for x in p["ours"])
+    assert not any("attachment" in x["要补的"] for x in p["theirs"])
+
+
+def test_一条规则两边都占时主归属算客户():
+    """只看主归属会把「还差客户一样」的规则排进我方清单，
+    然后以为我方做完它就能跑。两边都占时，主归属必须是更晚的那一方。"""
+    rep = rf.report(IID)
+    both = [x for x in rep["rules"]
+            if rf.IN_HAND in x["owners"] and rf.NEED_CLIENT in x["owners"]]
+    assert both, "没有两边都占的规则，这条用例没验到东西"
+    for x in both:
+        assert x["owner_main"] == rf.NEED_CLIENT, (x["rule_id"], x["owner_main"])
+
+
+def test_归属写在说明的最前面():
+    """放在一长串字段名后面，读的人翻到那儿之前
+    就已经按「缺数据＝找客户」处理掉了。"""
+    rep = rf.report(IID)
+    has_owner = {x["rule_id"] for x in rep["rules"] if x["owners"]}
+    assert has_owner
+    rows = db.query("""SELECT rule_id, demo_blocker FROM rule
+                        WHERE instance_id = %s AND version = 1
+                          AND demo_blocker LIKE %s""", (IID, "数据可行性%"))
+    assert rows
+    for r in rows:
+        # 没有任何缺口的规则（比如只是某个字段部分填充）本来就没有归属，
+        # 这一条不该要求它写。只有真有缺口的才必须把「该谁动」摆在最前。
+        if r["rule_id"] not in has_owner:
+            continue
+        head = r["demo_blocker"].split("｜")[0]
+        assert "该谁动" in head, (r["rule_id"], head[:60])

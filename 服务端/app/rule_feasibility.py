@@ -122,6 +122,97 @@ NEED_MAP = {
 
 # 模型把词表外的数据项写成「其他：<名字>」。**这个前缀要剥掉再查映射**，
 # 否则一个已经补进 NEED_MAP 的名字仍然会被判成「口径未定」。
+# ─────────────────────────────────────────────────────────────────────────────
+# 原始材料在不在手 —— **这一层是 2026-10-31 补的，补的原因是一次真实的错判**
+# ─────────────────────────────────────────────────────────────────────────────
+# 第一版只判「库里有没有这个数据」，然后把所有「没有」一律当成「找客户要」。
+# 据此排出来的客户需求清单，涉及规则数前三名是出差审批单(26)/附件(24)/
+# 发票明细(16)——而这三样的原始材料**早就在 材料/822港航、单据、数据/ 下面
+# 躺着**，是我方没解析：
+#   · 三个单据 zip 里共 570 个附件文件（388 个 PDF + 182 张 JPG）一个没入库
+#   · 报账单 xls 有 5 个分区（主表/归属/分摊/支付/出差地点），只读了主表
+#   · 招待费 xls 有「招待明细区」，而库里根本没建这个结构
+#   · 员工信息导出里有「差旅级别」，没映射成职级
+# 差一点就让客户去补他们已经给过的东西。
+#
+# 所以「库里有没有」和「该谁动」是两个维度，必须分开：
+#   库里有没有  → verdict（判不了 / 缺字段 / …），描述系统现状
+#   该谁动      → owner（我方 / 客户 / 待定），决定这条进谁的清单
+# 合成一个维度，就会把「我方的活」写进客户需求清单——那是最贵的一类错误：
+# 客户照着做完回来，发现问题还在。
+#
+# 每条都要带**证据**（材料里的哪个文件/哪个分区），不是「我觉得在手」。
+IN_HAND = "我方"          # 材料已收到，我方未解析/未建表
+NEED_CLIENT = "客户"      # 客户确实没给
+UNDECIDED = "待定"        # 还没核过材料，不许猜
+
+# key 是 NEED_MAP 的目标：优先 "表.列"，取不到再按 "表"。
+SOURCE_STATUS = {
+    "attachment": (IN_HAND,
+                   "三个单据 zip 里共 570 个附件文件（388 PDF + 182 JPG），未入库"),
+    "invoice": (IN_HAND,
+                "附件里有 388 个「发票附件-*.pdf」，未解析"),
+    "trip_application": (IN_HAND,
+                         "附件里有「港航本部出差审批流程*.pdf」；"
+                         "差旅报账单 xls 还有「出差地点」分区，均未读"),
+    "expense_bill.payee": (IN_HAND, "差旅/招待报账单 xls 的「支付区」有收款客商、收款账户名称"),
+    "expense_bill.pay_method": (IN_HAND, "同上，「支付区」有支付方式"),
+    "expense_bill.pay_purpose": (IN_HAND, "同上，「支付区」有付款用途"),
+    "expense_bill.claimant_no": (IN_HAND, "报账单 xls「主表区」有姓名、经办部门"),
+    "expense_bill.bearing_dept": (IN_HAND, "报账单 xls「归属区」有费用归属部门"),
+    "employee.rank_level": (IN_HAND, "员工信息导出有「差旅级别」（一级/二级…），未映射"),
+    "expense_detail": (IN_HAND, "报账单 xls「分摊区」已读，招待的「招待明细区」未读"),
+    # —— 真缺 ——
+    "expense_bill.doc_date": (NEED_CLIENT, "导出里只有「入账期间」（到月），没有单据日期"),
+    "approval_record": (NEED_CLIENT, "导出里只有最终「驳回原因」，没有审批流水"),
+    "rank_tier_map": (NEED_CLIENT,
+                      "12 份制度里没有职级→住宿档位的对应；住宿标准 317 条里"
+                      "105 条的档位列在原文件里没有表头；员工写「一级/二级」而"
+                      "标准表写「厅局级/其他人员」，两套对不上"),
+    "trip_calendar": (NEED_CLIENT,
+                      "报账单只有「出差地点」一列（如「宁德、福州」），"
+                      "没有逐日的出差日历"),
+    "employee.resident_city": (NEED_CLIENT, "员工信息导出里没有常驻地址"),
+}
+
+# 库里没有字段的那些（NEED_MAP 里标 NO_FIELD），同样要分「材料在不在手」。
+SOURCE_STATUS_NO_FIELD = {
+    "业务招待清单": (IN_HAND,
+                 "招待费 xls 有「招待明细区」：招待地点、发生日期、招待人数、"
+                 "陪同人数、领用酒水金额、招待对象名单。**库里要先建表**"),
+    "招待明细日期": (IN_HAND, "同上，「招待明细区」有发生日期"),
+    "单据提交时间": (NEED_CLIENT, "导出里没有提单时间，要客户增列"),
+}
+# 采购/招标/租房/备用金/会议 这些：822港航 给了制度但没给对应的单据样本，
+# 所以既缺表也缺数据，一律算真缺。列在这里是为了别让它们落进「待定」。
+for _k in ("供应商数量", "招标方式", "采购方式", "采购金额", "采购预算金额",
+           "采购合同", "采购人员信息", "招标代理机构信息", "投标邀请书发送对象",
+           "自行招标能力", "参会人员数量", "工作人员数量", "借用金额",
+           "预计归还日期", "月度租房合同金额", "公示状态", "违规事实记录",
+           "年度收入水平", "外派状态"):
+    SOURCE_STATUS_NO_FIELD[_k] = (
+        NEED_CLIENT, "822港航 提供了对应制度，但没有提供这一类业务的单据样本")
+
+
+def source_of(need_name):
+    """这个数据项的原始材料在不在手、该谁动。返回 (归属, 证据)。
+
+    **查不到一律返回「待定」，不许默认成任何一方。** 默认成「我方」会让
+    客户清单漏项；默认成「客户」会让客户去补已经给过的东西——后者正是
+    这一层要防的那个错。
+    """
+    n = normalize_need(need_name)
+    tgt = NEED_MAP.get(n)
+    if tgt == NO_FIELD:
+        return SOURCE_STATUS_NO_FIELD.get(n, (UNDECIDED, "还没核过材料"))
+    if not tgt:
+        return UNDECIDED, "数据项名还没定指什么"
+    t, c = tgt
+    if c and ("%s.%s" % (t, c)) in SOURCE_STATUS:
+        return SOURCE_STATUS["%s.%s" % (t, c)]
+    return SOURCE_STATUS.get(t, (UNDECIDED, "还没核过材料"))
+
+
 _OTHER_PREFIX = "其他："
 
 
@@ -225,17 +316,40 @@ def report(instance_id, created_by=None):
             out.append({"rule_id": r["rule_id"], "name": r["name"],
                         "verdict": "未登记数据项", "needs": [],
                         "blocked": [], "no_field": [], "unknown": [],
-                        "partial": [], "ok": []})
+                        "partial": [], "ok": [],
+                        "owners": [], "owner_main": "", "sources": []})
             continue
         v, bl, nfd, un, pa, okl = judge(nf, snap)
+        # **谁该动**，和「库里有没有」分开算。一条规则可能两边都占
+        # （有的数据我方没解析、有的客户真没给），所以 owner 是集合不是单值；
+        # 对外给一个 owner_main 方便排序，但**不要只看它**——
+        # 只看主归属会把「还差客户一样」的规则排进我方清单然后以为做完就能跑。
+        names = [x.split("（")[0] for x in bl + nfd]
+        srcs = [(n,) + source_of(n) for n in names]
+        owners = sorted({o for _, o, _ in srcs})
+        main = (NEED_CLIENT if NEED_CLIENT in owners
+                else (UNDECIDED if UNDECIDED in owners
+                      else (IN_HAND if IN_HAND in owners else "")))
         out.append({"rule_id": r["rule_id"], "name": r["name"], "verdict": v,
                     "needs": nf, "blocked": bl, "no_field": nfd,
-                    "unknown": un, "partial": pa, "ok": okl})
+                    "unknown": un, "partial": pa, "ok": okl,
+                    "owners": owners, "owner_main": main, "sources": srcs})
     return {"instance_id": instance_id, "snapshot": snap, "rules": out}
 
 
 def _blocker_text(it):
     bits = []
+    # **归属放在最前面。** 这一行决定这条规则进谁的清单；放在一长串
+    # 字段名后面，读的人翻到那儿之前就已经按「缺数据=找客户」处理掉了。
+    if it.get("owners"):
+        tag = {IN_HAND: "我方（材料已在手，未解析/未建表）",
+               NEED_CLIENT: "客户（确实没给）",
+               UNDECIDED: "待定（还没核过材料，不许当成客户的）"}
+        bits.append("该谁动：" + "＋".join(tag.get(o, o) for o in it["owners"]))
+        for n, o, ev in it.get("sources", []):
+            if o == IN_HAND:
+                bits.append("「%s」在手：%s" % (n, ev))
+    
     if it["blocked"]:
         bits.append("本实例没有这些数据：%s" % "；".join(it["blocked"]))
     if it["no_field"]:
@@ -314,18 +428,28 @@ def unlock_plan(instance_id, created_by=None):
             # **用 set**：同义数据项会映到同一列（「审批日期」和「审批时间」
             # 都是 approval_record.approved_at），用 list 会把同一条规则
             # 数两次，于是「涉及 3 条规则」里其实只有 2 条。
-            b = buckets.setdefault(key, {"涉及规则": set(), "仅差这一样": set()})
+            o, ev = source_of(m)
+            b = buckets.setdefault(key, {"涉及规则": set(), "仅差这一样": set(),
+                                         "该谁动": o, "证据": ev})
             b["涉及规则"].add(rid)
             if len(set(miss)) == 1:
                 b["仅差这一样"].add(rid)
     out = sorted(({"要补的": k,
+                   "该谁动": buckets[k]["该谁动"],
+                   "证据": buckets[k]["证据"],
                    "涉及规则数": len(v["涉及规则"]),
                    "补完即可判": len(v["仅差这一样"]),
                    "规则": sorted(v["涉及规则"])}
                   for k, v in buckets.items()),
                  key=lambda x: (-x["补完即可判"], -x["涉及规则数"]))
+    # **按归属分成两张清单。** 合在一张里排序，我方的活和客户的活会交替
+    # 出现，而这份东西是要发给客户的——客户看到自己清单里有「我们已经给过
+    # 的附件」，下一句就是「这不是给过了吗」。
     return {"instance_id": instance_id, "items": out,
-            "rules_blocked": len(need_of)}
+            "rules_blocked": len(need_of),
+            "ours": [x for x in out if x["该谁动"] == IN_HAND],
+            "theirs": [x for x in out if x["该谁动"] == NEED_CLIENT],
+            "undecided": [x for x in out if x["该谁动"] == UNDECIDED]}
 
 
 def _scope_text(it, n_bills):
