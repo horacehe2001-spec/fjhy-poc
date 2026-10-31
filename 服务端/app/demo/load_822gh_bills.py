@@ -11,6 +11,7 @@ r"""822港航 的 29 张真实报账单 → 库（expense_bill / expense_detail 
 源：材料\822港航、单据、数据\*.zip 里的两份 .xls 导出
     · 822港航公司差旅报账单-含驳回意见(2).xls  （20 张）
     · 822港航公司招待费报账单-含驳回意见.xls   （9 张）
+  外加同目录的 员工信息导出(2026-10-27).xlsx （49 人，真工号）
 日常费用那个包里**只有附件 zip、没有明细表**，所以那 53 张进不来，不编。
 
 几条口径：
@@ -29,6 +30,23 @@ r"""822港航 的 29 张真实报账单 → 库（expense_bill / expense_detail 
 
 4. 单据状态一律「已驳回」：导出表里没有状态列，这是从驳回原因非空推出来的，
    本体注释里写明了是推出来的，不是读出来的。
+
+5. **工号用员工导出里的真工号**（2026-10-31 补）。原来 29 张单上的 14 个
+   报账人全是姓名哈希派生的 `SMP-xxxxxxxx` 占位号——那是在「导出表里没有
+   工号列」的前提下的权宜做法，而这个前提是错的：工号在**员工信息导出**
+   那份文件里，一直都在手上。顺带把员工从 14 人补到 49 人全量，
+   职级（主岗）也一起入库。
+   占位号规则保留，给**导出里没有的人**兜底：实测报账人「雒朔」
+   在 49 人全量导出里查不到（离职或外部人员，待客户确认），
+   这一条仍然走 SMP- 占位号，不编一个工号给她。
+
+6. **收款账户名称不入 payee_account**。那一列在 fjhy 里装的是银行卡号
+   （实测 `622900000000000000` 这种），822港航 导出里给的是**账户名**
+   （人名或公司名）。同一列塞两种语义，就是这个项目里刚踩过的
+   `rule.feasibility` 那个坑的翻版。822港航 的导出里**没有银行账号**
+   （在附件的银行回单里），所以这一列留空。
+   「收款客商 ≠ 收款账户名称」这件事本身是审核抓手，实测 28 行里有 1 行
+   不一致，如实记进 remark，不丢掉。
 """
 import datetime
 import io
@@ -50,11 +68,17 @@ ROOT = os.path.join(config.PROJECT_ROOT, "材料", "822港航、单据、数据"
 # 那是文件库的「引用根」，0015 的只读纪律管着它，一个字节都不许写。
 WORK = os.path.join(config.SERVER_DIR, "var", "822gh_import")
 XLS_DIR = os.path.join(WORK, "xls")
+# 员工全量导出。**不在压缩包里**，是单独一份 xlsx，和报账单导出同级目录。
+EMP_XLSX = os.path.join(ROOT, "员工信息导出(2026-10-27).xlsx")
 
-# (压缩包, 主表工作表名, 分摊工作表名, 单据类型)
+# (压缩包, 主表工作表名, 分摊工作表名, 单据类型, 费用归属工作表名)
+# 两份导出的工作表名不一样（一份叫「归属区」，一份叫「费用归属区」），
+# 所以归属表名跟着源文件走，不要图省事写死一个。
+# 「支付区」两份同名，在下面直接写死。
 SRC = [
-    ("822港航差旅费用报销单+附件.zip", "主表区", "分摊区", "差旅费报账单"),
-    ("822港航业务接待费单据+附件.zip", "头表区", "费用分摊区", "业务招待费报账单"),
+    ("822港航差旅费用报销单+附件.zip", "主表区", "分摊区", "差旅费报账单", "归属区"),
+    ("822港航业务接待费单据+附件.zip", "头表区", "费用分摊区", "业务招待费报账单",
+     "费用归属区"),
 ]
 out = []
 
@@ -87,10 +111,94 @@ def sheet_rows(wb, name):
     return hdr, rows
 
 
+def emp_master():
+    """读 员工信息导出(2026-10-27).xlsx 的「主表区」→ 49 人。
+
+    只取四列：员工工号 / 员工姓名 / 部门 / 主岗。
+
+    **电话号码一列故意不取。** employee 表没有这个字段，而它是真实手机号；
+    为了存它去加一列，等于多开一个对外出口要守——这个项目里脱敏的教训
+    就是出口越多越守不住。需要联系人时查原始导出文件。
+
+    **差旅级别一列也不取。** 49 人全是「二级」，而住宿标准表有三档，
+    对不上；这是要客户先解释的口径问题，映射关系没定之前入库就是在猜。
+    职级存的是「主岗」（董事长/副总经理/部门负责人/员工/其他员工），
+    对应本体 EN12，见 本体_822gh_v0.1.yaml 里 EN12 的注释。
+
+    「兼岗信息2」那张表（34 条、16 个人有兼岗）暂不入库：employee 是一人
+    一行的结构，装不下一人多岗，要装得先加表。先记在这里，别当没看见。
+    """
+    if not os.path.exists(EMP_XLSX):
+        p("!! 找不到 %s，员工退回到「只装单据上出现过的报账人」" % EMP_XLSX)
+        return []
+    import openpyxl
+    wb = openpyxl.load_workbook(EMP_XLSX, read_only=True, data_only=True)
+    try:
+        ws = wb["主表区"]
+        rows = list(ws.iter_rows(values_only=True))
+    finally:
+        wb.close()
+    hdr = ["" if c is None else str(c).strip() for c in rows[0]]
+    need = ("员工工号", "员工姓名", "部门", "主岗")
+    assert all(k in hdr for k in need), "员工导出表头变了：%s" % hdr
+    recs = []
+    for r in rows[1:]:
+        if not r or r[0] is None:
+            continue
+        d = {hdr[i]: ("" if c is None else str(c).strip())
+             for i, c in enumerate(r) if i < len(hdr)}
+        if not d.get("员工工号") or not d.get("员工姓名"):
+            continue
+        recs.append({"emp_no": d["员工工号"], "name": d["员工姓名"],
+                     "dept": d["部门"] or None, "rank_level": d["主岗"] or None})
+    nos = [e["emp_no"] for e in recs]
+    assert len(set(nos)) == len(nos), "员工导出里有重复工号"
+    return recs
+
+
+def pay_fields(rs):
+    """支付区的若干行 → 落到 expense_bill 单列字段上的取值。
+
+    一张单可能有多行（实测 FJPG-BX2607280255 有 2 行：两个收款人各一笔）。
+    **某一列只在所有行取值一致时才落字段**；不一致的留空，并把原始取值
+    如实记一句进 remark。挑其中一行当代表就是在编数据，而且编得看起来
+    很合理——这种错下游查不出来。
+
+    付款金额是例外：多行求和就是「该单付款合计」，语义本来就是加总，
+    不是从几个候选里挑一个。
+    """
+    if not rs:
+        return {}, []
+
+    def one(col):
+        vals = {str(r.get(col) or "").strip() for r in rs}
+        vals.discard("")
+        return vals.pop() if len(vals) == 1 else None
+
+    notes = []
+    payee, acct = one("收款客商"), one("收款账户名称")
+    if payee is None or acct is None:
+        notes.append("支付区有 %d 行、收款人不止一个：%s" % (
+            len(rs), "；".join(
+                "%s→%s %.2f" % (str(r.get("收款客商") or "").strip(),
+                                str(r.get("收款账户名称") or "").strip(),
+                                float(r.get("付款金额") or 0)) for r in rs)))
+    elif payee != acct:
+        notes.append("支付区的收款客商「%s」与收款账户名称「%s」不一致"
+                     % (payee, acct))
+    tot = sum(float(r.get("付款金额") or 0) for r in rs)
+    return {
+        "payee": payee,
+        "pay_method": one("支付方式"),
+        "pay_purpose": one("付款用途"),
+        "pay_amount": tot or None,
+    }, notes
+
+
 def ensure_xls():
     os.makedirs(XLS_DIR, exist_ok=True)
     found = {}
-    for zf, _, _, _ in SRC:
+    for zf in [s[0] for s in SRC]:
         z = zipfile.ZipFile(os.path.join(ROOT, zf))
         for n in z.namelist():
             if n.lower().endswith(".xls"):
@@ -106,9 +214,10 @@ def ensure_xls():
 
 
 xls = ensure_xls()
+emps = emp_master()
 bills, details, places, reviews = [], [], [], []
 
-for zf, main_sheet, alloc_sheet, doc_type in SRC:
+for zf, main_sheet, alloc_sheet, doc_type, own_sheet in SRC:
     path = xls.get(zf)
     if not path:
         p("!! %s 里没找到明细表，跳过" % zf)
@@ -117,15 +226,39 @@ for zf, main_sheet, alloc_sheet, doc_type in SRC:
     _, mains = sheet_rows(wb, main_sheet)
     _, allocs = sheet_rows(wb, alloc_sheet)
     _, pls = sheet_rows(wb, "出差地点")
+    _, pays = sheet_rows(wb, "支付区")
+    _, owns = sheet_rows(wb, own_sheet)
     p("=== %s ===" % os.path.basename(path))
-    p("  主表 %d 行 / 分摊 %d 行 / 出差地点 %d 行" % (len(mains), len(allocs), len(pls)))
+    p("  主表 %d / 分摊 %d / 出差地点 %d / 支付区 %d / %s %d"
+      % (len(mains), len(allocs), len(pls), len(pays), own_sheet, len(owns)))
+
+    pay_of = {}
+    for r in pays:
+        bn = str(r.get("单据号") or "").strip()
+        if bn:
+            pay_of.setdefault(bn, []).append(r)
+    own_of = {}
+    for r in owns:
+        bn = str(r.get("单据号") or "").strip()
+        if bn:
+            own_of.setdefault(bn, []).append(r)
 
     for m in mains:
         bn = str(m.get("单据号") or "").strip()
         if not bn:
             continue
         rej = str(m.get("驳回原因") or "").strip()
-        bills.append({
+        pf, notes = pay_fields(pay_of.get(bn, []))
+        ow = own_of.get(bn, [])
+        # 归属区实测每张单 1 行（29/29）。真出现多行就不落字段、记一句，
+        # 和支付区同一条纪律：宁可空着，不许挑一行。
+        bearing = (str(ow[0].get("费用归属部门") or "").strip() or None
+                   if len(ow) == 1 else None)
+        if len(ow) > 1:
+            notes.append("%s 有 %d 行，费用归属部门不唯一：%s" % (
+                own_sheet, len(ow),
+                "、".join(str(r.get("费用归属部门") or "").strip() for r in ow)))
+        b = {
             "bill_no": bn,
             "doc_type": doc_type,
             "biz_type": str(m.get("业务大类") or "").strip() or None,
@@ -136,7 +269,14 @@ for zf, main_sheet, alloc_sheet, doc_type in SRC:
             "currency": str(m.get("报账币种") or "").strip() or None,
             "summary": str(m.get("事由") or "").strip() or None,
             "period": excel_date(m.get("入账期间")),
-        })
+            "bearing_dept": bearing,
+            "notes": notes,
+            # 支付区缺这张单时这四个保持 None（pay_fields 返回空字典）
+            "payee": None, "pay_method": None,
+            "pay_purpose": None, "pay_amount": None,
+        }
+        b.update(pf)
+        bills.append(b)
         if rej:
             reviews.append({"bill_no": bn, "reason": rej})
     for a in allocs:
@@ -168,6 +308,31 @@ p("  金额合计 %.2f 元，均单 %.2f 元" % (amt, amt / max(1, len(bills))))
 nod = [b for b in bills if not b["period"]]
 p("  入账期间还原不出的: %d 张" % len(nod))
 p("")
+p("=== 支付区 / 归属区（2026-10-31 补读）===")
+p("  收款人落到字段的 %d/%d 张；支付方式 %d 张；付款用途 %d 张；付款金额 %d 张"
+  % (sum(1 for b in bills if b["payee"]), len(bills),
+     sum(1 for b in bills if b["pay_method"]),
+     sum(1 for b in bills if b["pay_purpose"]),
+     sum(1 for b in bills if b["pay_amount"])))
+p("  费用归属部门落到字段的 %d/%d 张；取值 %s"
+  % (sum(1 for b in bills if b["bearing_dept"]), len(bills),
+     sorted({b["bearing_dept"] for b in bills if b["bearing_dept"]})))
+for b in bills:
+    for n in b["notes"]:
+        p("  · %s  %s" % (b["bill_no"], n))
+p("  收款账户名称（银行账号那一列）**故意没入库**：见本文件口径 6。")
+p("  成本中心/部门属性/项目名称/项目类型 读到了但库里没有对应字段，未入库。")
+p("")
+p("=== 员工（2026-10-31 补全）===")
+p("  员工导出 %d 人；部门 %d 个；职级（主岗）%s"
+  % (len(emps), len({e["dept"] for e in emps if e["dept"]}),
+     {v: sum(1 for e in emps if e["rank_level"] == v)
+      for v in sorted({e["rank_level"] for e in emps if e["rank_level"]})}))
+_real = {e["name"] for e in emps}
+_subs = {b["submitter"] for b in bills if b["submitter"]}
+p("  单据上的报账人 %d 人，其中导出里查不到的 %d 人：%s（仍用 SMP- 占位号）"
+  % (len(_subs), len(_subs - _real), sorted(_subs - _real) or "无"))
+p("")
 p("=== 前 6 张 ===")
 for b in bills[:6]:
     p("  %-20s %-12s %-28s %8.2f  %s" % (b["bill_no"], b["doc_type"][:12],
@@ -195,12 +360,44 @@ have4 = {r["value"] for r in db.query(
     "SELECT value FROM enum_value_current WHERE instance_id=%s AND enum_id='EN04'", (IID,))}
 used4 = {d["expense_item"] for d in details if d["expense_item"]}
 p("  EN04 expense_item 用到 %d 种，缺 %s" % (len(used4), sorted(used4 - have4) or "无"))
+# employee.rank_enum 是生成列（恒为 'EN12'），外键指向本实例的 EN12 枚举值。
+# 缺一个值，整条 INSERT 被拒；所以装人之前先把这个闸过一遍。
+have12 = {r["value"] for r in db.query(
+    "SELECT value FROM enum_value_current WHERE instance_id=%s AND enum_id='EN12'",
+    (IID,))}
+used12 = {e["rank_level"] for e in emps if e["rank_level"]}
+p("  EN12 rank_level  用到 %d 种，缺 %s" % (len(used12), sorted(used12 - have12) or "无"))
 
 ORG_ID = "ORG-822GH"
 
 
+def check_emp_no_clash(nos):
+    """真工号入库前查跨实例撞号。
+
+    `employee` 的主键是 **(emp_no) 单列，不含 instance_id**，而两家公司
+    都在福建港口集团下、用同一套 HR 系统，工号段是重叠的
+    （fjhy 库里已有 1000505 / 2010680 / 2002080 这种）。
+    撞上了会被 `ON CONFLICT (emp_no) DO NOTHING` 悄悄吞掉：822港航 的人
+    不会入库，而 `expense_bill.submitter_no` 会指到**另一家公司的员工行**
+    上去——外键照样满足，页面照样显示一个人名，错得毫无声响。
+
+    2026-10-31 实测：49 个工号与库里 0 条相撞。**但这是当下的事实，
+    不是结构上的保证**，所以这个检查留着，撞上就停，不要悄悄跳过。
+    真要从根上解决，得把主键改成 (instance_id, emp_no)，那是一次迁移。
+    """
+    if not nos:
+        return
+    hit = db.query("""SELECT emp_no, name, instance_id FROM employee
+                      WHERE instance_id <> %s AND emp_no = ANY(%s)""", (IID, nos))
+    if hit:
+        raise SystemExit(
+            "跨实例工号相撞 %d 条，已停止（employee 主键不含 instance_id）：\n%s"
+            % (len(hit), "\n".join("  %s 已属于 %s" % (h["emp_no"], h["instance_id"])
+                                   for h in hit)))
+
+
 def emp_no(name):
-    """由姓名派生占位工号。导出表里**没有工号列**，而 employee 要主键。
+    """由姓名派生占位工号，给**员工导出里查不到的人**兜底（实测 1 人：雒朔）。
 
     规则照抄 demo/seed.py 的 _emp()，连同它那条用代价换来的纪律：
     **不能把姓名直接拼进工号**。第一版是 "SMP-" + 姓名，结果 `SMP-岑柏`
@@ -214,8 +411,17 @@ def emp_no(name):
     return "SMP-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:8].upper()
 
 
+REAL_NO = {e["name"]: e["emp_no"] for e in emps}
+
+
+def emp_no_of(name):
+    """报账人姓名 → 工号。导出里有就用真工号，没有才派生占位号。"""
+    return REAL_NO.get(name) or emp_no(name)
+
+
 # ── 入库 ───────────────────────────────────────────────────────────────────
 if os.environ.get("WRITE") == "1":
+    check_emp_no_clash([e["emp_no"] for e in emps])
     place_of = {x["bill_no"]: x["place"] for x in places}
     with db.tx() as conn:
         cur = conn.cursor()
@@ -226,35 +432,54 @@ if os.environ.get("WRITE") == "1":
                        VALUES (%s,%s,%s,TRUE)
                        ON CONFLICT (org_id) DO NOTHING""",
                     (IID, ORG_ID, "福建省港航建设发展有限公司"))
-        # 员工：姓名来自导出表，**部门也一起记**（fjhy 那批 dept 是空的，
-        # 这里有就存，别浪费一个现成的字段）。职级留空——导出表没给，不猜。
-        seen_emp = {}
-        for b in bills:
-            if b["submitter"] and b["submitter"] not in seen_emp:
-                seen_emp[b["submitter"]] = b["claim_dept"]
-        for nm, dept in seen_emp.items():
-            cur.execute("""INSERT INTO employee(instance_id, emp_no, name, dept, org_id)
-                           VALUES (%s,%s,%s,%s,%s) ON CONFLICT (emp_no) DO NOTHING""",
-                        (IID, emp_no(nm), nm, dept, ORG_ID))
         # 可重入：先清掉本实例这批。**只清 822gh**，别家一行不动。
+        # 顺序要紧：expense_bill.submitter_no 有外键指向 employee，
+        # 先删员工会被外键拦住，所以单据先走。
         cur.execute("DELETE FROM manual_review WHERE bill_no IN "
                     "(SELECT bill_no FROM expense_bill WHERE instance_id=%s)", (IID,))
         cur.execute("DELETE FROM expense_bill WHERE instance_id=%s", (IID,))
+        cur.execute("DELETE FROM employee WHERE instance_id=%s", (IID,))
+        # 员工：员工信息导出的 49 人全量，真工号 + 部门 + 职级（主岗）。
+        # 原来只装「单据上出现过的 14 个报账人」，职级一律留空——
+        # 那不是数据没给，是我方没读那份文件。
+        for e in emps:
+            cur.execute("""INSERT INTO employee(instance_id, emp_no, name, dept,
+                               rank_level, org_id)
+                           VALUES (%s,%s,%s,%s,%s,%s)""",
+                        (IID, e["emp_no"], e["name"], e["dept"],
+                         e["rank_level"], ORG_ID))
+        # 导出里查不到、但单据上报过账的人：补一条占位记录，职级留空。
+        # 不给她编职级，也不把她从员工表里漏掉（漏了单据外键就挂不上）。
+        for nm, dept in {b["submitter"]: b["claim_dept"] for b in bills
+                         if b["submitter"]}.items():
+            if nm not in REAL_NO:
+                cur.execute("""INSERT INTO employee(instance_id, emp_no, name, dept,
+                                   org_id) VALUES (%s,%s,%s,%s,%s)
+                               ON CONFLICT (emp_no) DO NOTHING""",
+                            (IID, emp_no(nm), nm, dept, ORG_ID))
         for b in bills:
+            # remark 收的是「读到了、但库里没有语义对得上的字段」的东西，
+            # 每条都注明出处。**不塞进一个语义不对的字段**。
+            rk = []
+            if place_of.get(b["bill_no"]):
+                rk.append("出差地点（导出表「出差地点」工作表）：%s"
+                          % place_of[b["bill_no"]])
+            rk.extend(b["notes"])
             cur.execute("""
                 INSERT INTO expense_bill(instance_id, bill_no, doc_type, biz_type,
                     bill_status, claim_dept, submitter_no, amount, currency, summary,
-                    booking_period, remark, org_id, is_demo, is_multi_person)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,FALSE,FALSE)""",
+                    booking_period, remark, org_id, bearing_dept, payee, pay_method,
+                    pay_purpose, pay_amount, is_demo, is_multi_person)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                        FALSE,FALSE)""",
                 (IID, b["bill_no"], b["doc_type"], b["biz_type"], b["bill_status"],
-                 b["claim_dept"], emp_no(b["submitter"]) if b["submitter"] else None,
+                 b["claim_dept"],
+                 emp_no_of(b["submitter"]) if b["submitter"] else None,
                  b["amount"], b["currency"],
                  b["summary"], str(b["period"] or "") or None,
-                 # 出差地点没有能落的字段（trip_application 要审批单号，这批没有），
-                 # 如实放进 remark 并注明来源，**不塞进一个语义不对的字段**。
-                 ("出差地点（导出表「出差地点」工作表）：%s" % place_of[b["bill_no"]])
-                 if place_of.get(b["bill_no"]) else None,
-                 ORG_ID))
+                 "；".join(rk) or None,
+                 ORG_ID, b["bearing_dept"], b["payee"], b["pay_method"],
+                 b["pay_purpose"], b["pay_amount"]))
         # 明细的 instance_id 由迁移 0046 的触发器从单据继承，这里不传
         for i, d in enumerate(details, 1):
             cur.execute("""INSERT INTO expense_detail(bill_no, expense_item, amount,
@@ -273,11 +498,30 @@ if os.environ.get("WRITE") == "1":
             ("""SELECT count(*) FROM expense_detail d JOIN expense_bill b
                   ON b.bill_no=d.bill_no WHERE b.instance_id=%s""", "明细"),
             ("""SELECT count(*) FROM manual_review m JOIN expense_bill b
-                  ON b.bill_no=m.bill_no WHERE b.instance_id=%s""", "人工驳回")):
+                  ON b.bill_no=m.bill_no WHERE b.instance_id=%s""", "人工驳回"),
+            ("SELECT count(*) FROM employee WHERE instance_id=%s", "员工"),
+            ("SELECT count(rank_level) FROM employee WHERE instance_id=%s",
+             "员工·有职级"),
+            ("""SELECT count(*) FROM employee WHERE instance_id=%s
+                  AND left(emp_no,4)='SMP-'""", "员工·占位工号"),
+            ("SELECT count(payee) FROM expense_bill WHERE instance_id=%s", "单据·收款人"),
+            ("""SELECT count(bearing_dept) FROM expense_bill WHERE instance_id=%s""",
+             "单据·费用归属部门"),
+            ("""SELECT count(*) FROM expense_bill WHERE instance_id=%s
+                  AND left(submitter_no,4)='SMP-'""", "单据·报账人仍是占位号")):
         p("  %s: %s" % (lab, db.scalar(q, (IID,))))
     p("  明细 instance_id（应由触发器自动填）: %s"
       % {r["instance_id"]: r["n"] for r in db.query(
           "SELECT instance_id, count(*) n FROM expense_detail GROUP BY 1")})
+    # 补全 49 人之后，脱敏闭集合必须把这 49 个姓名全收进去。
+    # 这一句不是装饰：补数据顺带堵脱敏的洞，是这次要的结果之一，
+    # 没当场核过就不算做完。
+    from app import mask                                             # noqa: PLC0415
+    mask.refresh_names()
+    have = set(mask.name_set())
+    miss = sorted({e["name"] for e in emps} - have)
+    p("  脱敏闭集合 %d 个；49 名员工里不在集合内 %d 个%s"
+      % (len(have), len(miss), ("：%s" % miss) if miss else "（0，已全覆盖）"))
 else:
     p("")
     p("（干跑，没写库。设 WRITE=1 才写）")

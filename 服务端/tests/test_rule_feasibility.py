@@ -203,6 +203,60 @@ def test_没有数据缺口不等于能判所以必须有人复核():
         "这些规则没发现数据缺口但也没人复核过，不许当成可编译：%s" % unreviewed)
 
 
+def test_字段齐备但没有适用单据不算能判():
+    """同一个坑的第三次：字段真有值了，但这个实例一张会议费单都没有。
+
+    2026-10-31 补读支付区之后，`支付方式`/`付款用途` 从全空变成 29/29，
+    TR-会议-07（会议费支付必须银行转账）立刻落到「未发现数据缺口」。
+    可这个实例只有差旅 20 张 + 招待 9 张，会议费 0 张——编译出来就是
+    一条永远不触发的规则，而报告上显示它「已覆盖」。
+    """
+    n = rf.applicable_bills(IID)
+    assert n["差旅"] == 20 and n["接待"] == 9 and n["通用"] == 29, n
+    assert n["会议"] == 0 and n["备用金"] == 0 and n["日常"] == 0, n
+    rep = rf.report(IID)
+    for x in rep["rules"]:
+        if x["n_bills"] == 0:
+            assert x["verdict"] != "未发现数据缺口·待复核", (
+                "%s 所在维度 %s 一张适用单据都没有，不许落到待复核"
+                % (x["rule_id"], x["dimension"]))
+    noscope = sorted(x["rule_id"] for x in rep["rules"]
+                     if x["verdict"] == rf.NO_SCOPE)
+    assert "TR-会议-07" in noscope and "TR-备用金-02" in noscope, noscope
+
+
+def test_适用单据按单据类型数而不是按费用大类():
+    """关键词匹配只能落在**单据类型**上。822港航 有一个费用大类叫
+    「国内差旅费(参加会议/培训产生）」，里面带「会议」两个字——
+    要是拿它来数，会议维度就会凭空多出几张单，然后一堆会议规则
+    被判成「有适用单据」。误报和漏报一样致命。"""
+    rows = db.query("""SELECT DISTINCT biz_type FROM expense_bill
+                        WHERE instance_id = %s""", (IID,))
+    assert any("会议" in (r["biz_type"] or "") for r in rows), (
+        "这条用例的前提没了：费用大类里已经没有带「会议」的了")
+    assert rf.applicable_bills(IID)["会议"] == 0
+
+
+def test_每个维度都登记了适用单据口径():
+    """库里出现的维度必须在 DIM_DOC_KEYWORDS 里有一条。
+    漏登记会让那个维度的 n_bills 变成 None，于是这一层整层悄悄不生效。"""
+    dims = {r["dimension"] for r in db.query(
+        "SELECT DISTINCT dimension FROM rule WHERE instance_id = %s", (IID,))}
+    missing = sorted(dims - set(rf.DIM_DOC_KEYWORDS))
+    assert not missing, "这些维度没登记适用单据口径：%s" % missing
+
+
+def test_没登记的维度不下结论():
+    """福建海运集团用的是 D1~D10 那套维度编号，不在这张表里。
+    **不认识的维度要返回 None（不知道），不许当成 0（没有单据）**——
+    当成 0 会把另一家的规则全判成「无适用单据」。"""
+    rep = rf.report("fjhy")
+    assert rep["rules"], "fjhy 没有规则，这条用例验不了"
+    assert all(x["n_bills"] is None for x in rep["rules"]), (
+        [x["dimension"] for x in rep["rules"] if x["n_bills"] is not None][:5])
+    assert not [x for x in rep["rules"] if x["verdict"] == rf.NO_SCOPE]
+
+
 def test_结论里不许出现可判这种承诺口径():
     """「可判」会让人直接去编译。这一档测的只是「它自己列出的数据项都在」。"""
     snap = da.snapshot(IID)

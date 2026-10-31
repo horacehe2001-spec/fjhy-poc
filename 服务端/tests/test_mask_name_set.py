@@ -215,6 +215,44 @@ def test_残留一个姓氏不算漏报():
     assert not [g for g in mask.verify_name_coverage() if g[1] == one]
 
 
+def test_收款人是单位名不算漏报():
+    """收款人可以是单位。实测 822港航 支付区里有
+    「福州市八方物业管理有限公司」——它不是人名，脱敏后理应原样留着，
+    自检把它报成欠脱就是误报。误报和漏报同样致命：报假阳性，
+    下次就没人看这个自检了。"""
+    assert mask.looks_like_org("福州市八方物业管理有限公司")
+    assert mask.looks_like_org("厦门轮船有限公司")
+    assert mask.looks_like_org("福建省港航建设发展有限公司")
+    mask.refresh_names()
+    gaps, skipped = mask.verify_name_coverage(with_ignored=True)
+    assert not gaps, "姓名源列还有没进闭集合的真名：%s" % gaps[:10]
+    # 跳过的必须能列出来：「查过是阴性」和「碰巧没看见」是两回事
+    assert all(mask.looks_like_org(s[2]) for s in skipped), skipped
+
+
+def test_单位名规则不许把人名吃掉():
+    """反方向：人名、2~3 字的词、以及以单位后缀结尾但只有 2~3 字的，
+    都不许被当成单位名放过——放过一个就是一个静默的漏报窗口。"""
+    for n in ("靳纭芷", "雒朔", "訾承望", "欧阳明月"):
+        assert not mask.looks_like_org(n), n
+    # 「酒店」「分店」这类 2~3 字本身就是普通词，长度闸必须拦住
+    for n in ("酒店", "门店", "总公司"):
+        assert not mask.looks_like_org(n), n
+    # 不带单位后缀的长串也不许放过（可能是黏在一起的人名）
+    assert not mask.looks_like_org("靳纭芷莆田差旅")
+
+
+def test_被代报人仍在内置名单里_但根因是我方没读员工导出():
+    """这条钉的是**注释里那句归因**，不是行为：原来写「客户没给工号」，
+    而员工导出里一直有她（工号 2005235）。归因错了，清单就会让客户去补
+    他们已经给过的东西。现在她既在库里也在内置名单里，两头都验。"""
+    assert "靳纭芷" in mask._FREETEXT_ONLY_NAMES
+    mask.refresh_names()
+    assert "靳纭芷" in mask.name_set()
+    assert db.query("SELECT 1 FROM employee WHERE instance_id='822gh' "
+                    "AND name='靳纭芷'"), "49 人全量没装进来，这条用例的前提没了"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 退化行为
 # ─────────────────────────────────────────────────────────────────────────────

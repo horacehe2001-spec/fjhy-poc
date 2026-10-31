@@ -213,6 +213,58 @@ def source_of(need_name):
     return SOURCE_STATUS.get(t, (UNDECIDED, "还没核过材料"))
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 「字段有值」不等于「有单据可判」
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-10-31 补读支付区之后，`支付方式`/`付款用途` 从全空变成 29/29 有值，
+# 于是 TR-会议-07（会议费支付必须银行转账）和 TR-备用金-02（备用金专款专用）
+# 立刻落到「未发现数据缺口」。但这个实例**一张会议费单、一张备用金单都没有**
+# ——字段齐备、适用集合为空，编译出来就是一条永远不触发的规则，
+# 而报告上会显示它「已覆盖」。这是同一个坑的第三次：
+#   第一次 自报 auto_judgeable=yes            → 库里 0 行
+#   第二次 自报 need_fields 齐备               → 漏列了关键数据项
+#   第三次 need_fields 真齐备、字段也真有值     → 没有适用的单据
+# 所以这一层改成**可测**的：按维度数一遍本实例有多少张适用单据。
+#
+# 维度 → 单据类型关键词。按关键词匹配而不是写死全名：单据类型名称会有
+# 「会议费报账单 / 会议费用报账单」这种变体，写死全名就会在变体出现时
+# 静默匹配到 0 张——而 0 张恰好是个看起来很合理的数字。
+# None 表示「全部单据都适用」。
+# **没登记的维度返回 None 表示「不知道」，不下结论**（fjhy 用的是
+# D1~D10 那套维度编号，不在这张表里，行为保持原样不变）。
+DIM_DOC_KEYWORDS = {
+    "差旅": ("差旅",),
+    "接待": ("招待", "接待"),
+    "会议": ("会议",),
+    "采购": ("采购", "合同"),
+    "决策": ("决策", "三重一大"),
+    "备用金": ("备用金",),
+    "日常": ("日常",),
+    "租房": ("租房", "房租"),
+    "通用": None,          # 通用维度对所有单据都适用
+}
+NO_SCOPE = "本实例无适用单据"
+
+
+def applicable_bills(instance_id):
+    """每个维度在本实例有多少张适用单据。返回 {维度: 张数}，只含登记过的维度。
+
+    数的是真单据，不是枚举里有没有这个类型——枚举有、单据 0 张，
+    一样判不了。
+    """
+    rows = db.query("""SELECT doc_type, count(*) n FROM expense_bill
+                        WHERE instance_id = %s GROUP BY doc_type""", (instance_id,))
+    total = sum(r["n"] for r in rows)
+    out = {}
+    for dim, kws in DIM_DOC_KEYWORDS.items():
+        if kws is None:
+            out[dim] = total
+        else:
+            out[dim] = sum(r["n"] for r in rows
+                           if any(k in (r["doc_type"] or "") for k in kws))
+    return out
+
+
 _OTHER_PREFIX = "其他："
 
 
@@ -299,7 +351,8 @@ def judge(needs, snap):
 def report(instance_id, created_by=None):
     """算出每条规则的可行性，**只算不写**。写库的是 apply()。"""
     snap = da.snapshot(instance_id)
-    sql = """SELECT rule_id, name, note FROM rule
+    n_app = applicable_bills(instance_id)
+    sql = """SELECT rule_id, name, dimension, note FROM rule
               WHERE instance_id = %s AND version = 1"""
     params = [instance_id]
     if created_by:
@@ -317,9 +370,17 @@ def report(instance_id, created_by=None):
                         "verdict": "未登记数据项", "needs": [],
                         "blocked": [], "no_field": [], "unknown": [],
                         "partial": [], "ok": [],
-                        "owners": [], "owner_main": "", "sources": []})
+                        "owners": [], "owner_main": "", "sources": [],
+                        "dimension": r["dimension"],
+                        "n_bills": n_app.get(r["dimension"])})
             continue
         v, bl, nfd, un, pa, okl = judge(nf, snap)
+        # 数据项都齐了，再问一句「有没有单据可判」。
+        # 只在这一档上问：它回答的正是「没有数据缺口，那是不是就能判了」。
+        # 其余档位本来就有明确的字段缺口，不去搅动它们的结论。
+        nb = n_app.get(r["dimension"])
+        if v == "未发现数据缺口·待复核" and nb == 0:
+            v = NO_SCOPE
         # **谁该动**，和「库里有没有」分开算。一条规则可能两边都占
         # （有的数据我方没解析、有的客户真没给），所以 owner 是集合不是单值；
         # 对外给一个 owner_main 方便排序，但**不要只看它**——
@@ -333,7 +394,8 @@ def report(instance_id, created_by=None):
         out.append({"rule_id": r["rule_id"], "name": r["name"], "verdict": v,
                     "needs": nf, "blocked": bl, "no_field": nfd,
                     "unknown": un, "partial": pa, "ok": okl,
-                    "owners": owners, "owner_main": main, "sources": srcs})
+                    "owners": owners, "owner_main": main, "sources": srcs,
+                    "dimension": r["dimension"], "n_bills": nb})
     return {"instance_id": instance_id, "snapshot": snap, "rules": out}
 
 
@@ -350,6 +412,11 @@ def _blocker_text(it):
             if o == IN_HAND:
                 bits.append("「%s」在手：%s" % (n, ev))
     
+    if it.get("n_bills") == 0:
+        # 放在字段缺口前面：这一条比缺哪个字段更致命——字段补齐了也还是
+        # 0 张可判，而「已具备：支付方式」单独看会让人以为这条能编译了。
+        bits.append("**%s 维度在本实例 0 张单据**，字段齐备也判不出东西"
+                    % (it.get("dimension") or "该"))
     if it["blocked"]:
         bits.append("本实例没有这些数据：%s" % "；".join(it["blocked"]))
     if it["no_field"]:
@@ -462,6 +529,11 @@ def _scope_text(it, n_bills):
     if rv0:
         return rv0["scope"]
     miss = [x.split("（")[0] for x in it["blocked"] + it["no_field"]]
+    if it["verdict"] == NO_SCOPE:
+        # 数据项齐、字段也有值，但这个维度在本实例一张单都没有。
+        # 写「0/29 张」并说清原因——不是缺数据，是缺这类业务的单据。
+        return "0/%d 张（%s 维度本实例 0 张单据，不是缺字段）" % (
+            n_bills, it.get("dimension") or "该")
     if it["verdict"] in ("判不了", "缺字段", "口径未定"):
         return "0/%d 张（缺 %s）" % (n_bills, "、".join(miss[:4]) or "必要数据")
     if it["verdict"] == "部分字段不全":
