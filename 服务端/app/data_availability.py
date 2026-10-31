@@ -117,6 +117,34 @@ def grade(n, total):
     return "有" if n == total else "部分"
 
 
+# 「表里有行」不等于「有我要的那一类行」。
+# 实测：822港航 的 standard_limit 有 317 行，看起来「有标准」，
+# 但 317 行**全是住宿费限额**；交通工具等级标准、伙食补助费标准、
+# 市内交通费标准各 0 行。按表行数判，这三类规则会被当成「数据齐备」，
+# 而它们一条都判不了。所以这几列的**取值集合**要单独测出来。
+_KIND_COLS = (
+    ("standard_limit", "std_type"),
+    ("expense_detail", "expense_item"),
+    ("expense_bill", "doc_type"),
+    ("expense_bill", "biz_type"),
+)
+
+
+def kinds(instance_id):
+    """这几列在本实例实际出现了哪些取值。返回 {表.列: {取值集合}}。"""
+    out = {}
+    for t, c in _KIND_COLS:
+        w, p = _where(t, instance_id)
+        try:
+            out["%s.%s" % (t, c)] = {
+                r["v"] for r in db.query(
+                    'SELECT DISTINCT "%s" AS v FROM %s WHERE %s' % (c, t, w), p)
+                if r["v"] is not None}
+        except Exception:                                      # noqa: BLE001
+            out["%s.%s" % (t, c)] = set()
+    return out
+
+
 def snapshot(instance_id):
     """一次把全部业务表与列的可得性测出来。给规则可行性判定和客户数据需求用。"""
     rows = table_rows(instance_id)
@@ -133,4 +161,4 @@ def snapshot(instance_id):
                           if v[2] == "部分")
     return {"instance_id": instance_id, "tables": rows, "columns": cols,
             "empty_tables": empty_tables, "empty_columns": empty_cols,
-            "partial_columns": partial_cols}
+            "partial_columns": partial_cols, "kinds": kinds(instance_id)}

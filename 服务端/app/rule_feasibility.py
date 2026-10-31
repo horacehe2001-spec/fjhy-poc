@@ -32,6 +32,45 @@ from . import data_availability as da, db
 # 「审批单」，于是「缺的是目的地字段」变成「缺的是审批单」，方向就错了。
 NO_FIELD = "__no_field__"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 「表里有行」不等于「有我要的那一类行」
+# ─────────────────────────────────────────────────────────────────────────────
+# 实测 2026-11-01：standard_limit 有 317 行，看着像「标准都在」，
+# 而 317 行**全是住宿费限额**，交通工具等级标准／伙食补助费标准／
+# 市内交通费标准各 0 行。只按表行数判，这几类规则会显示「数据齐备」，
+# 而它们一条都判不了——这已经是同一个坑的第四次了
+# （自报 auto_judgeable → 自报 need_fields 齐备 → 字段有值但无适用单据 →
+#   表有行但没有那一类行）。
+#
+# 所以这几个数据项的满足条件是「某一列里出现过某个取值」，
+# 用 (表, 列, 取值) 三元组表达，由 snapshot 的 kinds 来判。
+NEED_KIND = {
+    "交通工具等级标准": ("standard_limit", "std_type", "交通工具等级标准"),
+    "伙食补助费标准": ("standard_limit", "std_type", "伙食补助费标准"),
+    "市内交通费标准": ("standard_limit", "std_type", "市内交通费标准"),
+    "住宿费限额标准": ("standard_limit", "std_type", "住宿费限额标准"),
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 人工复核发现 need_fields 列漏的数据项
+# ─────────────────────────────────────────────────────────────────────────────
+# **复核结论不能只留在文字里。** 2026-11-01 逐条复核 28 条规则时发现，
+# 有 9 条缺的是标准表里的某一类标准，而模型的 need_fields 一条都没列。
+# 当时我把结论写进了 MANUAL_REVIEW 的 why 文字里——然后 unlock_plan
+# 看不到它，「我方还剩什么」那张清单显示 0 项。
+# **那张清单是要发给客户的**，少报一项我方的活，就等于把活推给客户。
+# 所以复核发现的额外数据项要登记在这里，进 judge()、进 unlock_plan。
+EXTRA_NEEDS = {
+    "TR-差旅-02": ["交通工具等级标准"],
+    "TR-差旅-17": ["交通工具等级标准"],
+    "TR-差旅-27": ["交通工具等级标准"],
+    "TR-差旅-09": ["交通工具等级标准", "市内交通费标准", "伙食补助费标准"],
+    "TR-差旅-22": ["交通工具等级标准", "市内交通费标准", "伙食补助费标准"],
+    "TR-差旅-15": ["伙食补助费标准"],
+    "TR-差旅-20": ["市内交通费标准"],
+    "TR-差旅-04": ["职级标准"],          # rank_tier_map 0 行，客户侧
+}
+
 NEED_MAP = {
     # ── 附件类（822港航 attachment 0 行）──
     "附件清单": ("attachment", None),
@@ -208,6 +247,17 @@ SOURCE_STATUS = {
                       "真缺的是**逐日地点**——整单只有一个出差地点，"
                       "判不了在途每天按哪个目的地的标准计补助"),
     "employee.resident_city": (NEED_CLIENT, "员工信息导出里没有常驻地址"),
+    # 三类标准：**制度里有，是我方抽取没落到标准表**，不是客户没给。
+    # 判据：12 份制度里差旅费管理办法写了市内交通费每人每天 80 元这类标准，
+    # 而 standard_limit 里 317 行全是住宿费限额，这三类各 0 行。
+    "交通工具等级标准": (IN_HAND,
+                   "制度（差旅费管理办法）里有交通工具等级的规定，"
+                   "standard_limit 里 0 行——抽取没落到标准表"),
+    "伙食补助费标准": (IN_HAND,
+                 "同上，制度里有伙食补助费标准，standard_limit 里 0 行"),
+    "市内交通费标准": (IN_HAND,
+                 "同上，制度原文写每人每天 80 元包干，standard_limit 里 0 行"),
+    "住宿费限额标准": (IN_HAND, "已在库，317 行"),
     # 2026-10-31：原来「业务招待清单」记在 SOURCE_STATUS_NO_FIELD 里，
     # 注着「这是个真缺口」。**缺的是表，不是数据**——招待明细区一直在
     # 招待费导出里。建了表（迁移 0053）之后它归到这里。
@@ -245,6 +295,11 @@ def source_of(need_name):
     这一层要防的那个错。
     """
     n = normalize_need(need_name)
+    # 按「某一类行在不在」判的那几个（见 NEED_KIND）：归属直接按数据项名登记，
+    # 不走 (表, 列) 那条路——standard_limit 这张表整体是在手的，
+    # 而「交通工具等级标准」这一类是我方没抽出来，两者归属不是一回事。
+    if n in NEED_KIND:
+        return SOURCE_STATUS.get(n, (UNDECIDED, "还没核过材料"))
     tgt = NEED_MAP.get(n)
     if tgt == NO_FIELD:
         return SOURCE_STATUS_NO_FIELD.get(n, (UNDECIDED, "还没核过材料"))
@@ -340,6 +395,16 @@ def judge(needs, snap):
     blocked, no_field, unknown, ok, partial = [], [], [], [], []
     for raw in needs:
         n = normalize_need(raw)
+        k = NEED_KIND.get(n)
+        if k:
+            t, c, want = k
+            got = (snap.get("kinds") or {}).get("%s.%s" % (t, c)) or set()
+            if want in got:
+                ok.append(n)
+            else:
+                blocked.append("%s（%s.%s 里没有「%s」这一类，现有 %d 类）"
+                               % (n, t, c, want, len(got)))
+            continue
         m = NEED_MAP.get(n)
         if m is None:
             unknown.append(n)
@@ -406,6 +471,10 @@ def report(instance_id, created_by=None):
     out = []
     for r in rows:
         nf = needs.get(r["rule_id"])
+        # 人工复核补登的数据项要并进来，否则复核结论只活在文字里（见 EXTRA_NEEDS）
+        extra = EXTRA_NEEDS.get(r["rule_id"])
+        if extra:
+            nf = sorted(set((nf or []) + extra))
         if nf is None:
             # **没记数据项的不猜**：标出来，让人知道这条还没过这一关，
             # 而不是给它一个看起来已经评估过的结论。
@@ -756,10 +825,20 @@ def unlock_plan(instance_id, created_by=None):
     buckets = {}
     for rid, miss in need_of.items():
         for m in miss:
-            tgt = NEED_MAP.get(normalize_need(m))
-            key = ("库里没这个字段：" + m) if tgt == NO_FIELD else (
-                "%s 表" % tgt[0] if tgt and tgt[1] is None
-                else "%s.%s" % tgt if tgt else "口径未定：" + m)
+            nm = normalize_need(m)
+            tgt = NEED_MAP.get(nm)
+            if nm in NEED_KIND:
+                # 表在、行也有，缺的是**这一类**行。不能落到「口径未定」那一档：
+                # 口径未定是「不知道这个名字指什么」，而这里知道得很清楚。
+                key = "标准表里缺这一类：" + nm
+            elif tgt == NO_FIELD:
+                key = "库里没这个字段：" + m
+            elif tgt and tgt[1] is None:
+                key = "%s 表" % tgt[0]
+            elif tgt:
+                key = "%s.%s" % tgt
+            else:
+                key = "口径未定：" + m
             # **用 set**：同义数据项会映到同一列（「审批日期」和「审批时间」
             # 都是 approval_record.approved_at），用 list 会把同一条规则
             # 数两次，于是「涉及 3 条规则」里其实只有 2 条。

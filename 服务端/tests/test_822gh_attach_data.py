@@ -171,15 +171,46 @@ def test_一个姓名列不许填成两列():
     assert "口径" in ev, ev
 
 
-def test_我方的字段级缺口已经清零():
-    """这一批之后 unlock_plan 的我方清单应当为空。
-    **不等于我方没活了**：还有 197 个扫描件要解析，
-    那件事不表现为「缺字段」，而表现为「现在判会误报」——
-    落在 MANUAL_REVIEW 的复核结论里。"""
+def test_复核发现的缺口必须进清单_不许只留在文字里():
+    """**这条用例是为一个我自己犯过的错留的。**
+
+    第四批复核 28 条规则时发现，9 条缺的是标准表里的某一类标准，
+    而模型的 need_fields 一条都没列。我当时把结论写进了 MANUAL_REVIEW 的
+    why 文字里——然后 unlock_plan 看不到它，「我方还剩什么」显示 **0 项**，
+    而那张清单是要发给客户的：少报一项我方的活，就等于把活推给客户。
+    现在那 9 条的额外数据项登记在 EXTRA_NEEDS 里，进 judge、进 unlock_plan。
+
+    另外注意「表里有行」不等于「有我要的那一类行」：standard_limit 有
+    317 行，看着像标准都在，而 317 行**全是住宿费限额**。
+    """
     p = rf.unlock_plan(IID)
-    assert p["ours"] == [], [x["要补的"] for x in p["ours"]]
+    ours = {x["要补的"] for x in p["ours"]}
+    assert ours == {"标准表里缺这一类：交通工具等级标准",
+                    "标准表里缺这一类：伙食补助费标准",
+                    "标准表里缺这一类：市内交通费标准"}, ours
     assert p["undecided"] == []
     assert len(p["theirs"]) >= 20
+    # 这三类在库里确实 0 行，而住宿费那一类有 317 行
+    kinds = rf.da.snapshot(IID)["kinds"]["standard_limit.std_type"]
+    assert kinds == {"住宿费限额标准"}, kinds
+    # 归属是我方（制度里有，抽取没落到标准表），不许算到客户头上
+    for n in ("交通工具等级标准", "伙食补助费标准", "市内交通费标准"):
+        owner, ev = rf.source_of(n)
+        assert owner == rf.IN_HAND, (n, owner)
+        assert "0 行" in ev or "抽取" in ev, (n, ev)
+
+
+def test_表里有行不等于有那一类行():
+    """只按表行数判，这三类规则会显示「数据齐备」而一条都判不了。
+    这是同一个坑的第四次：自报 auto_judgeable → 自报 need_fields 齐备
+    → 字段有值但无适用单据 → 表有行但没有那一类行。"""
+    snap = rf.da.snapshot(IID)
+    assert snap["tables"]["standard_limit"] == 317
+    v, bl, nf, un, pa, ok = rf.judge(["交通工具等级标准"], snap)
+    assert v == "判不了", v
+    assert bl and "没有「交通工具等级标准」这一类" in bl[0], bl
+    v2 = rf.judge(["住宿费限额标准"], snap)[0]
+    assert v2 == "未发现数据缺口·待复核", v2
 
 
 # ── 复核结论本身 ────────────────────────────────────────────────────────
@@ -187,7 +218,9 @@ def test_每条待复核的都有复核结论():
     rep = rf.report(IID)
     pending = [x["rule_id"] for x in rep["rules"]
                if x["verdict"] == "未发现数据缺口·待复核"]
-    assert len(pending) >= 30, len(pending)
+    # 31 → 23：EXTRA_NEEDS 把 8 条带标准表缺口的规则挪去了「判不了」。
+    # 这个数会随数据装载变，所以只钉下限和「一条都不许没人复核」。
+    assert len(pending) >= 20, len(pending)
     assert not sorted(set(pending) - set(rf.MANUAL_REVIEW))
 
 
