@@ -65,10 +65,22 @@ def test_附件来源不冒充上传():
     硬标成「上传」会让「这个附件哪来的」查不清。"""
     assert _n("""SELECT count(*) FROM attachment WHERE instance_id=%s
                    AND source_ref IS NOT NULL""") == 147
-    assert _n("""SELECT count(*) FROM attachment WHERE instance_id=%s
-                   AND attach_type IS NOT NULL""") == 0, (
-        "附件类型被填上了。本实例没有客户自己的附件类型词表"
-        "（EN17 是空枚举），按文件名猜一套出来是在编客户的分类口径")
+    # 原来这里断言 attach_type **全空**——那是定类之前的事实，不是这条用例
+    # 要验的东西（它验的是「来源不冒充上传」）。2026-11-01 定类做完，
+    # 133 个有了类型，用例就红了。改成验真正该验的：
+    # 填上去的类型必须都落在本实例的 EN17 里，来路必须是记得清的那四种之一。
+    bad = db.query("""SELECT a.attach_type, a.type_source FROM attachment a
+                       WHERE a.instance_id = %s AND a.attach_type IS NOT NULL
+                         AND NOT EXISTS (
+                             SELECT 1 FROM enum_value_current e
+                              WHERE e.instance_id = a.instance_id
+                                AND e.enum_id = 'EN17'
+                                AND e.value = a.attach_type)""", (IID,))
+    assert not bad, bad
+    srcs = {r["type_source"] for r in db.query(
+        """SELECT DISTINCT type_source FROM attachment
+            WHERE instance_id=%s AND attach_type IS NOT NULL""", (IID,))}
+    assert srcs <= {"读图判定", "文字层解析"}, srcs
 
 
 # ── 发票 ────────────────────────────────────────────────────────────────

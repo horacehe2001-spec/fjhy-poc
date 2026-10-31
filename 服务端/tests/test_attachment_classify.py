@@ -276,10 +276,17 @@ def test_批量不传attachment_ids才按待分类清单挑(att, cfg, monkeypatc
     attachment 表的仍然是真实行。应该连 `pending()` 本身也换成假实现，
     这样不管真实库里有多少条待分类附件，这条用例都不可能碰到它们一根毫毛。
     """
+    # 2026-11-01：pending() 加了 instance_id / model_name / retry_read 几个参数
+    # （那条链路原来一个实例维度都没有，给一家跑会把另一家的客户凭证发出去）。
+    # 这里的假实现要跟着**收下任意关键字参数**——
+    # 写死 `lambda limit=500:` 会在签名一变时报 TypeError，
+    # 而那会让人以为是源码坏了，转而去改源码签名，
+    # 把刚补上的实例隔离又拆掉。假实现要宽容，闸才留得住。
     monkeypatch.setattr(acx, "pending",
-                        lambda limit=500: [{"id": att, "bill_no": PREFIX + "0001",
-                                            "file_name": "测试票据.png",
-                                            "seq": 1, "byte_size": 100, "attempts": 0}])
+                        lambda limit=500, **kw: [{"id": att, "bill_no": PREFIX + "0001",
+                                                  "file_name": "测试票据.png",
+                                                  "seq": 1, "byte_size": 100,
+                                                  "attempts": 0}])
     _mock_chat_vision(monkeypatch, "类型编码: A04\n把握: 高\n依据: x\n备注: 无")
     r = acx.run(attachment_ids=None, limit=5, config_id=cfg)
     assert r["tried"] == 1

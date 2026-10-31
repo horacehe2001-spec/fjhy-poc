@@ -19,6 +19,7 @@ import json
 import re
 
 from .. import db
+from .attachment_classify import REAL_SOURCES
 from ..llm import client
 
 # ── 每种细类问哪些字段：唯一真相来源 ────────────────────────────────────────
@@ -224,8 +225,11 @@ def extract_one(attachment_id, config_id=None, max_tokens=600):
                             FROM attachment WHERE id=%s""", (attachment_id,))
     if not row:
         raise ValueError("没有这条附件：%s" % attachment_id)
-    if row["source_kind"] != "xlsx内嵌":
-        raise ValueError("「%s」不是从 xlsx 抽出来的真实附件，不做字段抽取" % row["file_name"])
+    if row["source_kind"] not in REAL_SOURCES:
+        raise ValueError("「%s」的来源是「%s」，不在真实客户凭证之列（%s），"
+                         "不做字段抽取"
+                         % (row["file_name"], row["source_kind"],
+                            "、".join(REAL_SOURCES)))
     type_code = row["type_code"]
     if type_code not in FIELD_SPECS:
         raise ValueError("「%s」的类型是「%s」，不在字段抽取范围内（只抽 %s）"
@@ -392,26 +396,40 @@ def _apply(type_code, bill_no, attachment_id, f, model_name, confidence):
     return None
 
 
-def pending(limit=500):
-    """已判过类型、类型在抽取范围内、但还没抽过字段的真实附件。"""
-    codes = list(FIELD_SPECS)
+def _iid(instance_id=None):
+    """当前实例。理由同 attachment_classify._iid：**这条链路是计费的、
+    而且发出去的是客户真凭证**，不按实例过滤就是范围失控。"""
+    from .. import doclib
+    return doclib.resolve_instance(instance_id)["instance_id"]
+
+
+def pending(limit=500, instance_id=None):
+    """本实例里已判过类型、类型在抽取范围内、但还没抽过字段的真实附件。"""
     return db.query("""SELECT id, bill_no, file_name, type_code
                          FROM attachment
-                        WHERE source_kind='xlsx内嵌' AND type_code = ANY(%s)
+                        WHERE instance_id = %s AND source_kind = ANY(%s)
+                          AND type_code = ANY(%s)
                           AND NOT EXISTS (SELECT 1 FROM attachment_extract e
                                           WHERE e.attachment_id = attachment.id)
                         ORDER BY bill_no LIMIT %s""",
-                    (codes, max(1, min(2000, int(limit))),))
+                    (_iid(instance_id), list(REAL_SOURCES), list(FIELD_SPECS),
+                     max(1, min(2000, int(limit)))))
 
 
-def run(attachment_ids=None, limit=20, config_id=None):
-    """批量抽字段。**真出网、真计费**，一次最多 limit 条。"""
+def run(attachment_ids=None, limit=20, config_id=None, instance_id=None):
+    """批量抽字段。**真出网、真计费**，一次最多 limit 条。
+
+    显式给的 id 同样按实例过滤：给错一个别家的 id，它就会被发出去。
+    """
+    iid = _iid(instance_id)
     if attachment_ids is not None:
         rows = db.query("""SELECT id, bill_no, file_name FROM attachment
-                            WHERE id = ANY(%s) AND source_kind='xlsx内嵌'
-                            ORDER BY bill_no""", (list(attachment_ids),))
+                            WHERE id = ANY(%s) AND instance_id = %s
+                              AND source_kind = ANY(%s)
+                            ORDER BY bill_no""",
+                        (list(attachment_ids), iid, list(REAL_SOURCES)))
     else:
-        rows = pending(limit)
+        rows = pending(limit, instance_id=iid)
     rows = rows[:max(1, min(100, int(limit)))]
 
     items, applied, failed = [], 0, 0
@@ -432,17 +450,28 @@ def run(attachment_ids=None, limit=20, config_id=None):
     return {"tried": len(rows), "applied": applied, "failed": failed, "items": items}
 
 
-def status():
+def status(instance_id=None):
+    """**按实例**：两家的进度和费用加在一起就分不清谁花的。"""
+    iid = _iid(instance_id)
     total_typed = db.scalar("""SELECT count(*) FROM attachment
-                                WHERE source_kind='xlsx内嵌'
+                                WHERE instance_id=%s AND source_kind = ANY(%s)
                                   AND type_code = ANY(%s)""",
-                            (list(FIELD_SPECS),)) or 0
-    extracted = db.scalar("""SELECT count(DISTINCT attachment_id) FROM attachment_extract""") or 0
-    applied = db.scalar("""SELECT count(DISTINCT attachment_id) FROM attachment_extract
-                            WHERE applied""") or 0
-    calls = db.query_one("""SELECT count(*) AS n, count(*) FILTER (WHERE NOT ok) AS failed,
-                                   sum(prompt_tokens) AS pt, sum(completion_tokens) AS ct
-                              FROM attachment_extract""") or {}
+                            (iid, list(REAL_SOURCES), list(FIELD_SPECS))) or 0
+    extracted = db.scalar("""SELECT count(DISTINCT e.attachment_id)
+                               FROM attachment_extract e
+                               JOIN attachment a ON a.id = e.attachment_id
+                              WHERE a.instance_id = %s""", (iid,)) or 0
+    applied = db.scalar("""SELECT count(DISTINCT e.attachment_id)
+                             FROM attachment_extract e
+                             JOIN attachment a ON a.id = e.attachment_id
+                            WHERE a.instance_id = %s AND e.applied""", (iid,)) or 0
+    calls = db.query_one("""SELECT count(*) AS n,
+                                   count(*) FILTER (WHERE NOT e.ok) AS failed,
+                                   sum(e.prompt_tokens) AS pt,
+                                   sum(e.completion_tokens) AS ct
+                              FROM attachment_extract e
+                              JOIN attachment a ON a.id = e.attachment_id
+                             WHERE a.instance_id = %s""", (iid,)) or {}
     by_conf = db.query("""SELECT confidence, count(*) n FROM attachment_extract
                           WHERE confidence IS NOT NULL GROUP BY 1 ORDER BY 2 DESC""")
     return {

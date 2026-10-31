@@ -124,7 +124,11 @@ def extract_all():
                         io.open(dest, "wb").write(raw)
                     items.append({
                         "bill_no": bn, "seq": seq, "file_name": name,
-                        "stored_path": os.path.relpath(dest, config.SERVER_DIR),
+                        # **存绝对路径**：既有约定就是绝对路径（fjhy 那 273 行也是），
+                        # 两种混着存，读图那条链路能不能打开文件就取决于
+                        # 进程的当前目录——在容器里换个工作目录就全打不开，
+                        # 而且报的是「文件不存在」，查不到是约定不一致。
+                        "stored_path": os.path.abspath(dest),
                         "sha256": sha, "byte_size": len(raw),
                         "content_type": _ctype(name),
                         "source_ref": "%s :: %s" % (zf, os.path.basename(disp)),

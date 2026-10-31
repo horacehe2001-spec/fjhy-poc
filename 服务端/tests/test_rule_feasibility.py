@@ -77,10 +77,41 @@ def test_不带实例的表计数会把另一家算进来():
 
 
 def test_经外键推归属的表也要算对():
-    """6 张表不带 instance_id，经外键推。推错会让它们看起来有数据。"""
-    for t in ("hotel_invoice", "bill_traveler", "expense_allocation",
-              "attachment_vision", "attachment_extract", "budget"):
-        assert da.table_rows(IID, [t])[t] == 0, "%s 在 822港航 应该是 0 行" % t
+    """6 张表不带 instance_id，经外键推。推错会让它们看起来有数据。
+
+    原来这条用例断言这 6 张表在 822港航 **都是 0 行**——那是当时的事实，
+    不是这条用例要验的东西。2026-11-01 读图批跑完，attachment_vision
+    有了 198 行，用例就红了，而推归属的逻辑一点没坏。
+    **拿一个会变的事实当断言，变了就得改用例，而改的时候很容易顺手
+    把要验的东西一起改掉。** 所以改成和独立算出来的数对照：
+    推出来的数必须等于按外键直接 join 数出来的数。
+    """
+    pairs = {
+        "hotel_invoice":
+            "SELECT count(*) FROM hotel_invoice h JOIN invoice i "
+            "ON i.invoice_id = h.invoice_id WHERE i.instance_id = %s",
+        "bill_traveler":
+            "SELECT count(*) FROM bill_traveler t JOIN expense_bill b "
+            "ON b.bill_no = t.bill_no WHERE b.instance_id = %s",
+        "expense_allocation":
+            "SELECT count(*) FROM expense_allocation e JOIN expense_bill b "
+            "ON b.bill_no = e.bill_no WHERE b.instance_id = %s",
+        "attachment_vision":
+            "SELECT count(*) FROM attachment_vision v JOIN attachment a "
+            "ON a.id = v.attachment_id WHERE a.instance_id = %s",
+        "attachment_extract":
+            "SELECT count(*) FROM attachment_extract e JOIN attachment a "
+            "ON a.id = e.attachment_id WHERE a.instance_id = %s",
+        "budget":
+            "SELECT count(*) FROM budget x JOIN org o ON o.org_id = x.org_id "
+            "WHERE o.instance_id = %s",
+    }
+    for t, sql in pairs.items():
+        want = db.scalar(sql, (IID,))
+        assert da.table_rows(IID, [t])[t] == want, (t, want)
+    # 至少有一张表是非空的，否则这条用例等于在验「0 == 0」
+    assert any(da.table_rows(IID, [t])[t] > 0 for t in pairs), (
+        "6 张表全是 0 行，这条用例没验到推归属是不是真的在推")
 
 
 # ── 映射 ────────────────────────────────────────────────────────────────
