@@ -71,9 +71,15 @@ def _snapshot(cur, bill_no):
                              FROM attachment WHERE bill_no = %s ORDER BY id""", (bill_no,))
     counts["attachment"] = len(attachments)
 
-    trip = _q1(cur, """SELECT * FROM trip_application WHERE bill_no = %s LIMIT 1""",
-               (bill_no,))
-    counts["trip_application"] = 1 if trip else 0
+    # 一张单可以挂**多份**出差审批单：实测 FJPG-BX2607280255 有两份
+    # （07-23~24 与 07-25~26 两段行程），人工驳的就是「往返起止地点不一致」。
+    # `trip` 保留单份口径不动（福建海运集团那 28 条规则都读它），
+    # 另给 `trips` 全量——判「逐日表有没有覆盖出差区间」必须按份判，
+    # 只看第一份会把另一份的缺漏整段放过去。
+    trips = _q(cur, """SELECT * FROM trip_application WHERE bill_no = %s
+                        ORDER BY start_date, app_no""", (bill_no,))
+    trip = trips[0] if trips else None
+    counts["trip_application"] = len(trips)
 
     invoices = _q(cur, """SELECT invoice_id, inv_type, inv_no, issue_date, issuer, title,
                                  total_amount, tax_amount, tax_rate, detail_text,
@@ -105,8 +111,10 @@ def _snapshot(cur, bill_no):
 
     # 出差日历（E04）。挂在 trip_application 上，没有 bill_no 列，要经审批单关联。
     # 伙食补助与市内交通费规则靠它判「接待单位有没有安排餐/提供车辆」。
-    trip_days = _q(cur, """SELECT c.cal_date, c.meal_slot, c.has_meal, c.has_car,
-                                  c.place
+    # app_no 必须带上：一张单可能挂两份审批单，不带就没法把某一天归到
+    # 哪一段行程，判覆盖率时两段的日期会混成一堆，缺漏被填平。
+    trip_days = _q(cur, """SELECT c.app_no, c.cal_date, c.meal_slot,
+                                  c.has_meal, c.has_car, c.place
                              FROM trip_calendar c
                              JOIN trip_application t ON t.app_no = c.app_no
                             WHERE t.bill_no = %s
@@ -152,6 +160,7 @@ def _snapshot(cur, bill_no):
         "approvals": approvals,
         "attachments": attachments,
         "trip": trip,
+        "trips": trips,
         "invoices": invoices,
         "entertain_details": entertains,
         "trip_days": trip_days,

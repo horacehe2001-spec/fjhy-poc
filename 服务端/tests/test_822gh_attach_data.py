@@ -39,7 +39,10 @@ def test_附件发票审批单都入库了且只在本实例():
     assert _n("SELECT count(*) FROM attachment WHERE instance_id=%s") == 147
     assert _n("SELECT count(*) FROM invoice WHERE instance_id=%s") == 53
     assert _n("SELECT count(*) FROM trip_application WHERE instance_id=%s") == 15
-    assert _n("SELECT count(*) FROM trip_calendar WHERE instance_id=%s") == 87
+    # 90 不是 87：逐日行按**用餐段与用车段日期的并集**铺（2026-11-01 改）。
+    # 原来只按用餐段铺，某天只填了用车就整天不入库，判「逐日表覆盖了几天」时
+    # 会把它算成「两样都没填」——比实际严重，报告上多报一天。
+    assert _n("SELECT count(*) FROM trip_calendar WHERE instance_id=%s") == 90
     # 别家一行不动（这几个数是第四批之前实测的基线）
     assert db.scalar("SELECT count(*) FROM attachment WHERE instance_id='fjhy'") == 273
     assert db.scalar("SELECT count(*) FROM invoice WHERE instance_id='fjhy'") == 184
@@ -124,13 +127,26 @@ def test_票面上没有的字段留空而不是补零():
 # ── 出差审批单与逐日 ────────────────────────────────────────────────────
 def test_出差审批单的表头字段全取到了():
     for col in ("start_date", "end_date", "place", "days", "person_count",
-                "approve_date", "backfill_date", "reason"):
+                "approve_date", "backfill_date", "report_date", "reason"):
         n = _n("SELECT count(%s) FROM trip_application WHERE instance_id=%%s" % col)
         assert n == 15, "%s 只取到 %d/15" % (col, n)
     # 填报日期那一格的标签排在值后面，按「标签—值」取会 0/15。这条钉住它。
+    # **2026-11-01 搬了一列**：原来这个断言写在 backfill_date 上，
+    # 因为那时 backfill_date 里装的就是填报日期。migration 0056 把
+    # backfill_date 订正成「出差人签名日期」、填报日期挪到 report_date 之后，
+    # 这个守的还是同一件事，只是换到了正确的列上——**断言不能跟着删**，
+    # 它防的是「标签排在值后面」那个解析陷阱。
     assert _n("""SELECT count(*) FROM trip_application WHERE instance_id=%s
-                   AND backfill_date > approve_date""") == 0, (
+                   AND report_date > approve_date""") == 0, (
         "填报日期晚于审批日期，说明这两格取反了")
+    # 两个日期的业务含义：填报在出差之前、签名在出差之后。
+    # 哪天又把填报日期塞回 backfill_date，这两条会红。
+    assert _n("""SELECT count(*) FROM trip_application WHERE instance_id=%s
+                   AND backfill_date < end_date""") == 0, (
+        "出差人签名日期早于出差结束日期，说明 backfill_date 又装回填报日期了")
+    assert _n("""SELECT count(*) FROM trip_application WHERE instance_id=%s
+                   AND report_date = backfill_date""") == 0, (
+        "填报日期和签名日期相等，说明两列装的是同一个值（实测 15 份全不同）")
 
 
 def test_逐日表一天三行_餐次齐全():
@@ -295,9 +311,37 @@ def test_等视觉的那些规则范围必须写零():
     这几条的复核结论必须是 0/29，**不许给一个非零范围**——
     非零范围会被当成「这条可以上线了」。"""
     for rid in ("TR-差旅-08", "TR-差旅-21", "TR-差旅-29", "TR-通用-05",
-                "TR-通用-02", "TR-接待-23"):
+                "TR-接待-23"):
         sc = rf.MANUAL_REVIEW[rid]["scope"]
         assert sc.startswith("0/"), (rid, sc)
+
+
+def test_通用02已经不靠读图了_但剩下六张要明说还没判():
+    """**TR-通用-02 从这张「等视觉」名单里摘出来了，摘的理由要能复核。**
+
+    原来它的结论是「0/29 张（判的就是图片内容）」。那个结论是错的：
+    20 张差旅单的出差审批单是 PDF 且有文字层，用餐/用车逐日表和签名日期
+    都能确定性解析——而且**上一次复核的 why 里就写着「用车用餐都取到了」，
+    scope 那一格却写了 0/29**。证据对、结论错，在复核清单上看起来是
+    「已经看过了」，这种最难发现。
+
+    摘出来之后要守住另一头：剩下 6 张审批单确实是扫描件/JPG，
+    它们必须是 pending，**不许因为规则整体能跑了就算进「通过」**。
+    """
+    sc = rf.MANUAL_REVIEW["TR-通用-02"]["scope"]
+    assert sc.startswith("20/29"), sc
+    # 6 张没有已解析审批单的差旅单 —— 这个数就是 scope 里写的「判不了 6」
+    n_no_app = _n("""SELECT count(*) FROM expense_bill b
+                      WHERE b.instance_id=%s AND b.doc_type='差旅费报账单'
+                        AND NOT EXISTS (SELECT 1 FROM trip_application t
+                                         WHERE t.bill_no=b.bill_no)""")
+    assert n_no_app == 6, n_no_app
+    assert "判不了 6" in sc, sc
+    # 人工为「未体现出差人回填情况（签字及日期）」驳过的那张就在这 6 张里，
+    # 所以「签名回填」那一半本批没有阳性样本。这件事必须写在复核结论里，
+    # 不能让报告读成「本批全部有回填」。
+    why = rf.MANUAL_REVIEW["TR-通用-02"]["why"]
+    assert "本批没有阳性样本" in why, "复核结论里没说清②这一半判不到阳性样本"
 
 
 def test_真能判的那几条范围要和库里数得出来的一致():

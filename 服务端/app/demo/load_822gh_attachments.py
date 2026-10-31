@@ -328,6 +328,26 @@ def parse_trip(lines):
     approve_dates = stamps[1:]
     hdr["填报日期"] = stamps[0] if stamps else ""
 
+    # 表尾「出差人签名 <姓名> <日期>」——**和表头的填报日期是两件事**。
+    # 填报日期在出差之前（填写人提交审批单），签名日期在出差之后
+    # （出差人回来自己签字确认）。实测 FJPG-BX2607240109
+    # 填报 2026-07-20、签名 2026-07-24，差 4 天。
+    # 0056 之前 backfill_date（回填日期）错装了填报日期，于是
+    # 「有没有回填」这件事 15 份全有值、一条都判不出来，
+    # 而人工为这件事驳过两次。判错字段比不判更难发现，所以单独取。
+    sign_date = None
+    if "出差人签名" in flat:
+        i = flat.index("出差人签名")
+        seg = []
+        for t in flat[i + 1:]:
+            if t.startswith("注："):
+                break
+            seg.append(t)
+        ds = [t for t in seg if RE_DATE.fullmatch(t)]
+        # 取最后一个：签名段前面可能还有流转记录（实测
+        # 「林**->陈** 2026-05-29」紧挨在签名上面），最后一个才是签名那格。
+        sign_date = ds[-1] if ds else None
+
     def dt(s):
         m = RE_DATE.search(s or "")
         return ("%s-%02d-%02d" % (m.group(1), int(m.group(2)), int(m.group(3)))
@@ -360,7 +380,10 @@ def parse_trip(lines):
                      if len(ds) > 1 else None),
         "days": days,
         "approve_date": dt(approve_dates[-1]) if approve_dates else None,
-        "backfill_date": dt(hdr.get("填报日期")),
+        # backfill_date = 出差人签名日期（口径见 0056）。为空就是**真的没回填**，
+        # 不要拿填报日期兜底——兜上了这条规则就永远判不出来。
+        "backfill_date": dt(sign_date),
+        "report_date": dt(hdr.get("填报日期")),
         "n_approvals": len(approve_dates),
         "roles": {k: hdr.get(k) for k in ("经办人", "部室负责人", "分管领导",
                                           "主管领导") if hdr.get(k)},
@@ -609,17 +632,25 @@ if os.environ.get("WRITE") == "1":
             app_no = m.group(1) if m else ("%s-OA" % t["bill_no"])
             cur.execute("""INSERT INTO trip_application(app_no, bill_no, start_date,
                                end_date, place, days, person_count, approve_date,
-                               backfill_date, meal_situation, car_situation,
-                               reason, extracted_from)
-                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'审批单读图')
+                               backfill_date, report_date, meal_situation,
+                               car_situation, reason, extracted_from)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                                   '审批单读图')
                            ON CONFLICT (app_no) DO NOTHING""",
                         (app_no, t["bill_no"], t["start_date"], t["end_date"],
                          t["place"], t["days"], t["person_count"],
                          t["approve_date"], t["backfill_date"],
+                         t["report_date"],
                          _one_or_none(meal_vals), _one_or_none(car_vals),
                          t["reason"]))
+            # 逐日行按**用餐段与用车段日期的并集**铺，不只按用餐段。
+            # 只按用餐段的话，某天只填了用车、没填用餐，这一天就整天不入库，
+            # 判「逐日表有没有覆盖出差区间」时会把它算成「两样都没填」，
+            # 比实际严重——报告上多报一天，审核岗核对一次就不信了。
+            meal_by_day = {d: vs for d, vs in t["meal_days"]}
             car_by_day = {d: vs for d, vs in t["car_days"]}
-            for d, vs in t["meal_days"]:
+            for d in sorted(set(meal_by_day) | set(car_by_day)):
+                vs = meal_by_day.get(d, [])
                 has_car = any(v and v != SELF_CAR for v in car_by_day.get(d, []))
                 for k, slot in enumerate(SLOTS):
                     v = vs[k] if k < len(vs) else None

@@ -52,7 +52,7 @@ def test_可执行规则数等于有实现的规则数():
     have = {r["rule_id"] for r in db.query(
         "SELECT rule_id FROM rule WHERE instance_id=%s AND version=1", (IID,))}
     impl = set(engine.registered()) & have
-    assert len(rs) == len(impl) == 7, (len(rs), len(impl))
+    assert len(rs) == len(impl) == 8, (len(rs), len(impl))
     assert not rs.missing_impl, rs.missing_impl
 
 
@@ -157,6 +157,144 @@ def test_市内交通费那四张单不许再误报():
                "FJPG-BX2607280255", "FJPG-BX2607310058"):
         f = res[bn]["TR-差旅-20"]
         assert f.outcome != "hit", (bn, f.message)
+
+
+# ── 审批单关键要素完整性（TR-通用-02）───────────────────────────────────
+# 这条规则原来被标成「0/29 张（判的就是图片内容）」。那个结论是错的：
+# 15 份出差审批单是 PDF 且有文字层，表尾两张小表和签名日期都能确定性解析。
+# **而且上一次复核的 why 里已经写着「用车用餐都取到了」——
+# 证据对、结论错。** 下面这组用例把实跑结果钉住，别再退回去。
+def test_逐日表缺哪一天要逐字对上人工驳回():
+    """这是两个有人工原话的标注案例，算出来的日期必须和人工说的是同一天。
+
+    FJPG-BX2606050495 人工：「出差审批单需补充**5.25日**用餐与用车情况」
+    FJPG-BX2608311795 人工：「出差时间应为8.22-8.28，审批单**仅体现8.22、8.28**」
+
+    判的是日期本身，不是「有没有缺」——少一天多一天都会让审核岗
+    拿着报告找不到对应的格子。
+    """
+    _, res = _run_all()
+    f = res["FJPG-BX2606050495"]["TR-通用-02"]
+    assert f.outcome == "hit", (f.outcome, f.message)
+    gaps = [d for a in f.evidence["逐份明细"] for d in a["缺的日期"]]
+    assert gaps == ["2026-05-25"], gaps
+    human = db.scalar("""SELECT return_reason FROM manual_review
+                          WHERE bill_no='FJPG-BX2606050495'""")
+    assert "5.25" in human, "人工驳回原话变了，这条用例的锚点要重找"
+
+    f2 = res["FJPG-BX2608311795"]["TR-通用-02"]
+    assert f2.outcome == "hit", (f2.outcome, f2.message)
+    gaps2 = [d for a in f2.evidence["逐份明细"] for d in a["缺的日期"]]
+    assert gaps2 == ["2026-08-23", "2026-08-24", "2026-08-25",
+                     "2026-08-26", "2026-08-27"], gaps2
+    human2 = db.scalar("""SELECT return_reason FROM manual_review
+                           WHERE bill_no='FJPG-BX2608311795'""")
+    assert "8.22" in human2 and "8.28" in human2, human2
+
+
+def test_逐日表填满的十张不许误报():
+    """误报和漏报同样致命。这 10 张的用餐/用车逐日表覆盖了出差区间的每一天，
+    对它们报「审批单要素不全」，审核岗核对一次就不再看这条规则的结论了。"""
+    _, res = _run_all()
+    passed = [bn for bn, m in res.items()
+              if m["TR-通用-02"].outcome == "pass"
+              and not (m["TR-通用-02"].evidence or {}).get("not_applicable")]
+    assert len(passed) == 10, sorted(passed)
+    for bn in passed:
+        ev = res[bn]["TR-通用-02"].evidence
+        for a in ev["逐份明细"]:
+            assert not a["缺的日期"], (bn, a)
+            assert a["出差人签名日期"], (bn, a)
+
+
+def test_招待单是不适用不是通过():
+    """招待类单据要查的是业务接待审批单（A16），不是出差审批单。
+    对它们返回 pass 会让覆盖面看起来比实际大 9 张。"""
+    _, res = _run_all()
+    ent = [b["bill_no"] for b in db.query(
+        """SELECT bill_no FROM expense_bill WHERE instance_id=%s
+            AND doc_type='业务招待费报账单'""", (IID,))]
+    assert len(ent) == 9, len(ent)
+    for bn in ent:
+        f = res[bn]["TR-通用-02"]
+        assert (f.evidence or {}).get("not_applicable"), (bn, f.message)
+
+
+def test_审批单是扫描件的六张要pending():
+    """附件里的审批单是 JPG 或非标准格式，文字层取不到——
+    这六张的真实状态是「还没判」，不是「合规」。
+
+    **人工为「未体现出差人回填情况（签字及日期）」驳过的两张单就在这里面。**
+    所以「签名回填」那一半的真实状态是「有能力判、本批判不到阳性样本」，
+    报告上不能写成「本批全部有回填」。
+    """
+    _, res = _run_all()
+    pend = [bn for bn, m in res.items()
+            if m["TR-通用-02"].outcome == "pending"]
+    assert len(pend) == 6, sorted(pend)
+    assert "FJPG-BX2603270004" in pend, "人工驳「未体现回填」的那张不在 pending 里了"
+    for bn in pend:
+        assert db.scalar("""SELECT count(*) FROM trip_application
+                             WHERE bill_no=%s""", (bn,)) == 0, bn
+
+
+def test_一张单挂两份审批单要逐份判():
+    """FJPG-BX2607280255 挂了两份审批单（07-23~24 与 07-25~26）。
+    reader 原来是 LIMIT 1，只取第一份——另一份的缺漏会被整段放过去。"""
+    _, res = _run_all()
+    ev = res["FJPG-BX2607280255"]["TR-通用-02"].evidence
+    assert ev["审批单份数"] == 2, ev["审批单份数"]
+    assert len(ev["逐份明细"]) == 2
+    assert {a["出差起止"] for a in ev["逐份明细"]} == {
+        "2026-07-23~2026-07-24", "2026-07-25~2026-07-26"}
+
+
+def test_回填日期装的是签名日期不是填报日期():
+    """migration 0056 订正的那件事。两个日期**全部 15 份都不相同**，
+    所以哪天又把填报日期塞回 backfill_date，这里会红。
+
+    为什么这条要单独钉：拿填报日期判「有没有回填」，15 份全有值、
+    一条都判不出来，而报告上显示的是「全部通过」——
+    判错字段比闸没跑更难发现。
+    """
+    rows = db.query("""SELECT bill_no, report_date, backfill_date, end_date
+                         FROM trip_application WHERE instance_id=%s""", (IID,))
+    assert len(rows) == 15, len(rows)
+    for r in rows:
+        assert r["report_date"] and r["backfill_date"], dict(r)
+        assert r["report_date"] != r["backfill_date"], dict(r)
+        # 填报在出差之前、签名在出差之后，这是两个日期的业务含义
+        assert r["backfill_date"] >= r["end_date"], dict(r)
+        assert r["report_date"] <= r["end_date"], dict(r)
+
+
+def test_签名段里有流转记录时要取最后一个日期():
+    """实测 FJPG-BX2606050495 的审批单签名段上面紧挨着一条流转记录
+    「<姓名>-><姓名> 2026-05-29」，取第一个日期会取到流转那一行。
+    这里直接验解析函数，不经过库。"""
+    from app.demo.load_822gh_attachments import parse_trip
+    lines = ["出差审批单",
+             "填写人 某甲 出差地点 上海",
+             "出差人 某乙 人数 1",
+             "出差起止时间 2026-05-24 至 2026-05-26 出差天数 3",
+             "经办人 某甲 部室负责人 某丙 分管领导 某丁 主管领导 某乙",
+             "填报日期 审批日期",
+             "2026-05-20 2026-05-21",
+             "以下内容由出差人员如实申报",
+             "差旅用餐情况",
+             "时间 早 中 晚 备注",
+             "2026-05-24 自行用餐（含免费） 自行用餐（含免费） 自行用餐（含免费）",
+             "差旅用车情况",
+             "时间 上午 下午",
+             "2026-05-24 自行用车 自行用车",
+             "附件",
+             "某乙->某甲 2026-05-29",
+             "出差人签名",
+             "某乙 2026-06-02",
+             "注：.参加会议、培训的，可在说明栏中备注，附上相关通知及领导批件。"]
+    t = parse_trip(lines)
+    assert t["backfill_date"] == "2026-06-02", t["backfill_date"]
+    assert t["report_date"] == "2026-05-20", t["report_date"]
 
 
 # ── 判不了就说判不了 ────────────────────────────────────────────────────

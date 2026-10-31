@@ -39,6 +39,8 @@
      看起来很合理。所以凡是要靠「公务接待还是商务接待」分支的规则，
      这里一律返回 pending 并说明缺码表——**不按码的字面意思猜**。
 """
+import datetime
+
 from . import predicates as P
 from .engine import hit, not_applicable, ok, pending, rule
 
@@ -405,6 +407,125 @@ def tr_cl_20(ctx, r):
                        % (len(host_car_days), "、".join(host_car_days)), ev)
     return ok(r["rule_id"],
               "市内交通费 %.2f 元未超包干上限 %.2f 元" % (float(amt), cap), ev)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 通用
+# ═════════════════════════════════════════════════════════════════════════
+@rule("TR-通用-02")
+def tr_ty_02(ctx, r):
+    """审批单关键要素完整性：逐日用餐/用车情况是否逐天填满、出差人是否签名回填。
+
+    【这条规则原来被标成「判不了」，理由写的是「判的就是图片内容」——那是错的】
+    15 份出差审批单是 **PDF 且有文字层**，表尾两张小表（差旅用餐情况：
+    日期 × 早/中/晚；差旅用车情况：日期 × 上午/下午）和「出差人签名 <姓名>
+    <日期>」都能确定性解析出来，不需要读图。只有 3 份是扫描件/JPG，
+    那 3 份返回 pending。
+
+    【判两件事，都有人工驳回原话兜底】
+      ① 逐日表的日期必须覆盖出差起止区间的每一天
+         FJPG-BX2606050495  出差 05-24~05-26（3 天），表里只有 05-24、05-26
+           → 人工原话「出差审批单需补充**5.25日**用餐与用车情况」
+         FJPG-BX2608311795  出差 08-22~08-28（7 天），表里只有 08-22、08-28
+           → 人工原话「出差时间应为8.22-8.28，出差审批单**仅体现8.22、8.28**」
+      ② 出差人签名日期必须有值（backfill_date）
+         FJPG-BX2603270004 → 人工原话「出差审批未体现出差人回填情况（签字及日期）」
+         FJPG-BX2606101698 → 人工原话「补充审批单下面回填日期」
+
+    【② 现在一条都判不出来，不是因为数据好】
+      实测 15 份全部有签名日期。而人工驳过这件事的两张单，
+      审批单一张是 JPG、一张不是标准格式，**都在 pending 那 3 份里**。
+      所以 ② 这一半的真实状态是「有能力判、本批没有阳性样本」，
+      不是「本批全部合规」——这两件事在报告上不能写成一句话。
+
+    【按份判，不按单判】
+      FJPG-BX2607280255 挂了两份审批单（07-23~24 与 07-25~26）。
+      只看第一份会把第二份的缺漏整段放过去，所以逐份算、逐份报。
+
+    【没判的部分，写在证据里】
+      规则原文还要求查「姓名、职务、酒水规格」：
+        · 姓名在审批单上有（填写人/出差人），但**职务不在这张表上**
+        · 酒水规格是业务接待审批单（A16）上的字段，不在出差审批单上
+      这两项这里一律不判，不计入结论。
+    """
+    bill = ctx.fact["bill"]
+    doc_type = str(bill.get("doc_type") or "")
+    trips = list(ctx.fact.get("trips") or [])
+    if not trips and ctx.fact.get("trip"):
+        trips = [ctx.fact["trip"]]
+
+    base_ev = {
+        "没判的部分": "规则原文还要求查「职务」与「酒水规格」。职务不在出差"
+                      "审批单这张表上；酒水规格是业务接待审批单（A16）的字段。"
+                      "这两项**没有核查**，不计入结论。",
+        "出处": "客户人工驳回意见：「出差审批单需补充5.25日用餐与用车情况」"
+                "（FJPG-BX2606050495）、「出差审批单仅体现8.22、8.28」"
+                "（FJPG-BX2608311795）、「出差审批未体现出差人回填情况"
+                "（签字及日期）」（FJPG-BX2603270004）",
+    }
+    if not trips:
+        if "招待" in doc_type:
+            return not_applicable(
+                r["rule_id"],
+                "本单是%s，关键要素要查的是业务接待审批单（A16），"
+                "不是出差审批单——A16 的字段抽取还没做，这条规则在接待类单据上"
+                "本实例暂不适用" % (doc_type or "招待类单据"), base_ev)
+        return pending(
+            r["rule_id"],
+            "本单没有已解析的出差审批单（附件里的审批单是扫描件或 JPG，"
+            "文字层取不到，尚未读图）", base_ev)
+
+    days_by_app = {}
+    for d in _trip_days(ctx.fact):
+        days_by_app.setdefault(d.get("app_no"), set()).add(str(d.get("cal_date")))
+
+    gaps, no_sign, unjudgeable, per_app = [], [], [], []
+    for t in trips:
+        app = t.get("app_no")
+        sd, ed = t.get("start_date"), t.get("end_date")
+        have = days_by_app.get(app, set())
+        miss = []
+        if isinstance(sd, datetime.date) and isinstance(ed, datetime.date) \
+                and sd <= ed:
+            d = sd
+            while d <= ed:
+                if d.isoformat() not in have:
+                    miss.append(d.isoformat())
+                d += datetime.timedelta(days=1)
+        else:
+            unjudgeable.append({"审批单": app, "原因": "取不到出差起止日期"})
+        per_app.append({"审批单": app,
+                        "出差起止": "%s~%s" % (sd, ed),
+                        "逐日表里的日期": sorted(have),
+                        "缺的日期": miss,
+                        "出差人签名日期": str(t.get("backfill_date") or "") or None,
+                        "填报日期": str(t.get("report_date") or "") or None})
+        if miss:
+            gaps.append({"审批单": app, "出差起止": "%s~%s" % (sd, ed),
+                         "缺的日期": miss})
+        if not t.get("backfill_date"):
+            no_sign.append(app)
+
+    ev = dict(base_ev)
+    ev.update({"审批单份数": len(trips), "逐份明细": per_app})
+
+    if gaps or no_sign:
+        parts = []
+        for g in gaps:
+            parts.append("审批单 %s（出差 %s）的用餐/用车逐日表缺 %d 天：%s"
+                         % (g["审批单"], g["出差起止"], len(g["缺的日期"]),
+                            "、".join(g["缺的日期"])))
+        if no_sign:
+            parts.append("审批单 %s 没有出差人签名回填日期"
+                         % "、".join(str(a) for a in no_sign))
+        return hit(r["rule_id"], "；".join(parts), ev)
+    if unjudgeable:
+        return pending(r["rule_id"],
+                       "有 %d 份审批单取不到出差起止日期，无法核对逐日表是否填满"
+                       % len(unjudgeable), ev)
+    return ok(r["rule_id"],
+              "%d 份审批单的用餐/用车逐日表都填满了出差区间的每一天，"
+              "且都有出差人签名回填日期" % len(trips), ev)
 
 
 @rule("TR-差旅-15")
