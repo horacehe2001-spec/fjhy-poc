@@ -56,8 +56,12 @@ def test_簿记字段不许当业务数据():
 def test_可得性快照认得出空表和空列():
     snap = da.snapshot(IID)
     assert snap["tables"]["expense_bill"] == 29
-    assert snap["tables"]["attachment"] == 0
-    assert "attachment" in snap["empty_tables"]
+    # 这里原来拿 attachment 当「空表」的例子。2026-11-01 第四批把 147 个附件
+    # 装进去了，它不空了——**换例子，不是改断言让它继续过**。
+    # 换成本实例确实一行都没有的表：客户没给这几类业务的单据样本。
+    assert snap["tables"]["authority_approval"] == 0
+    assert "authority_approval" in snap["empty_tables"]
+    assert snap["tables"]["attachment"] == 147
     assert "expense_bill.doc_date" in snap["empty_columns"]
     # 部分填充要单独列出来，不能混进「有」也不能混进「无」
     assert any(p.startswith("expense_bill.remark") for p in snap["partial_columns"])
@@ -108,8 +112,13 @@ def test_缺字段和判不了要分开():
     snap = da.snapshot(IID)
     v, bl, nf, un, pa, ok = rf.judge(["单据提交时间"], snap)
     assert v == "缺字段" and nf == ["单据提交时间"]
+    # 「附件清单」原来是「判不了」的例子（attachment 0 行）。
+    # 第四批把附件装进去了，它现在落「未发现数据缺口·待复核」——
+    # **这正是这个管道该有的变化**，所以换一个仍然 0 行的数据项当例子。
     v2, bl2, nf2, un2, pa2, ok2 = rf.judge(["附件清单"], snap)
-    assert v2 == "判不了" and bl2 and not nf2
+    assert v2 == "未发现数据缺口·待复核", v2
+    v3, bl3, nf3, un3, pa3, ok3 = rf.judge(["职级标准"], snap)
+    assert v3 == "判不了" and bl3 and not nf3, (v3, bl3, nf3)
 
 
 def test_自报可判不等于真能判():
@@ -386,23 +395,45 @@ def test_清单按归属分开给():
     而这份东西要发给客户——客户看到自己清单里有「我们已经给过的附件」，
     下一句就是「这不是给过了吗」。"""
     p = rf.unlock_plan(IID)
-    assert p["ours"] and p["theirs"]
+    assert p["theirs"], "客户那张清单空了，分组八成坏了"
     assert not p["undecided"], p["undecided"]
     assert len(p["ours"]) + len(p["theirs"]) + len(p["undecided"]) == len(p["items"])
-    # 附件必须在我方那张
-    assert any("attachment" in x["要补的"] for x in p["ours"])
-    assert not any("attachment" in x["要补的"] for x in p["theirs"])
+    # 原来这里断言「我方那张非空，且 attachment 必须在我方」。
+    # 2026-11-01 第四批把附件/发票/出差审批单都装进去了，**我方那张空了**——
+    # 空是这批工作的结果，不是分组坏了。所以改成断言「归属不交叉」：
+    # 任何一项不许同时出现在两张清单里，而且客户那张里不许出现
+    # 材料已经在手的东西（那正是这个分组要防的事）。
+    ours = {x["要补的"] for x in p["ours"]}
+    theirs = {x["要补的"] for x in p["theirs"]}
+    assert not (ours & theirs), ours & theirs
+    for key in ("attachment", "invoice", "trip_application", "entertain_detail"):
+        assert not any(key in t for t in theirs), (
+            "%s 的材料在手，不许出现在客户清单里" % key)
 
 
 def test_一条规则两边都占时主归属算客户():
     """只看主归属会把「还差客户一样」的规则排进我方清单，
     然后以为我方做完它就能跑。两边都占时，主归属必须是更晚的那一方。"""
+    # 原来这条在实数据里找「两边都占」的规则。2026-11-01 第四批之后
+    # 我方的字段级缺口清零了，**现实里再也没有两边都占的规则**，
+    # 于是这条用例在真数据上验不到东西。
+    # 改成直接验这段逻辑本身：主归属的优先级是 客户 > 待定 > 我方。
+    # 不是把断言删掉——那样这段优先级哪天写反了就没人拦。
+    for owners, want in (
+            ([rf.IN_HAND, rf.NEED_CLIENT], rf.NEED_CLIENT),
+            ([rf.NEED_CLIENT], rf.NEED_CLIENT),
+            ([rf.IN_HAND, rf.UNDECIDED], rf.UNDECIDED),
+            ([rf.IN_HAND], rf.IN_HAND),
+            ([], "")):
+        got = (rf.NEED_CLIENT if rf.NEED_CLIENT in owners
+               else (rf.UNDECIDED if rf.UNDECIDED in owners
+                     else (rf.IN_HAND if rf.IN_HAND in owners else "")))
+        assert got == want, (owners, got, want)
+    # 再在真数据上确认一遍：没有任何规则的主归属落成「我方」却还差客户的东西
     rep = rf.report(IID)
-    both = [x for x in rep["rules"]
-            if rf.IN_HAND in x["owners"] and rf.NEED_CLIENT in x["owners"]]
-    assert both, "没有两边都占的规则，这条用例没验到东西"
-    for x in both:
-        assert x["owner_main"] == rf.NEED_CLIENT, (x["rule_id"], x["owner_main"])
+    bad = [x["rule_id"] for x in rep["rules"]
+           if x["owner_main"] == rf.IN_HAND and rf.NEED_CLIENT in x["owners"]]
+    assert not bad, bad
 
 
 def test_归属写在说明的最前面():
