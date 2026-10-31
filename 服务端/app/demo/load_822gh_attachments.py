@@ -192,6 +192,18 @@ def _norm(s):
     return (s or "").replace("⼦", "子").replace("⽤", "用").replace("⾮", "非")
 
 
+def _name_like(s):
+    """像不像一个单位名称。不像就当没取到，**不往字段里塞列标签**。
+
+    判据只有一条：汉字数 ≥ 4。实测被误当成名称塞进 issuer 的是一个「售」字
+    （竖排的「购 销 / 买 售」列标签按坐标并进了行）。
+    一个字的「售」在报告上会显示成销售方名称，而且长度检查之外
+    没有别的办法把它和真名称区分开——真实的单位名称没有 1~3 个字的。
+    """
+    s = (s or "").strip().strip("：:")
+    return s if sum(1 for ch in s if "一" <= ch <= "龥") >= 4 else None
+
+
 def parse_invoice(lines):
     """电子发票 → 字段。取不到的留 None，**不猜**。"""
     lines = [_norm(x) for x in lines]
@@ -226,10 +238,32 @@ def parse_invoice(lines):
                 buyer, seller = a.strip() or None, b.strip() or None
                 break
         else:
-            names = re.findall(r"名\s*称[:：]\s*([^\s]+)", txt)
-            if names:
-                buyer = names[0]
-                seller = names[1] if len(names) > 1 else None
+            # ④ **值排在标签前面**的版式：一行里只有一个「名称：」，
+            #    购买方的值在它左边、销售方的值在它右边。实测
+            #      福建省港航建设发展有限公司 名称： 莆田市涵江建成大酒店有限公司
+            #    这种版式落到下面的全文兜底里会取反——兜底取「第一个名称：
+            #    后面的值」，而那个值是**销售方**。3 张票（53 张里的
+            #    26352000000752910616 / 26352000001812072286 /
+            #    26352000001508382871）就这么把销售方装进了 title（发票抬头），
+            #    而 issuer 装了一个「售」字——那是竖排的「购销」列标签被
+            #    按坐标并进了行，不是名称。
+            #    **方向错了的后果不是少一个字段**：发票抬头变成供应商名字，
+            #    「抬头是否本公司」「供应商是否关联方」两类规则会全反。
+            for ln in lines:
+                if ln.count("名称：") != 1:
+                    continue
+                left, right = ln.split("名称：")
+                lw = _name_like(left.split()[-1] if left.split() else "")
+                rw = _name_like(right.split()[0] if right.split() else "")
+                if lw and rw:
+                    buyer, seller = lw, rw
+                    break
+            else:
+                names = [n for n in re.findall(r"名\s*称[:：]\s*([^\s]+)", txt)
+                         if _name_like(n)]
+                if names:
+                    buyer = names[0]
+                    seller = names[1] if len(names) > 1 else None
 
     # ── 金额 ─────────────────────────────────────────────────────────────
     # 铁路电子客票用的是**全角 ￥**（U+FFE5），不是半角 ¥（U+00A5）。

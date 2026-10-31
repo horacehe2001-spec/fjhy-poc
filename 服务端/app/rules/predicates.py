@@ -281,3 +281,25 @@ def month_phrase(text):
     """
     m = _RE_MONTH.search(text or "")
     return m.group(1).strip() if m else None
+
+
+# 「2026年07月22日」这种完整日期。**必须年月日三件齐全**才算。
+# 车票的项目明细长这样：「2026年07月22日 13:35开 06车09F号 二等座」——
+# 那个日期是**乘车日期**，和发票的开票日期是两件事（开票在行程之后）。
+_RE_CN_DATE = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+
+
+def cn_dates(text):
+    """文本里所有「YYYY年MM月DD日」，返回 [(年, 月, 日)] 整数三元组。
+
+    **只认写全了年份的**：票面上还有「13:35开」这种时间、
+    「06车09F号」这种车厢座位，不带年份的「07月22日」一律不认——
+    跨年的行程会把月份猜错，而猜错一年的日期比取不到更坏：
+    它会让「乘车日期不在出差区间内」这条规则对正常单据大面积误报。
+    """
+    out = []
+    for y, m, d in _RE_CN_DATE.findall(text or ""):
+        y, m, d = int(y), int(m), int(d)
+        if 1 <= m <= 12 and 1 <= d <= 31:
+            out.append((y, m, d))
+    return out

@@ -23,6 +23,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import db  # noqa: E402
+from app import rule_feasibility as rf  # noqa: E402
 from app.perception import reader  # noqa: E402
 from app.rules import engine  # noqa: E402
 from app.rules import impl_822gh  # noqa: E402,F401  导入即注册
@@ -52,7 +53,7 @@ def test_可执行规则数等于有实现的规则数():
     have = {r["rule_id"] for r in db.query(
         "SELECT rule_id FROM rule WHERE instance_id=%s AND version=1", (IID,))}
     impl = set(engine.registered()) & have
-    assert len(rs) == len(impl) == 8, (len(rs), len(impl))
+    assert len(rs) == len(impl) == 10, (len(rs), len(impl))
     assert not rs.missing_impl, rs.missing_impl
 
 
@@ -93,7 +94,8 @@ def test_差旅规则不对招待单下结论():
         """SELECT bill_no FROM expense_bill WHERE instance_id=%s
             AND doc_type='业务招待费报账单'""", (IID,))]
     for bn in ent:
-        for rid in ("TR-差旅-02", "TR-差旅-15", "TR-差旅-20"):
+        for rid in ("TR-差旅-02", "TR-差旅-15", "TR-差旅-20",
+                    "TR-差旅-28", "TR-差旅-30"):
             f = res[bn][rid]
             assert (f.evidence or {}).get("not_applicable"), (
                 "%s 对招待单 %s 下了结论：%s" % (rid, bn, f.message))
@@ -157,6 +159,98 @@ def test_市内交通费那四张单不许再误报():
                "FJPG-BX2607280255", "FJPG-BX2607310058"):
         f = res[bn]["TR-差旅-20"]
         assert f.outcome != "hit", (bn, f.message)
+
+
+# ── 地点与日期一致性（TR-差旅-28 / TR-差旅-30）──────────────────────────
+def test_地点一致性只拿住宿票比_代订机票不许参与():
+    """**这组用例守的是三条实测出来的误报。**
+
+    拿全部发票比地点，这三张单会被误报——销售方是旅行社，
+    名字前缀是旅行社的注册地，不是出差地：
+        FJPG-BX2607162026  申报 遵义市  → 上海华程西南国际旅行社有限公司
+        FJPG-BX2608311795  申报 珠海    → 天津航路无界国际旅行社有限公司
+        FJPG-BX2607280255  申报 海南…   → 成都携程旅行社有限公司广州分公司
+    窄到住宿类之后 0 条。误报和漏报同样致命：对一张正常单据报
+    「出差地点和票据对不上」，审核岗核对一次就不再看这条规则了。
+    """
+    _, res = _run_all()
+    for bn in ("FJPG-BX2607162026", "FJPG-BX2608311795", "FJPG-BX2607280255"):
+        f = res[bn]["TR-差旅-28"]
+        assert f.outcome != "hit", (bn, f.message)
+    # 这三张单里确实有旅行社开的票——前提没变，用例才有意义
+    n = db.scalar("""SELECT count(*) FROM invoice
+                      WHERE instance_id=%s AND issuer LIKE %s""",
+                  (IID, "%旅行社%"))
+    assert n >= 3, n
+
+
+def test_地名比对不许依赖城市白名单():
+    """第一版用城市正则，**漏了「湛江」**——漏掉不报错，
+    只是「湛江市希朋酒店管理有限公司」对不上申报地「海南湛江」，
+    报一条误报。闭集合的地名表永远补不全（县、区、开发区、口岸）。
+
+    这里直接验 2 字片段的比法，不经过引擎。
+    """
+    from app.rules.impl_822gh import _grams
+    for place, issuer in (("海南湛江", "湛江市希朋酒店管理有限公司"),
+                          ("莆田市秀屿区", "莆田市必盛酒店管理有限公司秀屿分公司"),
+                          ("上海", "上海交通大学"),
+                          ("厦门", "厦门嘉美伦酒店管理有限公司"),
+                          ("南平", "南平雅阁国际大酒店有限公司")):
+        assert _grams(place) & _grams(issuer), (place, issuer)
+    # 反方向：真不一致的要判出来
+    for place, issuer in (("遵义市", "上海华程西南国际旅行社有限公司"),
+                          ("珠海", "天津航路无界国际旅行社有限公司")):
+        assert not (_grams(place) & _grams(issuer)), (place, issuer)
+
+
+def test_日期匹配用乘车日期不用开票日期():
+    """开票日期**本来就在行程之后**：FJPG-BX2606050495 的行程是
+    2026-05-24~26，而住宿发票的开票日期是 2026-06-08。
+    拿开票日期比出差区间，这张单会被判成「票据日期不在出差期间」——
+    而它完全正常。
+    """
+    f = _run_all()[1]["FJPG-BX2606050495"]["TR-差旅-30"]
+    assert f.outcome == "pass", (f.outcome, f.message)
+    # 前提：这张单确实有一张开票日期晚于出差结束日的发票
+    n = db.scalar("""SELECT count(*) FROM invoice i
+                       JOIN trip_application t ON t.bill_no = i.bill_no
+                      WHERE i.bill_no='FJPG-BX2606050495'
+                        AND i.issue_date > t.end_date""")
+    assert n >= 1, "没有开票日期晚于出差结束日的发票了，这条用例的前提变了"
+    # 取到的是乘车日期，而且落在区间内
+    assert f.evidence["票面乘车日期"] == ["2026-05-24", "2026-05-26"], \
+        f.evidence["票面乘车日期"]
+
+
+def test_不带年份的日期一律不认():
+    """票面上还有「13:35开」这种时间和「06车09F号」这种车厢座位。
+    不带年份的「07月22日」如果也认，跨年行程会把年份猜错——
+    猜错一年比取不到更坏，它会让这条规则对正常单据大面积误报。"""
+    from app.rules import predicates as P
+    assert P.cn_dates("2026年07月22日 13:35开 06车09F号 二等座") == [(2026, 7, 22)]
+    assert P.cn_dates("07月22日 13:35开 06车09F号") == []
+    assert P.cn_dates("*生产生活服务*住宿服务 1 398.11 6% 23.89") == []
+    assert P.cn_dates("2026年13月01日") == []          # 月份越界的不认
+
+
+def test_这两条判不了人工驳的那七条_要在结论里说清():
+    """**0 命中要说清是「判了没事」还是「根本判不了那件事」。**
+
+    TR-差旅-28 判不了人工那 5 条逐日地点：驳的是客户 ERP 的日历区，
+      而 trip_calendar.place 本实例 90 行全空（审批单 PDF 没有地点列）。
+    TR-差旅-30 判不了人工那 1 条培训通知日期：通知是扫描件，字段未抽取。
+    这两件事必须写在复核结论里，否则「通过 9 / 通过 10」会被读成
+    「地点和日期都核过了」。
+    """
+    assert db.scalar("""SELECT count(*) FROM trip_calendar
+                         WHERE instance_id=%s AND place IS NOT NULL""",
+                     (IID,)) == 0, "逐日地点有值了，这条用例的前提变了"
+    w28 = rf.MANUAL_REVIEW["TR-差旅-28"]["why"]
+    w30 = rf.MANUAL_REVIEW["TR-差旅-30"]["why"]
+    assert "判不了那 5 条" in w28, "没说清 TR-差旅-28 判不了人工那 5 条逐日地点"
+    assert "命中 0" in w28 and "命中 0" in w30
+    assert "培训通知" in w30 and "判不了" in w30
 
 
 # ── 审批单关键要素完整性（TR-通用-02）───────────────────────────────────

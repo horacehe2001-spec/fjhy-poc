@@ -409,6 +409,172 @@ def tr_cl_20(ctx, r):
               "市内交通费 %.2f 元未超包干上限 %.2f 元" % (float(amt), cap), ev)
 
 
+def _han(s):
+    return "".join(ch for ch in str(s or "") if "一" <= ch <= "龥")
+
+
+def _grams(s):
+    """地名的 2 字片段集合。**不用城市白名单。**
+
+    第一版用的是一张城市正则（北京|上海|…），实测它漏了「湛江」——
+    而漏掉的表现不是报错，是**静默失配**：湛江市希朋酒店对不上
+    申报地「海南湛江」，于是报一条「地点不符」的误报。
+    闭集合的地名表永远补不全（县、区、开发区、口岸），
+    所以改成比 2 字片段：「海南湛江」的片段里有「湛江」，
+    命中「湛江市希朋酒店管理有限公司」；「莆田市秀屿区」有「莆田」，
+    命中「莆田市必盛酒店管理有限公司秀屿分公司」。
+    """
+    h = _han(s)
+    return {h[i:i + 2] for i in range(len(h) - 1)}
+
+
+def _trips(fact):
+    ts = list(fact.get("trips") or [])
+    if not ts and fact.get("trip"):
+        ts = [fact["trip"]]
+    return ts
+
+
+# 住宿类项目明细的特征词。**只拿住宿票比地点**：
+# 酒店在哪儿，人就住在哪儿；而代订机票/代订附加那类票的销售方是旅行社，
+# 名字前缀是**旅行社的注册地**不是出差地。实测拿全部发票比，
+# 「上海华程西南国际旅行社」对申报地遵义、「天津航路无界国际旅行社」对珠海、
+# 「成都携程旅行社」对海南，3 张单全是误报；窄到住宿类之后 0 条。
+LODGING_HINTS = ("住宿",)
+
+
+def _lodging_invoices(fact):
+    out = []
+    for i in fact.get("invoices") or []:
+        dt = str(i.get("detail_text") or "")
+        if any(h in dt for h in LODGING_HINTS):
+            out.append(i)
+    return out
+
+
+@rule("TR-差旅-28")
+def tr_cl_28(ctx, r):
+    """差旅行程地点一致性：比对出差日历、审批单回填内容与发票明细里的地点。
+
+    【只比了两方，不是三方——这件事必须说在前面】
+      规则原文要比三方。**出差日历的逐日地点这一方不在库里**：
+      trip_calendar.place 本实例 90 行全空，因为出差审批单 PDF 的逐日表
+      只有「日期 × 早/中/晚」和「日期 × 上午/下午」两张小表，
+      **没有地点列**，整单只有表头一个「出差地点」。
+      人工为逐日地点驳过 5 次（「日历区7月23日地点改为厦门」这类），
+      驳的是客户 ERP 里的日历区，那个数据我们根本没拿到。
+      所以这条规则**判不了人工驳的那 5 条**，它判的是另一件事：
+      审批单申报的出差地 vs 住宿发票的开票方所在地。
+
+    【为什么只拿住宿票比】
+      见 LODGING_HINTS 上面那段：拿全部发票比会把旅行社注册地当出差地，
+      实测 3 张单全误报。
+
+    【为什么用 2 字片段而不是城市表】
+      见 _grams。城市白名单漏「湛江」，漏了不报错、只误报。
+    """
+    ts = _trips(ctx.fact)
+    if not ts:
+        return not_applicable(
+            r["rule_id"],
+            "本单没有已解析的出差审批单，取不到申报的出差地点")
+    places = [t.get("place") for t in ts if t.get("place")]
+    g = set().union(*[_grams(p) for p in places]) if places else set()
+    lodging = _lodging_invoices(ctx.fact)
+    usable = [i for i in lodging if _han(i.get("issuer")) and
+              len(_han(i.get("issuer"))) >= 4]
+    ev = {"申报的出差地点": places,
+          "住宿类发票张数": len(lodging),
+          "开票方可用的": [str(i.get("issuer")) for i in usable],
+          "只比了两方": "规则原文要比三方。出差日历的逐日地点本实例取不到"
+                        "（trip_calendar.place 90 行全空，出差审批单 PDF 的"
+                        "逐日表没有地点列）。人工为逐日地点驳过 5 次，驳的是"
+                        "客户 ERP 的日历区，**这条规则判不了那 5 条**。",
+          "不比的发票": "代订机票/代订附加类不参与比对——销售方是旅行社，"
+                        "名字前缀是旅行社注册地不是出差地。实测拿全部发票比"
+                        "会误报 3 张单。",
+          "出处": CLAUSE["差旅"]}
+    if not places:
+        return pending(r["rule_id"], "审批单上取不到出差地点", ev)
+    if not usable:
+        return pending(
+            r["rule_id"],
+            "本单 %d 张住宿类发票的开票方名称取不到（票面是扫描件或开票方那一格"
+            "没解析出来），无法比对地点" % len(lodging)
+            if lodging else "本单没有住宿类发票，没有可比对地点的票据", ev)
+    bad = [i for i in usable if not (_grams(i.get("issuer")) & g)]
+    ev["逐票比对"] = [{"开票方": str(i.get("issuer")),
+                       "与申报地有共同地名片段": bool(_grams(i.get("issuer")) & g)}
+                      for i in usable]
+    if bad:
+        return hit(r["rule_id"],
+                   "住宿发票的开票方所在地与申报出差地点「%s」对不上：%s"
+                   % ("、".join(places),
+                      "、".join(str(i.get("issuer")) for i in bad)), ev)
+    return ok(r["rule_id"],
+              "%d 张住宿发票的开票方所在地都落在申报出差地点「%s」内"
+              % (len(usable), "、".join(places)), ev)
+
+
+@rule("TR-差旅-30")
+def tr_cl_30(ctx, r):
+    """差旅审批与票据时间匹配：审批单的出差日期范围 vs 票据上的日期。
+
+    【用乘车日期，不用开票日期】
+      开票日期**本来就在行程之后**（实测住宿发票 2026-05-24~26 的行程
+      开票日期是 06-08）。拿开票日期比区间会把正常单据大面积判成
+      「票据日期不在出差期间」。
+      车票的项目明细里有真正的乘车日期（「2026年07月22日 13:35开 06车09F号
+      二等座」），比的是它。
+
+    【只比了两方，不是三方】
+      规则原文还要比「附件通知」的日期（培训通知/会议通知上写的活动起止）。
+      那类附件的字段抽取还没做，所以这条判不了人工驳 FJPG-BX2608311795
+      时说的「按照培训通知体现出差时间应为8.22-8.28」——
+      通知上的日期不在库里。
+      住宿发票票面也没有入住日期（hotel_invoice 本实例 0 行），不参与。
+
+    【本批 0 命中，这是实测结果不是没判】
+      10 份审批单取到了乘车日期，全部落在申报的出差区间内。
+    """
+    ts = _trips(ctx.fact)
+    if not ts:
+        return not_applicable(
+            r["rule_id"], "本单没有已解析的出差审批单，取不到出差日期范围")
+    spans = [(t.get("start_date"), t.get("end_date")) for t in ts
+             if t.get("start_date") and t.get("end_date")]
+    rides = []
+    for i in ctx.fact.get("invoices") or []:
+        for y, m, d in P.cn_dates(str(i.get("detail_text") or "")):
+            rides.append((datetime.date(y, m, d), i.get("inv_no")))
+    ev = {"出差日期范围": ["%s~%s" % (a, b) for a, b in spans],
+          "票面乘车日期": sorted({str(d) for d, _ in rides}),
+          "只比了两方": "规则原文还要比附件通知上的活动起止日期，"
+                        "那类附件的字段抽取还没做。人工驳 FJPG-BX2608311795 时"
+                        "说的「按照培训通知体现出差时间应为8.22-8.28」，"
+                        "**通知上的日期不在库里，这条规则判不了它**。",
+          "不用开票日期": "开票日期本来就在行程之后（实测 05-24~26 的行程"
+                          "住宿发票开票日期是 06-08），拿它比区间会大面积误报。",
+          "出处": CLAUSE["差旅"]}
+    if not spans:
+        return pending(r["rule_id"], "审批单上取不到出差起止日期", ev)
+    if not rides:
+        return pending(
+            r["rule_id"],
+            "本单票据的项目明细里取不到乘车日期（车票是扫描件，或本单没有车票）",
+            ev)
+    out = [(d, no) for d, no in rides
+           if not any(a <= d <= b for a, b in spans)]
+    if out:
+        return hit(r["rule_id"],
+                   "有 %d 个乘车日期落在申报的出差区间（%s）之外：%s"
+                   % (len(out), "、".join(ev["出差日期范围"]),
+                      "、".join("%s（票 %s）" % (d, no) for d, no in out)), ev)
+    return ok(r["rule_id"],
+              "%d 个乘车日期都落在申报的出差区间（%s）内"
+              % (len(rides), "、".join(ev["出差日期范围"])), ev)
+
+
 # ═════════════════════════════════════════════════════════════════════════
 # 通用
 # ═════════════════════════════════════════════════════════════════════════
