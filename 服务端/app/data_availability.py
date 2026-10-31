@@ -60,6 +60,9 @@ _SCOPE = {
         "attachment_id IN (SELECT id FROM attachment WHERE instance_id = %s)",
     "budget":
         "org_id IN (SELECT org_id FROM org WHERE instance_id = %s)",
+    # 招待明细（迁移 0053）。它自己带 instance_id（由触发器从报账单继承），
+    # 所以走直表过滤，不用经 bill_no join。
+    "entertain_detail": None,
 }
 
 # 这几列是**簿记字段，不是业务数据**，不许拿来判规则：

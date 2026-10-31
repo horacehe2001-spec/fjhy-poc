@@ -424,6 +424,10 @@ _FIELD_POLICY = {
     "claimant": "name",
     # M02 账号
     "payee_account": "card", "account": "card", "bank_account": "card",
+    # M01b 人员名单：整列不出明文，只给人数。见 _mask_roster 的说明。
+    # **不叫 guest_names**：带 name 的字段名会落到上面那条 "name" 策略上，
+    # 而这一列要的是比姓名更严的处理（里面是外部人员、姓名与职务黏连）。
+    "guest_list": "roster", "attendee_list": "roster", "roster": "roster",
     # M03 手机
     "mobile": "mobile", "phone": "mobile", "tel": "mobile",
     # M04 工号
@@ -476,9 +480,46 @@ def _apply_raw(policy, value):
     if policy == "key":
         # Key 一律不回明文，连掩码都由上层显式提供
         return "***"
+    if policy == "roster":
+        return _mask_roster(value)
     if policy == "free":
         return mask_text(value)
     return mask_text(value)
+
+
+def _mask_roster(value):
+    """人员名单整列不出明文，只给人数。
+
+    为什么不走自由文本那条路：自由文本靠闭集合换掉姓名，而这一列里的人
+    **按构造进不了闭集合**——
+      · 他们是**外部人员**（招待对象），不在 employee 表里，names_from_db 取不到；
+      · 姓名和职务**黏在一起、没有分隔符**，实测取值
+        「福建省华侨实业集团有限责任公司总经理朱宗秋、总经理助理詹志强、
+          创新事业部经理俞婷」
+        按 2~3 字 token 切，一个人名都切不出来。
+    两条都不成立，自由文本脱敏在这一列上等于没脱。
+
+    为什么不写一条「职务词之后的 2~3 个汉字当姓名」的宽规则（**这是推断，
+    没有实测过**）：职务词表要靠人列，漏一个词就整条漏；而把词表放宽
+    会伤到「创新事业部」这种正常业务词。漏报和误报两头都踩，
+    而这一列的值对规则来说本来就只需要人数——所以不做宽规则，
+    **整列不出明文**，人数照样给（陪同人数与名单人数对不对得上，够判了）。
+
+    人数按「、」「,」「，」「;」「；」分段数，**只在真有分隔符时才报人数**。
+    没有分隔符就如实说数不出来，不给一个 1——实测这一列有 2 行填的是
+    「详情见附件」，把它算成 1 人，「名单人数与陪同人数不符」这条规则
+    就会静默判过。第一版拿「结尾是不是 2~3 个汉字」当判据，
+    那个条件对任何中文串都成立（「详情见附件」也成立），等于没判。
+    """
+    if not isinstance(value, str):
+        return value
+    s = value.strip()
+    if not s:
+        return s
+    parts = [x for x in re.split(r"[、,，;；]+", s) if x.strip()]
+    if len(parts) < 2:
+        return "名单已整列脱敏（无分隔符，数不出人数：%d 字）" % len(s)
+    return "名单 %d 人（已整列脱敏）" % len(parts)
 
 
 def mask_concept(concept_id, value):

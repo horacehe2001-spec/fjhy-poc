@@ -242,6 +242,55 @@ def test_单位名规则不许把人名吃掉():
     assert not mask.looks_like_org("靳纭芷莆田差旅")
 
 
+def test_招待对象名单整列不出明文():
+    """这一列里的人**按构造进不了闭集合**，所以不能走自由文本那条路：
+      · 他们是外部人员（招待对象），不在 employee 表里，names_from_db 取不到
+      · 姓名和职务黏在一起没有分隔符，按 2~3 字 token 切一个都切不出来
+    两条都不成立时，自由文本脱敏在这一列上等于没脱——
+    下面第二个断言就是这个事实的留痕。"""
+    raw = "福建省华侨实业集团有限责任公司总经理朱宗秋、总经理助理詹志强、创新事业部经理俞婷"
+    assert mask.scrub({"guest_list": raw})["guest_list"] == "名单 3 人（已整列脱敏）"
+    # 同一串值落在自由文本列上会原样出去。**这不是这条用例要修的东西**，
+    # 它钉的是「为什么 guest_list 必须单列一条策略」。
+    assert "朱宗秋" in mask.scrub({"summary": raw})["summary"]
+
+
+def test_名单数不出人数时不许给一个假的数():
+    """实测有 2 行填的是「详情见附件」。把它算成 1 人，
+    「名单人数与陪同人数不符」这条规则就会静默判过。
+    第一版拿「结尾是不是 2~3 个汉字」当判据——那个条件对任何中文串都成立，
+    等于没判，「详情见附件」当时被算成了 1 人。"""
+    out = mask.scrub({"guest_list": "详情见附件"})["guest_list"]
+    assert "数不出人数" in out, out
+    assert "1 人" not in out, out
+    # 真有分隔符才报人数
+    assert mask.scrub({"guest_list": "甲一、乙二"})["guest_list"] == "名单 2 人（已整列脱敏）"
+    # 空与非字符串原样返回
+    assert mask.scrub({"guest_list": ""})["guest_list"] == ""
+    assert mask.scrub({"guest_list": None})["guest_list"] is None
+
+
+def test_名单字段名不许带name():
+    """带 name 的字段名会落到姓名策略上，而这一列要的是更严的处理。
+    项目里为「对外字段不要叫 name」踩过四次，这里是第五次的预防。"""
+    assert "guest_list" in mask._FIELD_POLICY
+    assert mask._FIELD_POLICY["guest_list"] == "roster"
+    cols = [c for _, c in mask._PURE_NAME_COLS + mask._COMPOSITE_NAME_COLS]
+    assert "guest_list" not in cols, (
+        "guest_list 被当成姓名来源列了：它整列不出明文，"
+        "进姓名来源只会把外部人员的姓名收进闭集合")
+
+
+def test_库里的招待对象名单过一遍脱敏_没有裸的人名():
+    """反向自检：直接拿库里 17 行真值过一遍，不许有 2 个以上连着的汉字留下。"""
+    rows = db.query("SELECT guest_list FROM entertain_detail WHERE guest_list IS NOT NULL")
+    assert rows, "招待明细没入库，这条用例的前提没了"
+    for r in rows:
+        out = mask.scrub({"guest_list": r["guest_list"]})["guest_list"]
+        assert out.startswith("名单"), out
+        assert r["guest_list"] not in out
+
+
 def test_被代报人仍在内置名单里_但根因是我方没读员工导出():
     """这条钉的是**注释里那句归因**，不是行为：原来写「客户没给工号」，
     而员工导出里一直有她（工号 2005235）。归因错了，清单就会让客户去补

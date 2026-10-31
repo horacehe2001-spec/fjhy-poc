@@ -18,6 +18,7 @@
    会被静默跳过，页面上只会显示「这条规则没发现问题」。
 """
 import os
+import re
 import sys
 
 import pytest
@@ -235,6 +236,51 @@ def test_适用单据按单据类型数而不是按费用大类():
     assert any("会议" in (r["biz_type"] or "") for r in rows), (
         "这条用例的前提没了：费用大类里已经没有带「会议」的了")
     assert rf.applicable_bills(IID)["会议"] == 0
+
+
+def test_建表把缺字段的规则挪出来了_但挪出来不等于能判():
+    """招待明细建表（迁移 0053）之后实测：
+    「缺字段」30 → 15 条，挪出来的 15 条正是要「业务招待清单」的那一批；
+    而其中 2 条（TR-接待-07/08）落到了「未发现数据缺口·待复核」，
+    逐条复核后**都是 0/29**——一个的适用范围是 0 行，一个缺分母。
+    **这一档存在的意义就是接住这种情况**，这已经是第三次了。"""
+    rep = rf.report(IID)
+    assert rf.NEED_MAP["业务招待清单"] == ("entertain_detail", None)
+    assert rf.NEED_MAP["招待明细日期"] == ("entertain_detail", "happen_date")
+    snap = rep["snapshot"]
+    assert snap["tables"]["entertain_detail"] == 17, snap["tables"].get("entertain_detail")
+    for rid in ("TR-接待-07", "TR-接待-08"):
+        assert rid in rf.MANUAL_REVIEW, "%s 落到待复核却没有人工复核结论" % rid
+        assert rf.MANUAL_REVIEW[rid]["scope"].startswith("0/29"), rid
+
+
+def test_酒水金额没填不许算成零():
+    """0 和「没填」在金额上不是一回事：补成 0 会让「酒水超标」这类规则
+    对着一个假的 0 判通过。实测 17 行里只有 2 行有值。"""
+    g = (da.snapshot(IID)["columns"]["entertain_detail"])["liquor_amount"]
+    assert g[2] == "部分" and g[0] == 2, g
+    assert db.scalar("""SELECT count(*) FROM entertain_detail
+                         WHERE instance_id = %s AND liquor_amount IS NULL""",
+                     (IID,)) == 15
+
+
+def test_招待明细的码列没有被翻译成业务值():
+    """三列是系统码，客户没给码表。**不许自己翻译**——
+    把 LEVEL_05 猜成某个职级档，整类陪同级别判定全错，而且错得看起来很合理。
+    所以库里存的必须还是码，而且这些码不许出现在枚举值里。"""
+    rows = db.query("""SELECT DISTINCT entertain_type, entertain_way, companion_level
+                         FROM entertain_detail WHERE instance_id = %s""", (IID,))
+    codes = set()
+    for r in rows:
+        codes |= {r["entertain_type"], r["entertain_way"], r["companion_level"]}
+    codes.discard(None)
+    assert codes, "三个码列全空，这条用例验不了"
+    bad = [c for c in codes if not re.match(r"^[A-Z][A-Z0-9_]+$", c)]
+    assert not bad, "这些取值不像系统码，像是被翻译过了：%s" % bad
+    inenum = db.query("""SELECT value FROM enum_value_current
+                          WHERE instance_id = %s AND value = ANY(%s)""",
+                      (IID, sorted(codes)))
+    assert not inenum, "系统码进了枚举值：%s" % inenum
 
 
 def test_每个维度都登记了适用单据口径():

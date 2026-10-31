@@ -71,6 +71,10 @@ XLS_DIR = os.path.join(WORK, "xls")
 # 员工全量导出。**不在压缩包里**，是单独一份 xlsx，和报账单导出同级目录。
 EMP_XLSX = os.path.join(ROOT, "员工信息导出(2026-10-27).xlsx")
 
+# 招待明细区只在招待费那份导出里有（差旅那份没有这张工作表）。
+# 工作表名两份都不冲突，所以直接按名字取，取不到就是 0 行。
+ENT_SHEET = "招待明细区"
+
 # (压缩包, 主表工作表名, 分摊工作表名, 单据类型, 费用归属工作表名)
 # 两份导出的工作表名不一样（一份叫「归属区」，一份叫「费用归属区」），
 # 所以归属表名跟着源文件走，不要图省事写死一个。
@@ -96,6 +100,27 @@ def excel_date(v):
     if n < 20000 or n > 80000:          # 明显不是日期序列号
         return None
     return (datetime.date(1899, 12, 30) + datetime.timedelta(days=int(n)))
+
+
+def s_(v):
+    """单元格 → 文本，空串归 None。"""
+    t = str(v or "").strip()
+    return t or None
+
+
+def num(v):
+    """单元格 → 小数，读不出就 None，**不补 0**。
+    0 和「没填」在金额上不是一回事：补成 0 会让「酒水金额超标」这类规则
+    对着一个假的 0 判通过。"""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def intg(v):
+    n = num(v)
+    return int(n) if n is not None else None
 
 
 def sheet_rows(wb, name):
@@ -215,7 +240,7 @@ def ensure_xls():
 
 xls = ensure_xls()
 emps = emp_master()
-bills, details, places, reviews = [], [], [], []
+bills, details, places, reviews, ents = [], [], [], [], []
 
 for zf, main_sheet, alloc_sheet, doc_type, own_sheet in SRC:
     path = xls.get(zf)
@@ -228,9 +253,11 @@ for zf, main_sheet, alloc_sheet, doc_type, own_sheet in SRC:
     _, pls = sheet_rows(wb, "出差地点")
     _, pays = sheet_rows(wb, "支付区")
     _, owns = sheet_rows(wb, own_sheet)
+    _, entr = sheet_rows(wb, ENT_SHEET)
     p("=== %s ===" % os.path.basename(path))
-    p("  主表 %d / 分摊 %d / 出差地点 %d / 支付区 %d / %s %d"
-      % (len(mains), len(allocs), len(pls), len(pays), own_sheet, len(owns)))
+    p("  主表 %d / 分摊 %d / 出差地点 %d / 支付区 %d / %s %d / %s %d"
+      % (len(mains), len(allocs), len(pls), len(pays), own_sheet, len(owns),
+         ENT_SHEET, len(entr)))
 
     pay_of = {}
     for r in pays:
@@ -295,6 +322,32 @@ for zf, main_sheet, alloc_sheet, doc_type, own_sheet in SRC:
         bn = str(x.get("单据号") or "").strip()
         if bn:
             places.append({"bill_no": bn, "place": str(x.get("出差地点") or "").strip()})
+    # 招待明细区 → entertain_detail（迁移 0053 新建的表）。
+    # 三个码列（招待类型/招待方式/陪同级别）**原样存，不翻译**：
+    # 导出给的是 OTHER_ENTERTAIN / EAT_WORK / LEVEL_05 这种系统码，
+    # 客户没给码表。把 LEVEL_05 猜成某个职级档，整类陪同级别判定全错，
+    # 而且错得看起来很合理。码表列进客户清单。
+    for x in entr:
+        bn = str(x.get("单据号") or "").strip()
+        if not bn:
+            continue
+        ents.append({
+            "bill_no": bn,
+            # 行号跨源文件连续数（len(ents)+1），不用 enumerate 的局部序号：
+            # 现在只有招待费那份导出有这张表，真多出第二份时局部序号会从 1
+            # 重来，两份的行号就撞了。和 expense_detail 的编号方式一致。
+            "line_no": len(ents) + 1,
+            "amount": num(x.get("招待金额")),
+            "entertain_type": s_(x.get("招待类型")),
+            "entertain_way": s_(x.get("招待方式")),
+            "companion_level": s_(x.get("陪同级别与招待对象")),
+            "place": s_(x.get("招待地点")),
+            "happen_date": excel_date(x.get("发生日期")),
+            "guest_count": intg(x.get("招待人数")),
+            "companion_count": intg(x.get("陪同人数")),
+            "liquor_amount": num(x.get("领用酒水金额")),
+            "guest_list": s_(x.get("招待对象名单")),
+        })
     p("")
 
 p("=== 解析结果 ===")
@@ -322,6 +375,26 @@ for b in bills:
         p("  · %s  %s" % (b["bill_no"], n))
 p("  收款账户名称（银行账号那一列）**故意没入库**：见本文件口径 6。")
 p("  成本中心/部门属性/项目名称/项目类型 读到了但库里没有对应字段，未入库。")
+p("")
+p("=== 招待明细区（2026-10-31 补读，表是迁移 0053 新建的）===")
+p("  %d 行 / %d 张单" % (len(ents), len({e["bill_no"] for e in ents})))
+for col, lab in (("entertain_type", "招待类型"), ("entertain_way", "招待方式"),
+                 ("companion_level", "陪同级别")):
+    vals = sorted({e[col] for e in ents if e[col]})
+    p("  %s（**系统码，客户没给码表，原样存**）: %s" % (lab, vals))
+p("  招待地点: %s" % sorted({e["place"] for e in ents if e["place"]}))
+p("  发生日期还原出来的: %d/%d 行；区间 %s ~ %s"
+  % (sum(1 for e in ents if e["happen_date"]), len(ents),
+     min((e["happen_date"] for e in ents if e["happen_date"]), default="—"),
+     max((e["happen_date"] for e in ents if e["happen_date"]), default="—")))
+p("  招待人数合计 %s / 陪同人数合计 %s / 酒水金额合计 %s"
+  % (sum(e["guest_count"] or 0 for e in ents),
+     sum(e["companion_count"] or 0 for e in ents),
+     sum(e["liquor_amount"] or 0 for e in ents)))
+_nolist = [e["bill_no"] for e in ents if (e["guest_list"] or "") == "详情见附件"]
+p("  招待对象名单填「详情见附件」的 %d 行：%s" % (len(_nolist), sorted(set(_nolist))))
+p("  名单这一列**整列不出明文**（外部人员姓名与职务黏连，闭集合切不出来），")
+p("  对外只给人数，见 app/mask.py 的 roster 策略。本报告也不打印原值。")
 p("")
 p("=== 员工（2026-10-31 补全）===")
 p("  员工导出 %d 人；部门 %d 个；职级（主岗）%s"
@@ -485,6 +558,20 @@ if os.environ.get("WRITE") == "1":
             cur.execute("""INSERT INTO expense_detail(bill_no, expense_item, amount,
                                alloc_dept, line_no) VALUES (%s,%s,%s,%s,%s)""",
                         (d["bill_no"], d["expense_item"], d["amount"], d["dept"], i))
+        # 招待明细。instance_id 由 0053 的触发器从报账单继承，这里不传。
+        # 不用先 DELETE：表上 bill_no 是 ON DELETE CASCADE，
+        # 上面删 expense_bill 时这批已经跟着走了。
+        for e in ents:
+            cur.execute("""INSERT INTO entertain_detail(bill_no, line_no, amount,
+                               entertain_type, entertain_way, companion_level,
+                               place, happen_date, guest_count, companion_count,
+                               liquor_amount, guest_list)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (e["bill_no"], e["line_no"], e["amount"],
+                         e["entertain_type"], e["entertain_way"],
+                         e["companion_level"], e["place"], e["happen_date"],
+                         e["guest_count"], e["companion_count"],
+                         e["liquor_amount"], e["guest_list"]))
         # 人工驳回意见 → manual_review。**这是人的结论，必须留痕。**
         for r in reviews:
             cur.execute("""INSERT INTO manual_review(bill_no, reviewer, decision,
@@ -508,7 +595,10 @@ if os.environ.get("WRITE") == "1":
             ("""SELECT count(bearing_dept) FROM expense_bill WHERE instance_id=%s""",
              "单据·费用归属部门"),
             ("""SELECT count(*) FROM expense_bill WHERE instance_id=%s
-                  AND left(submitter_no,4)='SMP-'""", "单据·报账人仍是占位号")):
+                  AND left(submitter_no,4)='SMP-'""", "单据·报账人仍是占位号"),
+            ("SELECT count(*) FROM entertain_detail WHERE instance_id=%s", "招待明细"),
+            ("""SELECT count(happen_date) FROM entertain_detail
+                  WHERE instance_id=%s""", "招待明细·有发生日期")):
         p("  %s: %s" % (lab, db.scalar(q, (IID,))))
     p("  明细 instance_id（应由触发器自动填）: %s"
       % {r["instance_id"]: r["n"] for r in db.query(
@@ -529,4 +619,5 @@ else:
 os.makedirs(WORK, exist_ok=True)
 os.makedirs(WORK, exist_ok=True)
 io.open(os.path.join(WORK, "import822.txt"), "w", encoding="utf-8").write("\n".join(out))
-print("ok: 单据 %d / 明细 %d / 驳回 %d" % (len(bills), len(details), len(reviews)))
+print("ok: 单据 %d / 明细 %d / 驳回 %d / 招待明细 %d / 员工 %d"
+      % (len(bills), len(details), len(reviews), len(ents), len(emps)))
