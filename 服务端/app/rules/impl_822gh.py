@@ -192,14 +192,31 @@ def tr_jd_01(ctx, r):
       按日期比则两张都通过，和人工 2/2 一致。
       3 分钟的差是表单填报的噪声，不是「先接待后审批」。
 
-    【判不了人工真驳过的那两条，要说清楚】
-      人工为审批滞后驳过两张：
-        FJPG-BX2604160034「审批滞后，请在补充说明栏备注原因」
-        FJPG-BX2607162084「业务审批清单，审批流程滞后」
-      这两张的业务接待审批单是 **JPG**，还没读图——所以它们是 pending。
-      本规则现在只有 2 份有文字层的审批单可判，**两份都通过**，
-      而真正的阳性样本在那 26 份 JPG 里。
-      「通过 2 张」不等于「接待审批都合规」。
+    【人工驳过审批滞后的那两张，现在一张判出来了、另一张本来就不归这条管】
+      FJPG-BX2607162084「业务审批清单，审批流程滞后」
+        2026-11-01 读图批把它的审批单读出来了（那张 JPG 是 OA 打印件，
+        流转记录完整）：接待时间 07-15 18:00，分管领导 07-16 08:18、
+        主管领导 07-16 10:44 → **按日期命中**，和人工原话对上。
+      FJPG-BX2604160034「审批滞后，请在补充说明栏备注原因」
+        这是**差旅费报账单**，人工说的是出差审批滞后，不是接待审批。
+        本规则对它返回「不适用」是对的，不要为了「让它也被判到」
+        去放宽适用范围。
+
+    【剩下 5 份 pending 是什么，要说清楚——不是「还没读图」】
+      26 份 JPG 已经全部读过了（44 次调用、0 份漏读）。读完之后才看清
+      这一桶里装的是三种不同的表：
+        · **OA 打印件**（3 份）：流转记录带时间戳，能判——阳性样本就在这里
+        · **手写纸质业务接待审批单**：经办人/承办部门/分管领导/主管领导
+          **只有签名、没有日期**。票面上就没有审批时间这个信息，
+          读图读不出来是因为**它不存在**，不是因为读不清。
+        · **简餐审批单（附件3）/ 纪念品、酒水领用申请单（附件6）**：
+          定类时被归成了业务接待审批单，但它们连「接待时间」那一格都没有，
+          回写闸按「必须有接待时间」把它们挡在表外了。
+      所以这 5 份 pending 的真实含义是
+      **「这张单的接待审批时间在纸面上就不存在」**，
+      要判它得客户从 OA 导审批流水，读图再读一百遍也没有。
+
+    【「通过 3 张」仍然不等于「接待审批都合规」】
 
     【条款里另外两项不判】
       「接待对象应为有实质性业务往来人员」要人判断实质；
@@ -222,27 +239,49 @@ def tr_jd_01(ctx, r):
     if not apprs:
         return pending(
             r["rule_id"],
-            "本单是%s，但没有已解析的业务接待审批单"
-            "（附件里的审批单是 JPG 或扫描件，尚未读图），取不到审批时间"
+            "本单是%s，但没有已解析的业务接待审批单。"
+            "26 份 JPG 已于 2026-11-01 全部读过——读完才看清这一桶里混着"
+            "简餐审批单和酒水领用单（连「接待时间」那一格都没有），"
+            "以及**只有签名、没有日期**的手写纸质审批单。"
+            "要判这一条，得客户从 OA 导出接待审批流水"
             % (doc_type or "接待类单据"), base)
-    rows = ctx.fact.get("approvals") or []
+    # **只取业务接待审批那条流程的流水。** approval_record 装两条流程
+    # （NULL = 报账流程，见 migration 0059），混起来取 max 会把报账流程的
+    # 审批时间当成接待审批的最后一步——报账总是发生在接待之后，
+    # 于是每一张单都会被判成「先接待后审批」。这是误报，不是漏报。
+    rows = [x for x in (ctx.fact.get("approvals") or [])
+            if x.get("flow") == "业务接待审批"]
+    # 一张报账单挂多份审批单（实测最多 9 份）。能按份对上就按份对
+    # （app_no 是 migration 0060 加的），对不上的退回「本单该流程的最后一步」
+    # 并在证据里说明用的是哪一种——**不许悄悄退化**。
+    by_form = {}
+    for x in rows:
+        if x.get("app_no") and x.get("approved_at"):
+            by_form.setdefault(x["app_no"], []).append(x["approved_at"])
+    bill_last = max((x.get("approved_at") for x in rows
+                     if x.get("approved_at")), default=None)
     bad, unknown, detail = [], [], []
     for a in apprs:
         ent_at = a.get("entertain_at")
-        last = max((x.get("approved_at") for x in rows
-                    if x.get("approved_at")), default=None)
+        mine = by_form.get(a.get("app_no"))
+        last = max(mine) if mine else bill_last
         d_ent = str(ent_at)[:10] if ent_at else None
         d_app = str(last)[:10] if last else None
         detail.append({"审批单": a.get("app_no"), "接待时间": str(ent_at),
                        "最后审批时间": str(last),
-                       "接待日期": d_ent, "审批日期": d_app})
+                       "接待日期": d_ent, "审批日期": d_app,
+                       "审批时间取自": ("这份审批单自己的流水" if mine
+                                   else "本单业务接待审批流程的最后一步"),
+                       "来源": a.get("extracted_from")})
         if not d_ent or not d_app:
             unknown.append(a.get("app_no"))
         elif d_app > d_ent:
             bad.append({"审批单": a.get("app_no"), "接待日期": d_ent,
                         "审批日期": d_app})
     ev = dict(base)
-    ev.update({"审批单份数": len(apprs), "审批流水行数": len(rows),
+    ev.update({"审批单份数": len(apprs),
+               "业务接待审批流水行数": len(rows),
+               "另一条流程的流水行数": len(ctx.fact.get("approvals") or []) - len(rows),
                "逐份明细": detail})
     if bad:
         return hit(r["rule_id"],
@@ -644,14 +683,34 @@ def tr_cl_30(ctx, r):
           "出处": CLAUSE["差旅"]}
     if not spans:
         return pending(r["rule_id"], "审批单上取不到出差起止日期", ev)
-    bad_notice = []
+    # 申报区间与通知区间的差异：**算出来、报出来，但不下结论。**
+    #
+    # 批次 C 里我把口径定成「申报必须覆盖通知」，当时只有 1 份通知，
+    # 而那一份正好覆盖住了，所以 0 命中、看不出问题。
+    # 2026-11-01 读图补到 6 份通知之后，这个口径当场产出一条命中：
+    #   FJPG-BX2606011481 申报 05-23~05-28  覆盖通知 05-24~05-28  通过
+    #   FJPG-BX2606050568 申报 05-24~05-28  覆盖              通过
+    #   FJPG-BX2606050495 申报 05-24~05-26  **没覆盖** → 命中
+    # 三个人参加同一期培训班，其中一个少报两天。
+    # **人工对 2606050495 驳的是「补充5.25日用餐与用车情况」，没驳这件事。**
+    # 提前回程是正常的；反过来申报比通知长（2606011481 早一天出发赶路）
+    # 也是正常的。两个方向都有正常解释，**而这条规则到底算哪个方向违规，
+    # 客户没说过**——人工驳 2608311795 的那句「按照培训通知体现出差时间应为
+    # 8.22-8.28」说的是逐日表只填了两天（TR-通用-02 判的），不是申报区间。
+    #
+    # 口径未定就不许命中：在 6 个样本、0 个人工标注的基础上自己定一个方向，
+    # 产出的就是误报。差异照算照报，结论留给客户定口径。
+    notice_diff = []
     for na, nb in notices:
-        # 通知说的活动区间，审批单必须**覆盖**。实测 FJPG-BX2608311795
-        # 通知是 08-22~08-28、审批单申报 08-22~08-28，覆盖住了——
-        # 人工驳的「仅体现8.22、8.28两天」说的是**逐日表只填了两天**，
-        # 那件事由 TR-通用-02 判（已命中）。这里判的是申报区间本身。
         if not any(a <= na and nb <= b for a, b in spans):
-            bad_notice.append("通知 %s~%s" % (na, nb))
+            notice_diff.append("通知 %s~%s" % (na, nb))
+    if notice_diff:
+        ev["申报区间与通知区间不一致"] = notice_diff
+        ev["为什么不据此命中"] = (
+            "口径未定：申报比通知短（提前回程）和比通知长（提前一天赶路）"
+            "都有正常解释，客户没说过哪个方向算违规，"
+            "而人工对唯一一张不一致的单（FJPG-BX2606050495）驳的是别的事。"
+            "**这一项算了但不计入结论**，等客户定口径。")
     if not rides and not notices:
         return pending(
             r["rule_id"],
@@ -659,16 +718,18 @@ def tr_cl_30(ctx, r):
             "通知也是扫描件——两方都取不到", ev)
     out = [(d, no) for d, no in rides
            if not any(a <= d <= b for a, b in spans)]
-    if out or bad_notice:
-        parts = []
-        if out:
-            parts.append("有 %d 个乘车日期落在申报的出差区间（%s）之外：%s"
-                         % (len(out), "、".join(ev["出差日期范围"]),
-                            "、".join("%s（票 %s）" % (d, no) for d, no in out)))
-        if bad_notice:
-            parts.append("申报的出差区间（%s）没有覆盖%s"
-                         % ("、".join(ev["出差日期范围"]), "、".join(bad_notice)))
-        return hit(r["rule_id"], "；".join(parts), ev)
+    if out:
+        return hit(r["rule_id"],
+                   "有 %d 个乘车日期落在申报的出差区间（%s）之外：%s"
+                   % (len(out), "、".join(ev["出差日期范围"]),
+                      "、".join("%s（票 %s）" % (d, no) for d, no in out)), ev)
+    if notice_diff:
+        return pending(
+            r["rule_id"],
+            "乘车日期都在申报区间内；但申报区间（%s）与%s不一致，"
+            "**这一项的口径客户还没定**（申报比通知短/长都有正常解释），"
+            "所以不下结论"
+            % ("、".join(ev["出差日期范围"]), "、".join(notice_diff)), ev)
     if not rides:
         return pending(
             r["rule_id"],
@@ -757,6 +818,26 @@ def tr_ty_02(ctx, r):
         app = t.get("app_no")
         sd, ed = t.get("start_date"), t.get("end_date")
         have = days_by_app.get(app, set())
+        # **读图抽取的审批单只读了表头，判不了这条规则。**
+        # 2026-11-01 实测到的误报，是我自己造出来的：读图批给 8 份扫描/JPG
+        # 审批单写了 trip_application 行，而那次的提示词只问了
+        # 出差起止日期和出差地点三个字段——**逐日用餐/用车表没问、
+        # 出差人签名日期也没问**。规则看到「逐日表一行都没有」「签名日期为空」，
+        # 于是报「逐日表缺 N 天」「没有签名回填日期」：
+        # 一次就把 6 张单从 pending 变成了命中，而票面上那些格子可能是填了的。
+        # **「没读」不是「没填」。** 这两件事在报告上长得一模一样，
+        # 而把前者说成后者，是审核系统最该避免的那种错。
+        if t.get("extracted_from") == "审批单读图":
+            unjudgeable.append(
+                {"审批单": app,
+                 "原因": "这份审批单是读图抽取的，提示词只问了出差起止与地点"
+                         "三个字段；逐日用餐/用车表和出差人签名日期**没有读**，"
+                         "不是票面上没有"})
+            per_app.append({"审批单": app, "出差起止": "%s~%s" % (sd, ed),
+                            "来源": "审批单读图（只读了表头）",
+                            "逐日表里的日期": sorted(have),
+                            "缺的日期": None, "出差人签名日期": None})
+            continue
         miss = []
         if isinstance(sd, datetime.date) and isinstance(ed, datetime.date) \
                 and sd <= ed:
@@ -794,8 +875,10 @@ def tr_ty_02(ctx, r):
         return hit(r["rule_id"], "；".join(parts), ev)
     if unjudgeable:
         return pending(r["rule_id"],
-                       "有 %d 份审批单取不到出差起止日期，无法核对逐日表是否填满"
-                       % len(unjudgeable), ev)
+                       "有 %d 份审批单判不了：%s"
+                       % (len(unjudgeable),
+                          "；".join("%s（%s）" % (u["审批单"], u["原因"])
+                                   for u in unjudgeable)), ev)
     return ok(r["rule_id"],
               "%d 份审批单的用餐/用车逐日表都填满了出差区间的每一天，"
               "且都有出差人签名回填日期" % len(trips), ev)

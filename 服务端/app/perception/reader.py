@@ -62,7 +62,14 @@ def _snapshot(cur, bill_no):
                  (bill_no,))
     counts["expense_detail"] = len(details)
 
-    approvals = _q(cur, """SELECT seq, node, approver, opinion, approved_at
+    # `flow` 必须进 fact：这张表装两条流程的流水（NULL = 报账流程，
+    # '业务接待审批' = 另一条 OA 流程，见 migration 0059）。不带这一列，
+    # 规则算「最后审批时间」时会把两条流程混在一起取 max——
+    # TR-接待-01 判的正是「业务接待审批的最后一步 vs 接待日期」，
+    # 混进报账流程的审批时间就会把正常单据判成「先接待后审批」。
+    # `app_no`（migration 0060）同理：一张单挂多份审批单时要能分份。
+    approvals = _q(cur, """SELECT seq, node, approver, opinion, approved_at,
+                                  flow, app_no
                            FROM approval_record WHERE bill_no = %s ORDER BY seq, id""",
                    (bill_no,))
     counts["approval_record"] = len(approvals)
@@ -130,7 +137,7 @@ def _snapshot(cur, bill_no):
                                             meal_standard, meal_persons,
                                             work_meal, car_arrange,
                                             lodging_arrange, gift_arrange,
-                                            budget_total
+                                            budget_total, extracted_from
                                        FROM entertain_approval
                                       WHERE bill_no = %s
                                       ORDER BY entertain_at, app_no""",

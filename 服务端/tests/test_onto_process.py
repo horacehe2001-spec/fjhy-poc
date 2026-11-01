@@ -156,20 +156,23 @@ def test_别条流程的审批流水不许计进报账流程():
     修法是加 approval_record.flow（迁移 0059）而不是给节点名加前缀：
     节点名就是节点名，它属于哪条流程是另一个维度。
     """
-    assert db.scalar("""SELECT count(*) FROM approval_record
-                         WHERE instance_id=%s AND flow='业务接待审批'""",
-                     (GH,)) == 8
+    # 8 → 16：2026-11-01 读图批又解出 2 份审批单的流转记录。
+    # **数字会随装载批次长，用例守的不是数字，是「别条流程不许计进来」。**
+    n_other = db.scalar("""SELECT count(*) FROM approval_record
+                            WHERE instance_id=%s AND flow='业务接待审批'""",
+                        (GH,))
+    assert n_other == 16, n_other
     # P05 就是那个会被串进去的节点，必须是空的
     p05 = next(n for n in op.graph(GH)["nodes"] if n["node_id"] == "P05")
     assert p05["measured"] is None, p05
     assert db.scalar("""SELECT count(*) FROM approval_record
                          WHERE instance_id=%s AND flow='业务接待审批'
-                           AND node='分管领导'""", (GH,)) == 2, (
-        "接待审批里没有分管领导那两条了，这条用例的前提变了")
+                           AND node='分管领导'""", (GH,)) == 4, (
+        "接待审批里的分管领导条数变了，这条用例的前提要重核")
     # build() 的来源说明要把两条流程分开报，不许合成一个数
     src = op.build(GH)["source"]
     assert src["审批记录"] == 0, src
-    assert src["另一条流程的审批记录"] == 8, src
+    assert src["另一条流程的审批记录"] == n_other, src
     # 福建海运集团那 388 条是报账流程的，不许被标成别条流程
     assert db.scalar("""SELECT count(*) FROM approval_record
                          WHERE instance_id='fjhy' AND flow IS NOT NULL""") == 0

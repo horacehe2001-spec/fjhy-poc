@@ -668,8 +668,14 @@ if os.environ.get("WRITE") == "1":
                                end_date, place, days, person_count, approve_date,
                                backfill_date, report_date, meal_situation,
                                car_situation, reason, extracted_from)
+                           -- 这 15 条是从 PDF **文字层**解出来的，
+                           -- 一次模型调用都没花。原来写的是「审批单读图」，
+                           -- 那是个说谎的值：2026-11-01 读图批给同一张表
+                           -- 写了 7 条真·读图的行，两批撞在同一个取值上，
+                           -- 「按来源清掉读图那一批」就会连带删掉这 15 条
+                           -- 以及挂在它们下面的 90 行逐日记录。
                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                                   '审批单读图')
+                                   '审批单文字层')
                            ON CONFLICT (app_no) DO NOTHING""",
                         (app_no, t["bill_no"], t["start_date"], t["end_date"],
                          t["place"], t["days"], t["person_count"],

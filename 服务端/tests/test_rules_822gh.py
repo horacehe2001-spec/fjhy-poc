@@ -184,29 +184,30 @@ def test_先审批后接待按日期比_三分钟的差不许判成违规():
     assert "滞后" not in human, "人工驳回原话变了：现在提到滞后了，口径要重新核"
 
 
-def test_人工驳过审批滞后的招待单必须pending():
+def test_人工驳过审批滞后的招待单要命中_而差旅单那张不归这条管():
     """人工为审批滞后驳过两张，**而这两张不是同一回事**：
 
       FJPG-BX2607162084  业务招待费报账单
         「业务审批清单，审批流程滞后」→ 说的是**业务接待审批单**，
-        由 TR-接待-01 判。这张单的接待审批单是 JPG，还没读图 → pending。
+        由 TR-接待-01 判。2026-11-01 读图批把那张 JPG 读出来了
+        （是 OA 打印件，流转记录完整）：接待 07-15、最后审批 07-16
+        → **命中**，和人工原话对上。
 
       FJPG-BX2604160034  差旅费报账单
         「审批滞后，请在补充说明栏备注原因」→ 说的是**出差审批**，
         不是接待审批。TR-接待-01 对它返回「不适用」是对的。
-        这张单连 trip_application 都没有（审批单是扫描件），
-        所以出差审批那一侧现在也判不了。
 
     **写这条用例时我先把两张都当成 TR-接待-01 的 pending，错了**——
     差旅单上的审批滞后是另一条规则的事。把区别钉在这里，
     免得以后有人为了「让这两张都被判到」去放宽 TR-接待-01 的适用范围。
     """
     _, res = _run_all()
-    # 招待单：pending，因为接待审批单是 JPG
+    # 招待单：命中，而且命中的理由必须是日期先后，不是「缺数据」
     f = res["FJPG-BX2607162084"]["TR-接待-01"]
-    assert f.outcome == "pending", (f.outcome, f.message)
-    assert db.scalar("""SELECT count(*) FROM entertain_approval
-                         WHERE bill_no='FJPG-BX2607162084'""") == 0
+    assert f.outcome == "hit", (f.outcome, f.message)
+    d = [x for x in f.evidence["逐份明细"] if x["审批单"] == "ATT-6558"][0]
+    assert d["接待日期"] == "2026-07-15" and d["审批日期"] == "2026-07-16", d
+    assert d["来源"] == "审批单读图", d
     assert "滞后" in db.scalar("""SELECT return_reason FROM manual_review
                                    WHERE bill_no='FJPG-BX2607162084'""")
     # 差旅单：不适用，而且确实是差旅单
@@ -214,9 +215,31 @@ def test_人工驳过审批滞后的招待单必须pending():
     assert (f2.evidence or {}).get("not_applicable"), (f2.outcome, f2.message)
     assert db.scalar("""SELECT doc_type FROM expense_bill
                          WHERE bill_no='FJPG-BX2604160034'""") == "差旅费报账单"
-    assert db.scalar("""SELECT count(*) FROM trip_application
-                         WHERE bill_no='FJPG-BX2604160034'""") == 0, (
-        "这张单有出差审批单了——出差审批滞后那一侧可以判了，该补规则")
+
+
+def test_手写审批单上没有审批日期_这不是读图读不清():
+    """26 份 JPG 已经全部读过了，TR-接待-01 仍有 5 张 pending。
+    **pending 的原因不是「还没读图」，是票面上就没有这个信息**——
+    手写纸质业务接待审批单的经办人/承办部门/分管领导/主管领导
+    只有签名、没有日期。两种说法在报告上差很远：
+    前者是「我方还没做」，后者是「要客户从 OA 导流水」。
+
+    实测 FJPG-BX2603110060：读图读出了接待时间/场所/人数，
+    四个审批节点日期全是「无」——不是「不确定」。
+    """
+    _, res = _run_all()
+    f = res["FJPG-BX2603110060"]["TR-接待-01"]
+    assert f.outcome == "pending", (f.outcome, f.message)
+    d = f.evidence["逐份明细"][0]
+    assert d["接待日期"] == "2026-02-06", d          # 接待时间读出来了
+    assert d["审批日期"] is None, d                   # 审批日期票面上没有
+    assert d["最后审批时间"] == "None", d             # 本单该流程一条流水都没有
+    # 这张图确实读过，而且模型答的是「无」不是「不确定」
+    content = db.scalar("""SELECT e.content FROM attachment_extract e
+                             JOIN attachment a ON a.id = e.attachment_id
+                            WHERE a.bill_no='FJPG-BX2603110060'
+                              AND a.type_code='A16' ORDER BY e.id LIMIT 1""")
+    assert content and "分管领导审批日期: 无" in content, content
 
 
 def test_接待对象名单不进fact():
@@ -255,14 +278,29 @@ def test_通知上的活动起止被用上了():
     assert res["FJPG-BX2608311795"]["TR-通用-02"].outcome == "hit"
 
 
-def test_没有通知文字层的要明说第三方没比():
-    """8 份通知里 7 份是扫描件。那几张单的结论是「两方对得上」，
-    **不许读成三方都核过了**。"""
+def test_没有通知的那些单要明说第三方没比():
+    """8 份通知读完之后，仍然有单据一份通知都没有。
+    那几张单的结论是「两方对得上」，**不许读成三方都核过了**。
+
+    2026-11-01 换了例子：原来举的 FJPG-BX2606050495 的通知是扫描件，
+    读图之后它有通知了（05-24~05-28）。换一张**本来就没挂通知**的单——
+    这条用例守的是「没比过就要说没比」，不是守某一张单。
+    """
     _, res = _run_all()
-    f = res["FJPG-BX2606050495"]["TR-差旅-30"]
-    assert f.outcome == "pass"
-    assert "**没比**" in f.evidence["第三方比没比"], f.evidence["第三方比没比"]
+    cand = [b for b, m in res.items()
+            if "TR-差旅-30" in m
+            and m["TR-差旅-30"].evidence.get("第三方比没比", "").startswith("**没比**")]
+    assert cand, "所有单据都有通知了？那这条用例的前提没了，要重写"
+    f = res[cand[0]]["TR-差旅-30"]
     assert f.evidence["通知上的活动起止"] == "取不到"
+    # 有通知的那几张，必须说「比了」——两个方向都要钉
+    yes = [b for b, m in res.items()
+           if "TR-差旅-30" in m
+           and m["TR-差旅-30"].evidence.get("第三方比没比", "").startswith("比了")]
+    assert len(yes) >= 5, yes
+    assert db.scalar("""SELECT count(*) FROM meeting_notice
+                         WHERE instance_id=%s AND notice_start IS NOT NULL""",
+                     (IID,)) == 6
 
 
 
@@ -315,7 +353,12 @@ def test_日期匹配用乘车日期不用开票日期():
     而它完全正常。
     """
     f = _run_all()[1]["FJPG-BX2606050495"]["TR-差旅-30"]
-    assert f.outcome == "pass", (f.outcome, f.message)
+    # 2026-11-01：这张单现在是 pending，但**不是因为乘车日期**——
+    # 读图补上通知之后，申报区间 05-24~05-26 与通知 05-24~05-28 不一致，
+    # 而那一项的口径客户还没定，所以规则不下结论（见下一条用例）。
+    # 这条用例守的仍然是「乘车日期全部落在区间内」这件事本身。
+    assert f.outcome == "pending", (f.outcome, f.message)
+    assert "乘车日期都在申报区间内" in f.message, f.message
     # 前提：这张单确实有一张开票日期晚于出差结束日的发票
     n = db.scalar("""SELECT count(*) FROM invoice i
                        JOIN trip_application t ON t.bill_no = i.bill_no
@@ -325,6 +368,38 @@ def test_日期匹配用乘车日期不用开票日期():
     # 取到的是乘车日期，而且落在区间内
     assert f.evidence["票面乘车日期"] == ["2026-05-24", "2026-05-26"], \
         f.evidence["票面乘车日期"]
+    # 假如改成按开票日期比，这张单会被判成命中——钉住这个反向事实
+    assert all(d not in ("2026-06-08",) for d in f.evidence["票面乘车日期"])
+
+
+def test_申报区间与通知对不上时不许自己定口径():
+    """**这条是为了防我自己犯过的错而写的。**
+
+    批次 C 里只有 1 份通知，我把口径定成「申报区间必须覆盖通知区间」，
+    那一份正好覆盖，0 命中，看不出问题。2026-11-01 读图补到 6 份通知后，
+    同一期干部培训班的三个人里：
+        FJPG-BX2606011481 申报 05-23~05-28（早一天赶路）→ 覆盖
+        FJPG-BX2606050568 申报 05-24~05-28            → 覆盖
+        FJPG-BX2606050495 申报 05-24~05-26（提前回程） → 不覆盖 → 命中
+    **而人工对 2606050495 驳的是「补充5.25日用餐与用车情况」，没驳这件事。**
+    提前回程和提前出发都有正常解释，客户没说过哪个方向算违规。
+
+    口径未定就不许命中：在 6 个样本、0 个人工标注上自己定一个方向，
+    产出的就是误报。哪天有人把它改回 hit，这里会红。
+    """
+    _, res = _run_all()
+    f = res["FJPG-BX2606050495"]["TR-差旅-30"]
+    assert f.outcome == "pending", (f.outcome, f.message)
+    assert "口径" in f.message, f.message
+    assert f.evidence["申报区间与通知区间不一致"] == ["通知 2026-05-24~2026-05-28"]
+    # 覆盖住的那两张不许被连坐
+    for bn in ("FJPG-BX2606011481", "FJPG-BX2606050568"):
+        g = res[bn]["TR-差旅-30"]
+        assert "申报区间与通知区间不一致" not in g.evidence, (bn, g.evidence)
+    # 人工原话里确实没提这件事——前提没变，用例才有意义
+    human = db.scalar("""SELECT return_reason FROM manual_review
+                          WHERE bill_no='FJPG-BX2606050495'""")
+    assert "5.25" in human and "通知" not in human, human
 
 
 def test_不带年份的日期一律不认():
@@ -343,9 +418,11 @@ def test_这两条判不了人工驳的那七条_要在结论里说清():
 
     TR-差旅-28 判不了人工那 5 条逐日地点：驳的是客户 ERP 的日历区，
       而 trip_calendar.place 本实例 90 行全空（审批单 PDF 没有地点列）。
-    TR-差旅-30 判不了人工那 1 条培训通知日期：通知是扫描件，字段未抽取。
-    这两件事必须写在复核结论里，否则「通过 9 / 通过 10」会被读成
-    「地点和日期都核过了」。
+    TR-差旅-30 的第三方 2026-11-01 读图补上了（6 份通知有活动起止），
+      **但补上之后反而暴露出口径未定**：申报区间与通知区间不一致时
+      算不算违规，客户没说过。所以这一项改成「算差异、报差异、
+      不下结论」，而这件事同样必须写在复核结论里。
+    否则「通过 9 / 通过 11」会被读成「地点和日期都核过了」。
     """
     assert db.scalar("""SELECT count(*) FROM trip_calendar
                          WHERE instance_id=%s AND place IS NOT NULL""",
@@ -354,7 +431,9 @@ def test_这两条判不了人工驳的那七条_要在结论里说清():
     w30 = rf.MANUAL_REVIEW["TR-差旅-30"]["why"]
     assert "判不了那 5 条" in w28, "没说清 TR-差旅-28 判不了人工那 5 条逐日地点"
     assert "命中 0" in w28 and "命中 0" in w30
-    assert "培训通知" in w30 and "判不了" in w30
+    # 第三方补上了，所以结论里不许再写「通知在库外」；要写的是口径未定
+    assert "要客户定的口径" in w30, "没说清 TR-差旅-30 现在卡在口径上"
+    assert "0 个人工标注" in w30, "没说清这个口径没有标注样本支撑"
 
 
 # ── 审批单关键要素完整性（TR-通用-02）───────────────────────────────────
@@ -418,13 +497,23 @@ def test_招待单是不适用不是通过():
         assert (f.evidence or {}).get("not_applicable"), (bn, f.message)
 
 
-def test_审批单是扫描件的六张要pending():
-    """附件里的审批单是 JPG 或非标准格式，文字层取不到——
-    这六张的真实状态是「还没判」，不是「合规」。
+def test_读图只读了表头的六张要pending_不许当成没填():
+    """**这条用例守的是我自己造过的一个误报。**
 
-    **人工为「未体现出差人回填情况（签字及日期）」驳过的两张单就在这里面。**
-    所以「签名回填」那一半的真实状态是「有能力判、本批判不到阳性样本」，
-    报告上不能写成「本批全部有回填」。
+    2026-11-01 读图批给这 6 张单的扫描/JPG 审批单写了 trip_application 行，
+    而那一轮的提示词只问了出差起止日期和出差地点三个字段——
+    **逐日用餐/用车表没问、出差人签名日期也没问**。
+    规则第一版看到「逐日表一行都没有」就报「缺 N 天」、
+    看到 backfill_date 为空就报「没有签名回填日期」，
+    当场把这 6 张从 pending 变成命中（4→10）。
+
+    **「没读」不是「没填」。** 这两件事在报告上长得一模一样，
+    而把前者说成后者，是审核系统最该避免的那种错——
+    对一张可能完全合规的单据，报出一条言之凿凿的缺陷。
+
+    人工为「未体现出差人回填情况（签字及日期）」驳过的两张单就在这 6 张里，
+    所以「签名回填」那一半的真实状态仍然是
+    「有能力判、本批判不到阳性样本」，不是「本批全部有回填」。
     """
     _, res = _run_all()
     pend = [bn for bn, m in res.items()
@@ -432,8 +521,17 @@ def test_审批单是扫描件的六张要pending():
     assert len(pend) == 6, sorted(pend)
     assert "FJPG-BX2603270004" in pend, "人工驳「未体现回填」的那张不在 pending 里了"
     for bn in pend:
-        assert db.scalar("""SELECT count(*) FROM trip_application
-                             WHERE bill_no=%s""", (bn,)) == 0, bn
+        # 这些单**有**审批单行了（读图写的），但全部是只读了表头的
+        apps = db.query("""SELECT app_no, extracted_from FROM trip_application
+                            WHERE bill_no=%s""", (bn,))
+        assert apps, bn
+        assert all(a["extracted_from"] == "审批单读图" for a in apps), (bn, apps)
+        # 而且理由必须明说是「没读」不是「没填」
+        why = res[bn]["TR-通用-02"].message
+        assert "没有读" in why, (bn, why)
+    # 命中仍然是 4 张，一张都不许多——多出来的就是这类误报
+    hits = [bn for bn, m in res.items() if m["TR-通用-02"].outcome == "hit"]
+    assert len(hits) == 4, sorted(hits)
 
 
 def test_一张单挂两份审批单要逐份判():
@@ -455,8 +553,12 @@ def test_回填日期装的是签名日期不是填报日期():
     一条都判不出来，而报告上显示的是「全部通过」——
     判错字段比闸没跑更难发现。
     """
+    # 只看**文字层**解出来的那 15 份：读图那 8 份的提示词没问这两个日期，
+    # 它们两列都是空的，混进来会把这条用例变成「断言空值不相等」。
     rows = db.query("""SELECT bill_no, report_date, backfill_date, end_date
-                         FROM trip_application WHERE instance_id=%s""", (IID,))
+                         FROM trip_application
+                        WHERE instance_id=%s AND extracted_from=%s""",
+                    (IID, "审批单文字层"))
     assert len(rows) == 15, len(rows)
     for r in rows:
         assert r["report_date"] and r["backfill_date"], dict(r)

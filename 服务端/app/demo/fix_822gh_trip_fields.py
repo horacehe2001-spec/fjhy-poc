@@ -99,7 +99,14 @@ def main():
 
     with db.tx() as conn:
         cur = conn.cursor()
-        cur.execute("DELETE FROM trip_application WHERE instance_id=%s", (IID,))
+        # **删除作用域只到文字层那一批。**
+        # 2026-11-01 读图批给同一张表写了 7 条真·读图的行
+        # （attachment_extract_fields._apply，app_no 形如 ATT-<附件号>）。
+        # 原来这一句是 `WHERE instance_id=%s`，重跑一次就把它们删光；
+        # 而本程序是「可重入」的，重跑是预期动作。
+        cur.execute("""DELETE FROM trip_application
+                        WHERE instance_id=%s AND extracted_from=%s""",
+                    (IID, "审批单文字层"))
         n_cal = 0
         for t in trips:
             meal_vals = [v for _, vs in t["meal_days"] for v in vs]
@@ -110,7 +117,7 @@ def main():
                                meal_situation, car_situation, reason,
                                extracted_from)
                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                                   '审批单读图')
+                                   '审批单文字层')
                            ON CONFLICT (app_no) DO NOTHING""",
                         (t["app_no"], t["bill_no"], t["start_date"],
                          t["end_date"], t["place"], t["days"],

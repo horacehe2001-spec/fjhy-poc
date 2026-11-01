@@ -267,9 +267,34 @@ def main():
         with db.tx() as conn:
             c = conn.cursor()
             n_att_before = db.scalar("SELECT count(*) FROM attachment")
-            c.execute("DELETE FROM entertain_approval WHERE instance_id=%s", (IID,))
-            c.execute("DELETE FROM approval_record WHERE instance_id=%s", (IID,))
-            c.execute("DELETE FROM meeting_notice WHERE instance_id=%s", (IID,))
+            # **删除作用域只到「文字层解出来的那几份」。**
+            # 原来这三句是 `WHERE instance_id=%s`，也就是「把本实例的全删了
+            # 重来」。那时候这三张表里只有本程序写的行，所以没出事；
+            # 读图那一批（attachment_extract_fields，extracted_from='审批单读图'）
+            # 入库之后，再跑一次本程序就会把 27 份读图的成果整批删掉——
+            # 而本程序是「可重入」的，重跑是预期动作，不是误操作。
+            # entertain_approval / approval_record 靠 extracted_from 区分
+            # （后者的这一列是 migration 0060 加的，就是为这件事）。
+            c.execute("""DELETE FROM entertain_approval
+                          WHERE instance_id=%s AND extracted_from=%s""",
+                      (IID, "审批单文字层"))
+            # `OR extracted_from IS NULL` 是为了 0060 之前本程序自己写下的
+            # 那 8 行——它们没有这一列可打标，光按 extracted_from 删删不到，
+            # 于是重跑一次就插成双份（实测：8 行变 16 行）。
+            # **flow='业务接待审批' 这个条件必须在**：报账流程的流水
+            # （fjhy 388 行，flow IS NULL）也满足 extracted_from IS NULL，
+            # 少了它这一句会把别家的审批记录删光。
+            c.execute("""DELETE FROM approval_record
+                          WHERE instance_id=%s AND flow=%s
+                            AND (extracted_from=%s OR extracted_from IS NULL)""",
+                      (IID, "业务接待审批", "审批单文字层"))
+            # meeting_notice 没有 extracted_from 列，而它是 UNIQUE(bill_no)、
+            # 读图与文字层会写进**同一行**（按字段 COALESCE 合并）。
+            # 所以这里不删整行，只把本程序负责的三列清掉再重写——
+            # 清整行会连带删掉读图填的 meal_provided / shuttle。
+            c.execute("""UPDATE meeting_notice
+                            SET notice_start=NULL, notice_end=NULL, notice_place=NULL
+                          WHERE instance_id=%s""", (IID,))
             n_ap = 0
             for t in a16s:
                 c.execute("""INSERT INTO entertain_approval(app_no, bill_no, dept,
@@ -294,16 +319,28 @@ def main():
                     # 「分管领导」这个角色名。不标流程，报账流程本体页上的
                     # 「实测次数」会把这几条算进去——而那 29 张报账单
                     # 一次都没被分管领导审过。
+                    # app_no / extracted_from 是 migration 0060 加的两列：
+                    # 前者让「一张单挂多份审批单」时能按份定位，
+                    # 后者让本程序的 DELETE 不碰读图那一批。
                     c.execute("""INSERT INTO approval_record(bill_no, seq, node,
                                      approver, opinion, approved_at, flow,
-                                     instance_id)
-                                 VALUES (%s,%s,%s,%s,%s,%s,'业务接待审批',%s)""",
-                              (t["bill_no"], seq, node, who, None, ts, IID))
+                                     app_no, extracted_from, instance_id)
+                                 VALUES (%s,%s,%s,%s,%s,%s,'业务接待审批',
+                                         %s,'审批单文字层',%s)""",
+                              (t["bill_no"], seq, node, who, None, ts,
+                               t["app_no"], IID))
                     n_ap += 1
             for n in notices:
+                # UNIQUE(bill_no)：读图那一批可能已经为同一张单建了行
+                # （带 meal_provided / shuttle）。所以是 UPSERT 而不是 INSERT，
+                # 而且**只覆盖本程序负责的三列**，不动另一批填的字段。
                 c.execute("""INSERT INTO meeting_notice(bill_no, notice_start,
                                  notice_end, notice_place, instance_id)
-                             VALUES (%s,%s,%s,%s,%s)""",
+                             VALUES (%s,%s,%s,%s,%s)
+                             ON CONFLICT (bill_no) DO UPDATE SET
+                                 notice_start=EXCLUDED.notice_start,
+                                 notice_end=EXCLUDED.notice_end,
+                                 notice_place=EXCLUDED.notice_place""",
                           (n["bill_no"], n["notice_start"], n["notice_end"],
                            n["notice_place"], IID))
             c.execute("SELECT count(*) FROM attachment")

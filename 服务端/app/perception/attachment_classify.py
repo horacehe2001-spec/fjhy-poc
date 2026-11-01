@@ -35,8 +35,10 @@ enum EN17，只有 12 个值，把其中三组合并了（A01+A02、A06+A07、A1
    attempt，不改旧行。这不是为了好看，是因为**这条链路发出去的是客户凭证**，
    少一行就少一条「发给谁了」的证据。
 """
+import hashlib
 import os
 import re
+import tempfile
 
 from .. import db
 from ..llm import client
@@ -128,14 +130,53 @@ def _as_image(path):
     计费的图，白花钱。
     """
     if os.path.splitext(path)[1].lower() != ".pdf":
-        return path
+        return _shrink(path)
     from .. import ocr
     for pg in ocr.iter_rendered_pages(path, keep_images=True, max_pages=1):
         img = pg.get("image_path")      # 键名是 image_path，不是 img_path
         if img and os.path.exists(img):
-            return img
+            return _shrink(img)
         break
     raise ValueError("这份 PDF 渲不出页面图：%s" % os.path.basename(path))
+
+
+# 超过这个大小就先缩一版再发。
+# **2 MB 这个数是量出来的，不是拍的**：2026-11-01 读图批里 42 个文件，
+# 只有一个超过 2 MB（4419 KB 的手机拍照 JPG），而它**连续两次**都在
+# 「连接已建立但中途被断开」上失败，写超时给到 663 秒也没传完；
+# 其余 41 个（最大 1853 KB）一次都没失败过。
+# base64 之后 4419 KB 变成约 5.9 MB，这条上行扛不住。
+_MAX_KB = 2048
+_MAX_SIDE = 2000      # 长边像素。图是按 token 计费的，缩图同时省钱。
+
+
+def _shrink(path):
+    """图太大就等比缩一版，缩不动就原样返回。
+
+    **缩不动不许抛**：缩图是为了让大图也能发出去，不是新增一种失败方式。
+    Pillow 读不了某张图（比如 CMYK 的怪 JPG）时，原样发出去至少还有机会成，
+    而抛异常是必然失败。
+    """
+    try:
+        if os.path.getsize(path) <= _MAX_KB * 1024:
+            return path
+    except OSError:
+        return path
+    out = os.path.join(tempfile.gettempdir(),
+                       "shrink_%s_%d.jpg" % (
+                           hashlib.sha1(path.encode("utf-8", "replace")
+                                        ).hexdigest()[:16], _MAX_SIDE))
+    if os.path.exists(out):
+        return out
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+            im.thumbnail((_MAX_SIDE, _MAX_SIDE))
+            im.save(out, "JPEG", quality=85)
+        return out
+    except Exception:                                   # noqa: BLE001
+        return path
 
 
 def types_for(instance_id):
