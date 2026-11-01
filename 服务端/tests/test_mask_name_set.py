@@ -13,6 +13,8 @@
   ③ **反向自检存在且有效**：不能用闸自己的规则去验闸
 """
 
+import io
+import os
 import re
 
 import pytest
@@ -291,15 +293,68 @@ def test_库里的招待对象名单过一遍脱敏_没有裸的人名():
         assert r["guest_list"] not in out
 
 
-def test_被代报人仍在内置名单里_但根因是我方没读员工导出():
-    """这条钉的是**注释里那句归因**，不是行为：原来写「客户没给工号」，
-    而员工导出里一直有她（工号 2005235）。归因错了，清单就会让客户去补
-    他们已经给过的东西。现在她既在库里也在内置名单里，两头都验。"""
-    assert "靳纭芷" in mask._FREETEXT_ONLY_NAMES
+def test_内置名单搬到了仓库外_但闸还在起作用():
+    """2026-11-01 公开仓库前搬的家：内置兜底名单（15 个真人 + 自由文本专有）
+    从 app/mask.py 的源码里搬到了 服务端/var/name_seed.json。
+
+    **这条用例守的是「搬走 ≠ 删掉」。** 直接删名单会让闸和 find_leaks()
+    自检一起瞎——它们用的是同一份闭集合——而且**测试会全绿**。
+    这正是本项目在闭集合上栽的第一个跟头（见 mask.py【改动一】）。
+
+    原来这里断言的是某个具体真人在不在名单里。那种写法现在反而是个洞：
+    断言本身就要把真名写进源码。改成按文件内容验，名字不出现在用例里。
+    """
+    seed, freetext = mask._load_seed_file()
+    if not seed and not freetext:
+        pytest.skip("本机没有 %s（换机器复现时由业务数据灌入），"
+                    "此时闸退化成只认库里的 employee.name" % mask._SEED_FILE)
+    assert seed, "seed 为空：兜底名单没了，闸只剩库这一条腿"
+    assert mask._FREETEXT_ONLY_NAMES == freetext
     mask.refresh_names()
-    assert "靳纭芷" in mask.name_set()
-    assert db.query("SELECT 1 FROM employee WHERE instance_id='822gh' "
-                    "AND name='靳纭芷'"), "49 人全量没装进来，这条用例的前提没了"
+    have = mask.name_set()
+    missing = [n for n in seed + freetext if n not in have]
+    assert not missing, "内置名单里的人没进闭集合：%s" % missing
+
+
+def test_源码里一个真名都不许有():
+    """公开之后唯一还能发现「真名又被抄回源码」的闸。
+
+    真相来源是**仓库外**的那两处：name_seed.json 和库里的 employee.name。
+    拿它们去扫全部已跟踪文件——命中就是有人把真人姓名写回了仓库里，
+    哪怕只是写在注释或测试夹具里。
+    （演示数据生成器造的「演示甲/乙/丙」不算真人，排除。）
+    """
+    import subprocess
+    seed, freetext = mask._load_seed_file()
+    real = set(seed) | set(freetext) | {
+        r["name"].strip() for r in db.query(
+            "SELECT DISTINCT name FROM employee WHERE name IS NOT NULL")
+        if r["name"] and r["name"].strip()}
+    real -= {n for n in real if n.startswith("演示")}
+    if not real:
+        pytest.skip("本机既没有 name_seed.json 也没有员工数据，无从扫起")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = os.path.dirname(root)
+    files = subprocess.run(["git", "ls-files"], cwd=root,
+                           capture_output=True).stdout.decode("utf-8", "replace")
+    bad = {}
+    for rel in (x.strip() for x in files.split("\n")):
+        if not rel:
+            continue
+        p = os.path.join(root, rel)
+        try:
+            if os.path.getsize(p) > 2 * 1024 * 1024:
+                continue
+            txt = io.open(p, "rb").read().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue          # 二进制/超大文件不扫，它们由 .gitignore 这一层管
+        for n in real:
+            if n in txt:
+                bad.setdefault(rel, set()).add(n)
+    assert not bad, (
+        "已跟踪文件里出现了真实姓名，公开仓库会把它们一起发出去：\n%s"
+        % "\n".join("  %s: %s" % (f, "、".join(sorted(v)))
+                    for f, v in sorted(bad.items())))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

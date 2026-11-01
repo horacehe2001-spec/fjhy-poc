@@ -22,6 +22,28 @@ from app import config, mask  # noqa: E402
 FACT = json.load(io.open(config.FACT_MODEL_JSON, encoding="utf-8"))
 POLICIES = {p["id"]: p for p in FACT["masking"]["policies"]}
 
+# 本文件（以及事实模型里 M06 的 must_hit）用到的人名**全部是化名**。
+# 2026-11-01 仓库公开前，真实花名册从源码里搬走了：内置兜底名单去了
+# 服务端/var/name_seed.json（.gitignore 排除），运行期名单来自库里的
+# employee.name，两处都不进 git。
+# 后果是：化名按定义**不在**闭集合里，不显式装进去，这些用例测的就变成
+# 「闭集合外的名字没被脱」——和它们要测的东西正好相反，而且会全绿。
+ALIAS_NAMES = ["乐知行", "鄢岚", "宦允文", "冼芷清", "甘梓宁", "岑柏", "岑柏舟",
+               "蓝维安", "璩砺川", "沃明远", "郗岱", "笪澜生"]
+
+
+@pytest.fixture(autouse=True)
+def _with_alias_names():
+    """把化名**并进**运行期闭集合，跑完还原。
+
+    是并集不是替换：有些用例靠的是「库里的真人照样脱」，
+    替换成一个小名单会让它们在一个假集合上跑——这个项目在
+    set_name_set 的文档里已经写过同样的坑，这里不再踩一次。
+    """
+    mask.set_name_set(list(mask.name_set()) + ALIAS_NAMES)
+    yield
+    mask.refresh_names()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 正向：该命中的必须命中
@@ -49,6 +71,25 @@ def test_M06_自由文本里的姓名必须脱(value):
         assert n not in out, "姓名 %s 仍在：%s" % (n, out)
 
 
+def test_摘要里的长数字串不许当成银行卡号():
+    """实测误报：发布包 MANIFEST.json 的 sha256 里有 17 位连续数字，
+    被判成银行账号，整个发布被 find_leaks() 判成泄露。
+
+    这种误报**不必现**——摘要里出不出现 16 位以上的数字串看运气，
+    改几个文件就可能撞上一次。偶发比必现更贵：下一次撞上的人会当真。
+    两个方向都钉：十六进制串里的数字段不许动，真账号照样脱。
+    """
+    digest = "ab44829500938912339cd" + "e" * 10
+    assert mask.mask_card(digest) == digest
+    assert mask.mask_text('{"sha256": "%s"}' % digest).count(digest) == 1
+    assert not mask.find_leaks({"sha256": digest})
+    # 反向：真账号一个都不许漏（两侧是中文、标点、空白或字符串边界）
+    for s in ("收款账号622908113255360583，金额1374.80",
+              "622908113255360583",
+              "account=622908113255360583;"):
+        assert "622908113255360583" not in mask.mask_card(s), s
+
+
 def test_M05_API_Key_必须脱():
     s = "配置：api_key=sk-abcd1234efgh5678 model=qwen3.5-122b-a10b"
     out = mask.mask_text(s)
@@ -58,7 +99,7 @@ def test_M05_API_Key_必须脱():
 
 def test_工号姓名组合格式只脱姓名段和工号段():
     # 审批记录的 approver 是「工号/姓名」，AI 节点是 aiAudit/null
-    assert mask.mask_name("12345/乐知行") == "***45/林**"
+    assert mask.mask_name("12345/乐知行") == "***45/乐**"
     out = mask.mask_name("aiAudit/null")
     assert out.endswith("/null"), "AI 节点的 null 不该被当成姓名：%s" % out
 
@@ -100,9 +141,9 @@ def test_整句混合文本只脱该脱的():
 
 def test_闭集合内部前缀重叠按长名优先():
     mask.set_name_set(["岑柏", "岑柏舟", "鄢岚"])
-    # 「岑柏舟」必须整体脱成「林**」，不能先被「岑柏」切成「林*禾」
-    assert mask.mask_free_text("岑柏舟参加培训") == "林**参加培训"
-    assert mask.mask_free_text("岑柏参加培训") == "林*参加培训"
+    # 「岑柏舟」必须整体脱成「岑**」，不能先被「岑柏」切成「岑*舟」
+    assert mask.mask_free_text("岑柏舟参加培训") == "岑**参加培训"
+    assert mask.mask_free_text("岑柏参加培训") == "岑*参加培训"
     mask.refresh_names()   # 还原成运行期真实名单；**不要还原成内置名单**
     #                        （那会把后面所有用例钉在一个假的小集合上）
 
@@ -219,10 +260,10 @@ def test_斜杠复合格式两种顺序都要脱对姓名():
     try:
         a = mask.mask_name("1000504/甘梓宁")        # 工号/姓名
         assert "甘梓宁" not in a, a
-        assert a.endswith("吕**"), a
+        assert a.endswith("甘**"), a
         b = mask.mask_name("岑柏/1000507")          # 姓名/工号
         assert "岑柏" not in b, b
-        assert b.startswith("林*"), b
+        assert b.startswith("岑*"), b
         assert "1000507" not in b, b
         c = mask.mask_name("aiAudit/null")           # 两侧都不是纯数字
         assert c.endswith("/null"), c
