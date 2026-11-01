@@ -316,6 +316,112 @@ def test_等视觉的那些规则范围必须写零():
         assert sc.startswith("0/"), (rid, sc)
 
 
+def test_提单日期回填了_但补充说明区一个字都不许动():
+    """**这条用例守的是一次真实的事故。**
+
+    doc_date 本实例 29 张全空，而值在单据号前六位里
+    （FJPG-BX**260728**0255 = 2026-07-28，实测 29/29、提单日 ≥ 业务发生日
+    0 条反例）。回填是对的。
+
+    但第一版把「这个值是算出来的」这句标记**追加进了 expense_bill.remark**，
+    而那一列是业务上的**补充说明区**：原来 19/29 有值，追加之后 29/29 非空，
+    其中 10 张里只有我写的标记。
+    后果当场量到：规则可行性里「部分字段不全」从 17 条掉到 2 条——
+    因为 TR-差旅-06/07/25/31/33、TR-接待-15、TR-通用-04 判的正是
+    「补充说明区是否填写了必要信息」，它们看到一列非空的「说明」，
+    而那不是客户填的说明。**审计痕迹写进了被审计的字段。**
+
+    来源现在在 doc_date_source（migration 0058）。这条用例钉三件事：
+    回填到了、来源标了、**remark 回到 19**。
+    """
+    assert _n("SELECT count(doc_date) FROM expense_bill WHERE instance_id=%s") == 29
+    assert _n("""SELECT count(*) FROM expense_bill WHERE instance_id=%s
+                   AND doc_date_source = '单据号推出'""") == 29
+    assert _n("""SELECT count(*) FROM expense_bill WHERE instance_id=%s
+                   AND remark IS NOT NULL AND remark <> ''""") == 19, (
+        "补充说明区非空的张数不是 19——有东西写进了业务列")
+    assert _n("""SELECT count(*) FROM expense_bill WHERE instance_id=%s
+                   AND remark LIKE %s""", IID, "%非客户字段%") == 0, (
+        "remark 里又出现了来源标记")
+    # 提单日 ≥ 业务发生日，这是回填成立的判据，不许退化
+    bad = db.query("""SELECT b.bill_no, b.doc_date::date d,
+                             coalesce((SELECT max(e.happen_date) FROM entertain_detail e
+                                        WHERE e.bill_no=b.bill_no),
+                                      (SELECT max(t.end_date) FROM trip_application t
+                                        WHERE t.bill_no=b.bill_no),
+                                      (SELECT max(i.issue_date) FROM invoice i
+                                        WHERE i.bill_no=b.bill_no)) biz
+                        FROM expense_bill b WHERE b.instance_id=%s""", (IID,))
+    for r in bad:
+        if r["biz"]:
+            assert r["d"] >= r["biz"], dict(r)
+    # 别家不许被动
+    assert db.scalar("""SELECT count(doc_date) FROM expense_bill
+                         WHERE instance_id='fjhy'""") == 69
+
+
+def test_接待审批单与审批流水入库了_枚举是本实例自己的():
+    """业务接待审批单 29 份里 2 份是 PDF 有文字层，解出来的审批流转记录
+    进了 approval_record——那张表本实例原来 **0 行**，而
+    「审批完成时间」正是 TR-接待-01 / TR-通用-03 / TR-通用-04 / TR-会议-01
+    四条规则的拦路输入。
+
+    拦路的其实是**本体里没有 EN16 审批节点枚举**：approval_record.node
+    有外键指过去，没有取值一行都入不了库。取值逐字抄自客户票面的 4 个节点，
+    **不是从福建海运集团那 10 个里挑的**（那边是报账流程的节点）。
+    """
+    assert _n("SELECT count(*) FROM entertain_approval WHERE instance_id=%s") == 2
+    assert _n("SELECT count(*) FROM approval_record WHERE instance_id=%s") == 8
+    assert db.scalar("""SELECT count(*) FROM approval_record
+                         WHERE instance_id='fjhy'""") == 388, "别家被动了"
+    en16 = {r["value"] for r in db.query(
+        """SELECT value FROM enum_value_current
+            WHERE instance_id=%s AND enum_id='EN16'""", (IID,))}
+    assert en16 == {"发起节点", "部门负责人", "分管领导", "主管领导"}, en16
+    # fjhy 的 EN16 是另一套（报账流程节点），不许被改成一样
+    en16_f = {r["value"] for r in db.query(
+        """SELECT value FROM enum_value_current
+            WHERE instance_id='fjhy' AND enum_id='EN16'""")}
+    assert len(en16_f) == 10 and "AI审核" in en16_f, en16_f
+    # 节点名必须都在枚举里（外键保证，这里是显式复核）
+    assert _n("""SELECT count(*) FROM approval_record a WHERE a.instance_id=%s
+                   AND NOT EXISTS (SELECT 1 FROM enum_value_current e
+                                    WHERE e.instance_id=a.instance_id
+                                      AND e.enum_id='EN16' AND e.value=a.node)""") == 0
+
+
+def test_接待审批单的预算总额要和标准乘人数对上():
+    """票面自洽是解析对不对的免费判据：600 × 10 = 6000、600 × 8 = 4800。
+
+    第一版 预算总额 取到的是 None——票面是「预算总额 元」+ 换行 + 「6,000.00」,
+    标签行后面跟的是**单位**不是数值，而「元」不为空，于是不去看下一行。
+    空值兜底和「取到了但不是数」是两种情况。
+    """
+    rows = db.query("""SELECT app_no, meal_standard, meal_persons, budget_total
+                         FROM entertain_approval WHERE instance_id=%s""", (IID,))
+    assert len(rows) == 2, len(rows)
+    for r in rows:
+        assert r["meal_standard"] and r["meal_persons"] and r["budget_total"], dict(r)
+        assert (float(r["meal_standard"]) * int(r["meal_persons"])
+                == float(r["budget_total"])), dict(r)
+
+
+def test_培训通知的活动起止解出来了():
+    """8 份会议/培训通知里 1 份有文字层，正文自报「定于8 月22 日至28 日」。
+    解出 2026-08-22~2026-08-28，和人工原话「体现出差时间应为8.22-8.28」
+    逐字一致。其余 7 份是扫描件，**必须留 NULL 不许猜**。"""
+    rows = db.query("""SELECT bill_no, notice_start, notice_end
+                         FROM meeting_notice WHERE instance_id=%s""", (IID,))
+    assert len(rows) == 1, len(rows)
+    r = rows[0]
+    assert r["bill_no"] == "FJPG-BX2608311795", r["bill_no"]
+    assert str(r["notice_start"]) == "2026-08-22", r["notice_start"]
+    assert str(r["notice_end"]) == "2026-08-28", r["notice_end"]
+    human = db.scalar("""SELECT return_reason FROM manual_review
+                          WHERE bill_no='FJPG-BX2608311795'""")
+    assert "8.22-8.28" in human, human
+
+
 def test_通用02已经不靠读图了_但剩下六张要明说还没判():
     """**TR-通用-02 从这张「等视觉」名单里摘出来了，摘的理由要能复核。**
 

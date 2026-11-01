@@ -121,6 +121,29 @@ def _snapshot(cur, bill_no):
                             ORDER BY c.cal_date, c.meal_slot""", (bill_no,))
     counts["trip_calendar"] = len(trip_days)
 
+    # 业务接待审批单（A16）。migration 0057 新建，一张单可挂多份。
+    # **guest_roster 不取**：那是外部人员姓名与职务黏连的自由文本，
+    # 脱敏闭集合切不出来（口径同 entertain_detail.guest_list，见 0057 列注释）。
+    # 规则要的是审批时间和用餐标准/人数，不是名单。
+    entertain_approvals = _q(cur, """SELECT app_no, dept, entertain_type, reason,
+                                            entertain_at, meal_at, meal_place,
+                                            meal_standard, meal_persons,
+                                            work_meal, car_arrange,
+                                            lodging_arrange, gift_arrange,
+                                            budget_total
+                                       FROM entertain_approval
+                                      WHERE bill_no = %s
+                                      ORDER BY entertain_at, app_no""",
+                             (bill_no,))
+    counts["entertain_approval"] = len(entertain_approvals)
+
+    # 会议/培训通知上写的活动起止与地点（migration 0057 补的三列）。
+    # TR-差旅-30 比「审批单出差日期范围 vs 通知活动起止」的第三方就是它。
+    notices = _q(cur, """SELECT notice_start, notice_end, notice_place
+                           FROM meeting_notice WHERE bill_no = %s
+                          ORDER BY notice_start""", (bill_no,))
+    counts["meeting_notice"] = len(notices)
+
     # 住宿发票的住宿明细（C0604 住宿晚数）。挂在 invoice 上，没有 bill_no 列，
     # 要经 invoice 关联。TR-D4-14 的「200 元/晚」按晚数算，拿天数代替会差一晚。
     hotel_invoices = _q(cur, """SELECT h.invoice_id, h.check_in, h.check_out,
@@ -163,6 +186,8 @@ def _snapshot(cur, bill_no):
         "trips": trips,
         "invoices": invoices,
         "entertain_details": entertains,
+        "entertain_approvals": entertain_approvals,
+        "meeting_notices": notices,
         "trip_days": trip_days,
         "hotel_invoices": hotel_invoices,
         "transport_vouchers": transport_vouchers,

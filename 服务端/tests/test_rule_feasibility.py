@@ -62,18 +62,33 @@ def test_可得性快照认得出空表和空列():
     assert snap["tables"]["authority_approval"] == 0
     assert "authority_approval" in snap["empty_tables"]
     assert snap["tables"]["attachment"] == 147
-    assert "expense_bill.doc_date" in snap["empty_columns"]
+    # 空列的例子原来是 expense_bill.doc_date。2026-11-01 从单据号回填了
+    # 29/29，它不空了——**换例子，不是改断言**。换成本实例确实全空的报销人。
+    assert "expense_bill.claimant_no" in snap["empty_columns"]
+    assert "expense_bill.doc_date" not in snap["empty_columns"], (
+        "doc_date 又空了——回填被谁覆盖掉了")
     # 部分填充要单独列出来，不能混进「有」也不能混进「无」
     assert any(p.startswith("expense_bill.remark") for p in snap["partial_columns"])
 
 
 def test_不带实例的表计数会把另一家算进来():
-    """这个用例是说明为什么 _SCOPE 必须存在：approval_record 全库 388 条
-    一条都不属于 822港航。不按实例过滤，这个实例会显示「有审批记录」。"""
-    all_rows = db.scalar("SELECT count(*) FROM approval_record")
-    mine = da.table_rows(IID, ["approval_record"])["approval_record"]
+    """这个用例是说明为什么 _SCOPE 必须存在：一张表全库有几百行，
+    却一行都不属于本实例。不按实例过滤，这个实例会显示「有数据」。
+
+    例子原来用 approval_record（全库 388 条、822港航 0 条）。
+    2026-11-01 从业务接待审批单 PDF 解出 8 条审批流水入了本实例，
+    它不再是 0 了——**换例子，不是改断言**。
+    换成 transport_voucher：全库 138 行全属福建海运集团，本实例一行都没有
+    （822港航 的交通凭证还在扫描件里）。
+    """
+    all_rows = db.scalar("SELECT count(*) FROM transport_voucher")
+    mine = da.table_rows(IID, ["transport_voucher"])["transport_voucher"]
     assert mine == 0
-    assert all_rows > 0, "全库一条审批记录都没有，这个用例验不出东西"
+    assert all_rows > 0, "全库一条交通凭证都没有，这个用例验不出东西"
+    # approval_record 现在本实例有 8 条，而全库 396 条——
+    # 过滤仍然要真过滤，顺手再验一遍
+    assert (da.table_rows(IID, ["approval_record"])["approval_record"]
+            < db.scalar("SELECT count(*) FROM approval_record"))
 
 
 def test_经外键推归属的表也要算对():
@@ -141,8 +156,15 @@ def test_缺字段和判不了要分开():
     """两者给人的动作不同：缺字段是找我们改表，判不了是找客户要数。
     合成一句「数据不足」，客户补完数据回来发现还是判不了。"""
     snap = da.snapshot(IID)
-    v, bl, nf, un, pa, ok = rf.judge(["单据提交时间"], snap)
-    assert v == "缺字段" and nf == ["单据提交时间"]
+    # 「缺字段」的例子原来是「单据提交时间」。2026-11-01 订正：那一项
+    # 既不缺列（expense_bill.doc_date 一直在）也不缺值（在单据号前六位里，
+    # 已回填 29/29）——**换例子，不是改断言**。
+    # 换成「参会人员数量」：库里**真的没有这一列**，客户也没给会议类单据。
+    v, bl, nf, un, pa, ok = rf.judge(["参会人员数量"], snap)
+    assert v == "缺字段" and nf == ["参会人员数量"], (v, nf)
+    # 订正之后「单据提交时间」必须不再是缺字段——归因错了会被排进我方改表的活
+    v0, _b0, nf0, _u0, _p0, _o0 = rf.judge(["单据提交时间"], snap)
+    assert nf0 == [], (v0, nf0)
     # 「附件清单」原来是「判不了」的例子（attachment 0 行）。
     # 第四批把附件装进去了，它现在落「未发现数据缺口·待复核」——
     # **这正是这个管道该有的变化**，所以换一个仍然 0 行的数据项当例子。

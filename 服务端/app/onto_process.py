@@ -50,8 +50,16 @@ def build(instance_id=None):
                           FROM process_node
                          WHERE version = %s AND instance_id = %s
                          ORDER BY node_id""", (v, iid))
+    # **flow IS NULL 这一句不是摆设。** approval_record 里现在装着两条流程的
+    # 记录：flow IS NULL 是报账流程（流程本体画的就是它），
+    # flow = '业务接待审批' 是业务接待审批单上的另一条 OA 流程（迁移 0059）。
+    # 两条流程都有「分管领导」这个角色名，不过滤的话 822港航 的报账流程图上
+    # P05 分管领导 会显示 measured = 2——**而这 29 张报账单一次都没被分管领导
+    # 审过**，那 2 次是接待审批单的。实例、版本、流程是三个维度，
+    # 每一句都要带齐。
     measured = db.query("""SELECT node, count(*) n, count(DISTINCT bill_no) bills
-                             FROM approval_record WHERE instance_id = %s
+                             FROM approval_record
+                            WHERE instance_id = %s AND flow IS NULL
                             GROUP BY 1 ORDER BY 2 DESC""", (iid,))
     names = {n["name"]: n for n in nodes}
     # **别名也算对上。** 这一条是实测补的：审批记录里的「开始」出现 103 次，
@@ -83,10 +91,19 @@ def build(instance_id=None):
 
     return {
         "version": v,
+        # 这两个数也只数报账流程那条（同上 flow IS NULL 的理由）。
+        # 不过滤的话「审批记录 8 条」会出现在报账流程的来源说明里，
+        # 而那 8 条讲的是另一条流程。
         "source": {"审批记录": db.scalar("SELECT count(*) FROM approval_record "
-                                     "WHERE instance_id = %s", (iid,)),
+                                     "WHERE instance_id = %s AND flow IS NULL",
+                                     (iid,)),
                    "覆盖单据": db.scalar("SELECT count(DISTINCT bill_no) FROM approval_record "
-                                     "WHERE instance_id = %s", (iid,)),
+                                     "WHERE instance_id = %s AND flow IS NULL",
+                                     (iid,)),
+                   "另一条流程的审批记录":
+                       db.scalar("SELECT count(*) FROM approval_record "
+                                 "WHERE instance_id = %s AND flow IS NOT NULL",
+                                 (iid,)),
                    "实测节点名": len(measured),
                    "本体节点": len(nodes),
                    "本体迁移": db.scalar("SELECT count(*) FROM process_transition "

@@ -254,7 +254,12 @@ def load(version=None, make_current=True, verbose=True, instance_id=None):
     if verbose:
         print("本体 %s 已装载（源文件指纹 %s…）" % (version, h[:12]))
         for k, v in stats.items():
-            print("  %-20s %d" % (k, v))
+            # **用 %s 不用 %d**：stats 里有一个键装的是说明文字
+            # （rank_to_tier_note，见上面 135~136 行），%d 会抛
+            # TypeError。抛在这里特别坏：装载本身已经提交了，
+            # 崩的只是汇报，于是看上去「装载失败」而其实装进去了——
+            # 下一步会按「没装进去」去排查。
+            print("  %-20s %s" % (k, v))
         n_enum_values = db.scalar("SELECT count(*) FROM enum_value_current")
         print("  %-20s %d" % ("enum_value_current", n_enum_values))
     return stats

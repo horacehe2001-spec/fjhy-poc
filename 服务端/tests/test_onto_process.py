@@ -132,9 +132,44 @@ def test_两家的节点与迁移互不可见():
 
 
 def test_实测次数按本实例数():
-    """822港航 一条审批流水都没有，实测次数必须全空。
+    """822港航 的**报账流程**一条审批流水都没有，实测次数必须全空。
     原来不带实例去数，它的流程页显示的是另一家的 388 条。"""
-    assert db.scalar("SELECT count(*) FROM approval_record WHERE instance_id = %s",
-                     (GH,)) == 0, "822港航 现在有审批流水了，这条用例的前提要改"
+    assert db.scalar("""SELECT count(*) FROM approval_record
+                         WHERE instance_id = %s AND flow IS NULL""",
+                     (GH,)) == 0, "822港航 现在有报账流程的审批流水了，前提要改"
     assert all(n["measured"] is None for n in op.graph(GH)["nodes"])
     assert any(n["measured"] for n in op.graph(FJHY)["nodes"])
+
+
+def test_别条流程的审批流水不许计进报账流程():
+    """**这条用例守的是一次真实的串流程事故。**
+
+    2026-11-01 从业务接待审批单 PDF 解出 8 条流转记录写进 approval_record
+    （发起节点/部门负责人/分管领导/主管领导）。而这张表原本装的是
+    **报账流程**的审批记录，两条流程都有「分管领导」这个角色名——
+    实测次数是按节点名匹配的，于是 822港航 的报账流程图上
+    P05 分管领导 显示 `measured = 2`，**而这 29 张报账单一次都没被
+    分管领导审过**。
+
+    流程本体页上的「实测次数」是用来核对「本体画的流程和真实走的流程
+    差多少」的，混了别条流程的记录，这个核对整段不可信。
+    修法是加 approval_record.flow（迁移 0059）而不是给节点名加前缀：
+    节点名就是节点名，它属于哪条流程是另一个维度。
+    """
+    assert db.scalar("""SELECT count(*) FROM approval_record
+                         WHERE instance_id=%s AND flow='业务接待审批'""",
+                     (GH,)) == 8
+    # P05 就是那个会被串进去的节点，必须是空的
+    p05 = next(n for n in op.graph(GH)["nodes"] if n["node_id"] == "P05")
+    assert p05["measured"] is None, p05
+    assert db.scalar("""SELECT count(*) FROM approval_record
+                         WHERE instance_id=%s AND flow='业务接待审批'
+                           AND node='分管领导'""", (GH,)) == 2, (
+        "接待审批里没有分管领导那两条了，这条用例的前提变了")
+    # build() 的来源说明要把两条流程分开报，不许合成一个数
+    src = op.build(GH)["source"]
+    assert src["审批记录"] == 0, src
+    assert src["另一条流程的审批记录"] == 8, src
+    # 福建海运集团那 388 条是报账流程的，不许被标成别条流程
+    assert db.scalar("""SELECT count(*) FROM approval_record
+                         WHERE instance_id='fjhy' AND flow IS NOT NULL""") == 0

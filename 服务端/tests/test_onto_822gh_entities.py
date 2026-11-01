@@ -38,6 +38,11 @@ ENTITY_TABLE = {
     "E04": "trip_calendar", "E05": "invoice", "E08": "employee",
     "E09": "org", "E10": "standard_limit", "E13": "attachment",
     "E18": "entertain_detail",
+    # 2026-11-01 补的三个。这三张表当天从 0 行变成有数据，按本文件
+    # 「0 行的表不立实体」的反面就该立。编号与福建海运集团同表同号
+    # （E12 审批记录 / E15 会议培训通知），E19 是 822港航 特有的。
+    "E12": "approval_record", "E15": "meeting_notice",
+    "E19": "entertain_approval",
 }
 
 
@@ -53,7 +58,7 @@ def _rows(table):
 # ── 实体 ────────────────────────────────────────────────────────────────
 def test_实体声称的行数必须等于库里实际():
     ents = _onto()["business"]["entities"]
-    assert len(ents) == 10, len(ents)
+    assert len(ents) == 13, len(ents)
     bad = []
     for e in ents:
         t = ENTITY_TABLE.get(e["id"])
@@ -74,9 +79,14 @@ def test_每个实体都有数据支撑():
     # budget / hotel_invoice / expense_allocation 这几张**没有 instance_id 列**，
     # 归属是经外键推的，裸查 `WHERE instance_id=...` 会直接报列不存在。
     # 那个模块的职责就是这件事，别处再写一遍就会漏掉这一类表。
+    # approval_record 原来在这个名单里。2026-11-01 从业务接待审批单 PDF
+    # 解出 8 条流转记录之后它不是 0 行了，于是**按这条用例自己的规矩
+    # 立了实体（E12）**，从名单里移出去。
+    # 这正是这条用例该起的作用：它提示的是「该考虑立实体」，
+    # 不是「把断言改掉」。
     from app import data_availability as da
-    for t in ("budget", "approval_record", "expense_allocation",
-              "hotel_invoice", "transport_voucher", "org_special_rule"):
+    for t in ("budget", "expense_allocation", "hotel_invoice",
+              "transport_voucher", "org_special_rule"):
         assert da.table_rows(IID, [t])[t] == 0, "%s 现在有数据了，该考虑立实体" % t
         assert t not in ENTITY_TABLE.values()
 
@@ -107,12 +117,25 @@ def test_概念不许凭空立():
     **而且必须在注释里写明是例外**，否则下一个人会照着再立几个。"""
     cons = [c for e in _onto()["business"]["entities"]
             for c in (e.get("concepts") or [])]
-    assert len(cons) == 63, len(cons)
-    empty_ok = {"C42"}
+    # 63 → 76：2026-11-01 补了三个实体（E12 审批记录 / E15 会议培训通知 /
+    # E19 业务接待审批单），它们带 13 个概念。
+    assert len(cons) == 76, len(cons)
+    # 故意立出来的空概念。立它们是为了让缺口可见，**每一个都要写明**，
+    # 否则下一个人会照着再立几个，而立一个取不到值的概念会让规则
+    # 以为自己能读到它。
+    #   C42 逐日地点 —— 出差审批单 PDF 的逐日表没有地点列
+    #   C69 活动地点 —— 这一份通知的地点被 PDF 页码行截断了
+    empty_ok = {"C42", "C69"}
     for c in cons:
         if c["id"] in empty_ok:
-            assert "没有" in (c.get("source") or "") or "缺口" in (c.get("note") or ""), (
+            assert "没有" in (c.get("source") or "") \
+                or "0/" in (c.get("source") or "") \
+                or "缺口" in (c.get("note") or "") \
+                or "留空" in (c.get("note") or ""), (
                 "%s 是故意立的空概念，但没写明" % c["id"])
+    # 反面也要守：**除了名单里那几个，其余概念都得有 source**
+    for c in cons:
+        assert c.get("source"), "%s 没写出处" % c["id"]
 
 
 def test_概念id不许重复():

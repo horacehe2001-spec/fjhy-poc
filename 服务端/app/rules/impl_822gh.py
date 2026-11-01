@@ -178,6 +178,86 @@ def tr_jd_22(ctx, r):
               % (len(rows), "、".join(ev["发生日期"])), ev)
 
 
+@rule("TR-接待-01")
+def tr_jd_01(ctx, r):
+    """业务接待先审批后接待：审批应早于接待发生。
+
+    【口径是按日期比，不按时间戳比——这是量出来的，不是省事】
+      审批单上的「接待时间」是**计划**时间（票面写的是「预计在XX酒店用餐」
+      那一栏旁边的时间），不是实际发生时间。实测
+        FJPG-BX2604260325  接待 2026-04-22 15:00，最后审批 04-20 16:48:30
+        FJPG-BX2606240151  接待 2026-06-23 17:00，最后审批 06-23 17:03:45
+      第二张按时间戳比**晚了 3 分钟**，会命中；而人工对这张单驳的是
+      「入账期间」和「清单场所与发票不一致」，**没有驳审批滞后**。
+      按日期比则两张都通过，和人工 2/2 一致。
+      3 分钟的差是表单填报的噪声，不是「先接待后审批」。
+
+    【判不了人工真驳过的那两条，要说清楚】
+      人工为审批滞后驳过两张：
+        FJPG-BX2604160034「审批滞后，请在补充说明栏备注原因」
+        FJPG-BX2607162084「业务审批清单，审批流程滞后」
+      这两张的业务接待审批单是 **JPG**，还没读图——所以它们是 pending。
+      本规则现在只有 2 份有文字层的审批单可判，**两份都通过**，
+      而真正的阳性样本在那 26 份 JPG 里。
+      「通过 2 张」不等于「接待审批都合规」。
+
+    【条款里另外两项不判】
+      「接待对象应为有实质性业务往来人员」要人判断实质；
+      「公务接待应提供公函」要看附件里有没有公函，而公函这个附件类型
+      本批一个都没有（已定类的 134 个附件里 0 个公函）。
+      两项都写在证据里，不计入结论。
+    """
+    apprs = ctx.fact.get("entertain_approvals") or []
+    ents = _entertains(ctx.fact)
+    doc_type = str(ctx.fact["bill"].get("doc_type") or "")
+    base = {"没判的部分": "条款还要求「接待对象有实质性业务往来」（要人判断实质）"
+                          "和「公务接待提供公函」（公函这个附件类型本批 0 个）。"
+                          "两项**没有核查**，不计入结论。",
+            "口径": "按**日期**比，不按时间戳比。审批单上的接待时间是计划时间，"
+                    "实测 FJPG-BX2606240151 审批比接待时间晚 3 分钟，"
+                    "按时间戳会命中而人工没驳它——3 分钟是填报噪声。",
+            "出处": CLAUSE["接待"] + " 第六条"}
+    if not ents and not apprs:
+        return not_applicable(r["rule_id"], "本单不是接待类单据", base)
+    if not apprs:
+        return pending(
+            r["rule_id"],
+            "本单是%s，但没有已解析的业务接待审批单"
+            "（附件里的审批单是 JPG 或扫描件，尚未读图），取不到审批时间"
+            % (doc_type or "接待类单据"), base)
+    rows = ctx.fact.get("approvals") or []
+    bad, unknown, detail = [], [], []
+    for a in apprs:
+        ent_at = a.get("entertain_at")
+        last = max((x.get("approved_at") for x in rows
+                    if x.get("approved_at")), default=None)
+        d_ent = str(ent_at)[:10] if ent_at else None
+        d_app = str(last)[:10] if last else None
+        detail.append({"审批单": a.get("app_no"), "接待时间": str(ent_at),
+                       "最后审批时间": str(last),
+                       "接待日期": d_ent, "审批日期": d_app})
+        if not d_ent or not d_app:
+            unknown.append(a.get("app_no"))
+        elif d_app > d_ent:
+            bad.append({"审批单": a.get("app_no"), "接待日期": d_ent,
+                        "审批日期": d_app})
+    ev = dict(base)
+    ev.update({"审批单份数": len(apprs), "审批流水行数": len(rows),
+               "逐份明细": detail})
+    if bad:
+        return hit(r["rule_id"],
+                   "先接待后审批 %d 份：%s" % (
+                       len(bad), "；".join(
+                           "审批单 %s 接待日期 %s、审批日期 %s"
+                           % (b["审批单"], b["接待日期"], b["审批日期"])
+                           for b in bad)), ev)
+    if unknown:
+        return pending(r["rule_id"],
+                       "有 %d 份审批单取不到接待时间或审批时间" % len(unknown), ev)
+    return ok(r["rule_id"],
+              "%d 份业务接待审批单的审批日期都不晚于接待日期" % len(apprs), ev)
+
+
 def _scan_invoice_items(fact, terms):
     """在发票的**项目明细**里找词。返回 [(发票号, 项目明细, 命中词)]。
 
@@ -547,32 +627,59 @@ def tr_cl_30(ctx, r):
     for i in ctx.fact.get("invoices") or []:
         for y, m, d in P.cn_dates(str(i.get("detail_text") or "")):
             rides.append((datetime.date(y, m, d), i.get("inv_no")))
+    # 第三方：通知上写的活动起止（migration 0057 补的 meeting_notice 三列）。
+    # 8 份会议/培训通知里只有 1 份有文字层，其余 7 份是扫描件——
+    # **有就比，没有就在证据里说没比**，不拿「两方都对得上」充当三方核过了。
+    notices = [(n.get("notice_start"), n.get("notice_end"))
+               for n in (ctx.fact.get("meeting_notices") or [])
+               if n.get("notice_start") and n.get("notice_end")]
     ev = {"出差日期范围": ["%s~%s" % (a, b) for a, b in spans],
           "票面乘车日期": sorted({str(d) for d, _ in rides}),
-          "只比了两方": "规则原文还要比附件通知上的活动起止日期，"
-                        "那类附件的字段抽取还没做。人工驳 FJPG-BX2608311795 时"
-                        "说的「按照培训通知体现出差时间应为8.22-8.28」，"
-                        "**通知上的日期不在库里，这条规则判不了它**。",
+          "通知上的活动起止": ["%s~%s" % (a, b) for a, b in notices] or "取不到",
+          "第三方比没比": ("比了（通知有文字层）" if notices else
+                           "**没比**：本单的会议/培训通知是扫描件，"
+                           "活动起止取不到（8 份通知里只有 1 份有文字层）"),
           "不用开票日期": "开票日期本来就在行程之后（实测 05-24~26 的行程"
                           "住宿发票开票日期是 06-08），拿它比区间会大面积误报。",
           "出处": CLAUSE["差旅"]}
     if not spans:
         return pending(r["rule_id"], "审批单上取不到出差起止日期", ev)
+    bad_notice = []
+    for na, nb in notices:
+        # 通知说的活动区间，审批单必须**覆盖**。实测 FJPG-BX2608311795
+        # 通知是 08-22~08-28、审批单申报 08-22~08-28，覆盖住了——
+        # 人工驳的「仅体现8.22、8.28两天」说的是**逐日表只填了两天**，
+        # 那件事由 TR-通用-02 判（已命中）。这里判的是申报区间本身。
+        if not any(a <= na and nb <= b for a, b in spans):
+            bad_notice.append("通知 %s~%s" % (na, nb))
+    if not rides and not notices:
+        return pending(
+            r["rule_id"],
+            "本单票据的项目明细里取不到乘车日期（车票是扫描件，或本单没有车票），"
+            "通知也是扫描件——两方都取不到", ev)
+    out = [(d, no) for d, no in rides
+           if not any(a <= d <= b for a, b in spans)]
+    if out or bad_notice:
+        parts = []
+        if out:
+            parts.append("有 %d 个乘车日期落在申报的出差区间（%s）之外：%s"
+                         % (len(out), "、".join(ev["出差日期范围"]),
+                            "、".join("%s（票 %s）" % (d, no) for d, no in out)))
+        if bad_notice:
+            parts.append("申报的出差区间（%s）没有覆盖%s"
+                         % ("、".join(ev["出差日期范围"]), "、".join(bad_notice)))
+        return hit(r["rule_id"], "；".join(parts), ev)
     if not rides:
         return pending(
             r["rule_id"],
-            "本单票据的项目明细里取不到乘车日期（车票是扫描件，或本单没有车票）",
+            "通知上的活动起止（%s）被申报区间覆盖，但本单取不到乘车日期"
+            "（车票是扫描件，或本单没有车票）" % "、".join(ev["通知上的活动起止"]),
             ev)
-    out = [(d, no) for d, no in rides
-           if not any(a <= d <= b for a, b in spans)]
-    if out:
-        return hit(r["rule_id"],
-                   "有 %d 个乘车日期落在申报的出差区间（%s）之外：%s"
-                   % (len(out), "、".join(ev["出差日期范围"]),
-                      "、".join("%s（票 %s）" % (d, no) for d, no in out)), ev)
     return ok(r["rule_id"],
-              "%d 个乘车日期都落在申报的出差区间（%s）内"
-              % (len(rides), "、".join(ev["出差日期范围"])), ev)
+              "%d 个乘车日期都落在申报的出差区间（%s）内%s"
+              % (len(rides), "、".join(ev["出差日期范围"]),
+                 ("；通知上的活动起止 %s 也被覆盖" % "、".join(ev["通知上的活动起止"]))
+                 if notices else "（通知是扫描件，第三方没比）"), ev)
 
 
 # ═════════════════════════════════════════════════════════════════════════

@@ -53,7 +53,7 @@ def test_可执行规则数等于有实现的规则数():
     have = {r["rule_id"] for r in db.query(
         "SELECT rule_id FROM rule WHERE instance_id=%s AND version=1", (IID,))}
     impl = set(engine.registered()) & have
-    assert len(rs) == len(impl) == 10, (len(rs), len(impl))
+    assert len(rs) == len(impl) == 11, (len(rs), len(impl))
     assert not rs.missing_impl, rs.missing_impl
 
 
@@ -161,7 +161,111 @@ def test_市内交通费那四张单不许再误报():
         assert f.outcome != "hit", (bn, f.message)
 
 
+# ── 先审批后接待（TR-接待-01）───────────────────────────────────────────
+def test_先审批后接待按日期比_三分钟的差不许判成违规():
+    """FJPG-BX2606240151 接待时间 17:00、最后审批 17:03:45。
+
+    按时间戳比会命中「先接待后审批」，**而人工对这张单驳的是入账期间和
+    清单场所，没有驳审批滞后**。审批单上的「接待时间」是计划时间，
+    3 分钟是表单填报噪声。按日期比，2 份审批单都通过，和人工 2/2 一致。
+
+    这条用例把口径钉死：哪天有人改成按时间戳比，这里会红。
+    """
+    _, res = _run_all()
+    f = res["FJPG-BX2606240151"]["TR-接待-01"]
+    assert f.outcome == "pass", (f.outcome, f.message)
+    d = f.evidence["逐份明细"][0]
+    # 时间戳上审批确实晚于接待——前提没变，用例才有意义
+    assert d["最后审批时间"] > d["接待时间"], d
+    # 而日期相同
+    assert d["审批日期"] == d["接待日期"] == "2026-06-23", d
+    human = db.scalar("""SELECT return_reason FROM manual_review
+                          WHERE bill_no='FJPG-BX2606240151'""")
+    assert "滞后" not in human, "人工驳回原话变了：现在提到滞后了，口径要重新核"
+
+
+def test_人工驳过审批滞后的招待单必须pending():
+    """人工为审批滞后驳过两张，**而这两张不是同一回事**：
+
+      FJPG-BX2607162084  业务招待费报账单
+        「业务审批清单，审批流程滞后」→ 说的是**业务接待审批单**，
+        由 TR-接待-01 判。这张单的接待审批单是 JPG，还没读图 → pending。
+
+      FJPG-BX2604160034  差旅费报账单
+        「审批滞后，请在补充说明栏备注原因」→ 说的是**出差审批**，
+        不是接待审批。TR-接待-01 对它返回「不适用」是对的。
+        这张单连 trip_application 都没有（审批单是扫描件），
+        所以出差审批那一侧现在也判不了。
+
+    **写这条用例时我先把两张都当成 TR-接待-01 的 pending，错了**——
+    差旅单上的审批滞后是另一条规则的事。把区别钉在这里，
+    免得以后有人为了「让这两张都被判到」去放宽 TR-接待-01 的适用范围。
+    """
+    _, res = _run_all()
+    # 招待单：pending，因为接待审批单是 JPG
+    f = res["FJPG-BX2607162084"]["TR-接待-01"]
+    assert f.outcome == "pending", (f.outcome, f.message)
+    assert db.scalar("""SELECT count(*) FROM entertain_approval
+                         WHERE bill_no='FJPG-BX2607162084'""") == 0
+    assert "滞后" in db.scalar("""SELECT return_reason FROM manual_review
+                                   WHERE bill_no='FJPG-BX2607162084'""")
+    # 差旅单：不适用，而且确实是差旅单
+    f2 = res["FJPG-BX2604160034"]["TR-接待-01"]
+    assert (f2.evidence or {}).get("not_applicable"), (f2.outcome, f2.message)
+    assert db.scalar("""SELECT doc_type FROM expense_bill
+                         WHERE bill_no='FJPG-BX2604160034'""") == "差旅费报账单"
+    assert db.scalar("""SELECT count(*) FROM trip_application
+                         WHERE bill_no='FJPG-BX2604160034'""") == 0, (
+        "这张单有出差审批单了——出差审批滞后那一侧可以判了，该补规则")
+
+
+def test_接待对象名单不进fact():
+    """guest_roster 是外部人员姓名与职务黏连的自由文本，脱敏闭集合切不出来。
+    入库但**不许进 fact**（口径同 entertain_detail.guest_list）。"""
+    fact, _ = reader.snapshot_fact("FJPG-BX2604260325")
+    apprs = fact.get("entertain_approvals") or []
+    assert apprs, "这张单没有已解析的接待审批单，用例前提变了"
+    for a in apprs:
+        assert "guest_roster" not in a, a
+        assert not any("roster" in k or "name" in k for k in a), list(a)
+    # 库里确实有值——不是因为没装进去才取不到
+    assert db.scalar("""SELECT count(*) FROM entertain_approval
+                         WHERE bill_no='FJPG-BX2604260325'
+                           AND guest_roster IS NOT NULL""") == 1
+
+
 # ── 地点与日期一致性（TR-差旅-28 / TR-差旅-30）──────────────────────────
+def test_通知上的活动起止被用上了():
+    """FJPG-BX2608311795 的培训通知**有文字层**，正文自报
+    「定于8 月22 日至28 日……举办」——解出 2026-08-22~2026-08-28，
+    和人工原话「按照培训通知体现出差时间应为8.22-8.28」逐字一致。
+
+    这是 TR-差旅-30 缺了很久的第三方。审批单申报 08-22~08-28 覆盖住了，
+    所以这一项通过；**人工驳的「仅体现8.22、8.28两天」说的是逐日表只填了
+    两天，那件事由 TR-通用-02 判（已命中）** —— 两条规则判的不是一回事，
+    别混。
+    """
+    _, res = _run_all()
+    f = res["FJPG-BX2608311795"]["TR-差旅-30"]
+    assert f.evidence["通知上的活动起止"] == ["2026-08-22~2026-08-28"], \
+        f.evidence["通知上的活动起止"]
+    assert "比了" in f.evidence["第三方比没比"], f.evidence["第三方比没比"]
+    assert f.outcome == "pass", (f.outcome, f.message)
+    # 同一张单上 TR-通用-02 必须还是命中（逐日表缺 5 天）
+    assert res["FJPG-BX2608311795"]["TR-通用-02"].outcome == "hit"
+
+
+def test_没有通知文字层的要明说第三方没比():
+    """8 份通知里 7 份是扫描件。那几张单的结论是「两方对得上」，
+    **不许读成三方都核过了**。"""
+    _, res = _run_all()
+    f = res["FJPG-BX2606050495"]["TR-差旅-30"]
+    assert f.outcome == "pass"
+    assert "**没比**" in f.evidence["第三方比没比"], f.evidence["第三方比没比"]
+    assert f.evidence["通知上的活动起止"] == "取不到"
+
+
+
 def test_地点一致性只拿住宿票比_代订机票不许参与():
     """**这组用例守的是三条实测出来的误报。**
 
