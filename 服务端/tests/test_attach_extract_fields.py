@@ -269,3 +269,116 @@ def test_一份完整回答能整段解出来():
     # 最后审批 07-16 晚于接待日期 07-15。
     assert max(v for k, v in f.items()
                if k.startswith("appr_") and v) > f["entertain_at"]
+
+
+# ── 7. A01 逐日表与签名日期（2026-11-01 第四轮）─────────────────────────
+# 守的是同一条纪律的另一面：第三轮**只抽表头就入库**，
+# 规则把「没读」判成「没填」，一次造出 6 条误报。
+# 这一组钉的是「读了多少必须记下来」，而不只是「读得对不对」。
+@pytest.fixture
+def a01(monkeypatch):
+    """A01 回写要查一次 expense_bill.doc_date 当年份基准，这里给个假的。"""
+    import datetime
+    monkeypatch.setattr(F.db, "query_one",
+                        lambda *a, **k: {"doc_date": datetime.date(2026, 4, 20)})
+    monkeypatch.setattr(F.db, "scalar", lambda *a, **k: 0)
+
+
+def _trip_params(spy):
+    return spy.find("INSERT INTO trip_application")[0][1]
+
+
+def test_逐日表的取值菜单必须正好是本体里的EN05和EN06():
+    """trip_application.meal_situation/car_situation 有外键
+    → enum_value_current。菜单和本体对不上，读出来的值一落库就 500；
+    而把外键放宽是错的改法（那等于让模型自己编枚举值）。"""
+    from app import db
+    for enum_id, menu in (("EN05", F.EN05_MENU), ("EN06", F.EN06_MENU)):
+        have = {r["value"] for r in db.query(
+            """SELECT value FROM enum_value_current
+                WHERE instance_id='822gh' AND enum_id=%s""", (enum_id,))}
+        assert set(menu) == have, (enum_id, sorted(set(menu) ^ have))
+
+
+def test_菜单以外的说法一律丢掉_不猜它想选哪个():
+    assert F._menu_pick("自行用餐", F.EN05_MENU) == "自行用餐（含免费）"
+    assert F._menu_pick("自行用餐（含免费）", F.EN05_MENU) == "自行用餐（含免费）"
+    assert F._menu_pick("领导安排", F.EN05_MENU) is None
+    assert F._menu_pick("空", F.EN05_MENU) is None
+
+
+def test_手写表不写年份时按出差年份补():
+    """实测 image_t0000000788：日期格手写「4 月 29 日」，没有年份。
+    补不出年份的整行丢掉——一个没有年份的「月29日」落进 trip_calendar，
+    判覆盖率时只会算错。"""
+    rows, bad = F._day_rows("4月29日=自行用餐|自行用餐|自行用餐", 3,
+                            F.EN05_MENU, 2026)
+    assert rows == [("2026-04-29", ["自行用餐（含免费）"] * 3)], rows
+    assert bad == 0
+    rows2, bad2 = F._day_rows("月 日=自行用餐", 3, F.EN05_MENU, 2026)
+    assert rows2 == [] and bad2 == 1
+
+
+def test_年份读差十年的逐日行要被丢掉并且记成没读准():
+    """实测 image_t0000000896/897：整页年份被读成 2016（实为 2026），
+    而模型自报把握是「高」——**把握不是这类错误的检测手段**。
+    丢掉这些行是对的；但丢完还说「读过了」，规则就会按剩下的 0 行
+    报「逐日表缺 N 天」，那是误报。所以第二个返回值必须是 1。"""
+    rows, bad = F._day_rows("2016-08-11=自行用餐|自行用餐|自行用餐", 3,
+                            F.EN05_MENU, 2026)
+    assert rows == [] and bad == 1
+
+
+def test_三块都答了才算读过(spy, a01):
+    F._apply("A01", "B1", 9,
+             {"start_date": "2026-04-14", "end_date": "2026-04-15",
+              "place": "莆田",
+              "meal_days": "2026-04-14=自行用餐|自行用餐|自行用餐；"
+                           "2026-04-15=自行用餐|自行用餐|自行用餐",
+              "car_days": "2026-04-14=自行用车|自行用车；"
+                          "2026-04-15=自行用车|自行用车",
+              "backfill_date": "2026-04-16"},
+             "m", "高", "822gh")
+    assert _trip_params(spy)[-1] is True, "三块都给了明确答复，detail_read 该是 True"
+    assert len(spy.find("INSERT INTO trip_calendar")) == 6, "两天 × 三个餐次"
+    assert len(spy.find("DELETE FROM trip_calendar")) == 1, \
+        "重读是新 attempt，不先清会累加，而累加只会把缺漏填平（漏报）"
+
+
+def test_票面上空着和没读清是两回事(spy, a01):
+    """「无」= 读了、票面上这张小表是空的 → 规则可以据此命中。
+    「不确定」= 没读清 → 规则必须 pending。
+    _clean 里这两个词原来都塌成 None，塌完就再也分不开了。"""
+    assert F._clean("逐日用餐", "无") == ""
+    assert F._clean("逐日用餐", "不确定") is None
+    F._apply("A01", "B1", 9,
+             {"start_date": "2026-04-14", "end_date": "2026-04-15",
+              "meal_days": "", "car_days": "", "backfill_date": ""},
+             "m", "高", "822gh")
+    p = _trip_params(spy)
+    assert p[-1] is True, "三块都答了「无」，这是读过了"
+    assert not spy.find("INSERT INTO trip_calendar")
+
+
+def test_有一块没读清就不算读过(spy, a01):
+    F._apply("A01", "B1", 9,
+             {"start_date": "2026-04-14", "end_date": "2026-04-15",
+              "meal_days": "2026-04-14=自行用餐|自行用餐|自行用餐",
+              "car_days": None,                      # 模型答了「不确定」
+              "backfill_date": "2026-04-16"},
+             "m", "高", "822gh")
+    assert _trip_params(spy)[-1] is False, \
+        "用车表没读清却标成读过了，规则会拿空值去报「缺 N 天」"
+
+
+def test_签名日期也要过年份闸(spy, a01):
+    """少这一道的后果实测过：image_t0000000896 整页年份读成 2016，
+    起止日期被闸挡住了，签名日期 2016-08-13 却原样落了库——
+    「有没有回填」判「有」是对的，值是错的。"""
+    F._apply("A01", "B1", 9,
+             {"start_date": "2016-08-13", "end_date": "2016-08-13",
+              "meal_days": "", "car_days": "", "backfill_date": "2016-08-17"},
+             "m", "高", "822gh")
+    p = _trip_params(spy)
+    assert "2016-08-17" not in p, "差十年的签名日期不许落库"
+    assert p[-1] is False, "签名日期被闸丢掉了，就不算读过"

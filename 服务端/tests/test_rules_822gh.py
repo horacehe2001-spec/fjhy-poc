@@ -469,14 +469,19 @@ def test_逐日表缺哪一天要逐字对上人工驳回():
     assert "8.22" in human2 and "8.28" in human2, human2
 
 
-def test_逐日表填满的十张不许误报():
-    """误报和漏报同样致命。这 10 张的用餐/用车逐日表覆盖了出差区间的每一天，
-    对它们报「审批单要素不全」，审核岗核对一次就不再看这条规则的结论了。"""
+def test_逐日表填满的十三张不许误报():
+    """误报和漏报同样致命。这 13 张的用餐/用车逐日表覆盖了出差区间的每一天，
+    对它们报「审批单要素不全」，审核岗核对一次就不再看这条规则的结论了。
+
+    10 → 13 是 2026-11-01 第四轮读图补的（提示词加了逐日表与签名日期）：
+    2604070969、2604160034、2606101698 三张的审批单是扫描件/手写勾选表，
+    读出来之后逐日表**是填满的**，所以它们从 pending 转成通过，不是转成命中。
+    """
     _, res = _run_all()
     passed = [bn for bn, m in res.items()
               if m["TR-通用-02"].outcome == "pass"
               and not (m["TR-通用-02"].evidence or {}).get("not_applicable")]
-    assert len(passed) == 10, sorted(passed)
+    assert len(passed) == 13, sorted(passed)
     for bn in passed:
         ev = res[bn]["TR-通用-02"].evidence
         for a in ev["逐份明细"]:
@@ -497,10 +502,10 @@ def test_招待单是不适用不是通过():
         assert (f.evidence or {}).get("not_applicable"), (bn, f.message)
 
 
-def test_读图只读了表头的六张要pending_不许当成没填():
+def test_没抽过逐日表的要pending_不许当成没填():
     """**这条用例守的是我自己造过的一个误报。**
 
-    2026-11-01 读图批给这 6 张单的扫描/JPG 审批单写了 trip_application 行，
+    2026-11-01 第三轮读图给 8 份扫描/JPG 审批单写了 trip_application 行，
     而那一轮的提示词只问了出差起止日期和出差地点三个字段——
     **逐日用餐/用车表没问、出差人签名日期也没问**。
     规则第一版看到「逐日表一行都没有」就报「缺 N 天」、
@@ -511,27 +516,57 @@ def test_读图只读了表头的六张要pending_不许当成没填():
     而把前者说成后者，是审核系统最该避免的那种错——
     对一张可能完全合规的单据，报出一条言之凿凿的缺陷。
 
-    人工为「未体现出差人回填情况（签字及日期）」驳过的两张单就在这 6 张里，
-    所以「签名回填」那一半的真实状态仍然是
-    「有能力判、本批判不到阳性样本」，不是「本批全部有回填」。
+    第四轮补了提示词之后，pending 从 6 降到 2：
+      · FJPG-BX2608272347 两份审批单整页年份被读成 2016（实为 2026），
+        表头日期和逐日行都被年份闸挡下，detail_read 留在 FALSE
+      · FJPG-BX2603240507 重读后模型把握降到「低」，整行不回写，
+        退回「本单没有已解析的出差审批单」
+    **闸按 detail_read 判，不按 extracted_from 判**——
+    按来源判的话，这一轮读到了的那 5 份也会被判成 pending（漏判）。
     """
     _, res = _run_all()
     pend = [bn for bn, m in res.items()
             if m["TR-通用-02"].outcome == "pending"]
-    assert len(pend) == 6, sorted(pend)
-    assert "FJPG-BX2603270004" in pend, "人工驳「未体现回填」的那张不在 pending 里了"
+    assert sorted(pend) == ["FJPG-BX2603240507", "FJPG-BX2608272347"], sorted(pend)
     for bn in pend:
-        # 这些单**有**审批单行了（读图写的），但全部是只读了表头的
-        apps = db.query("""SELECT app_no, extracted_from FROM trip_application
-                            WHERE bill_no=%s""", (bn,))
-        assert apps, bn
-        assert all(a["extracted_from"] == "审批单读图" for a in apps), (bn, apps)
-        # 而且理由必须明说是「没读」不是「没填」
+        apps = db.query("""SELECT app_no, extracted_from, detail_read
+                            FROM trip_application WHERE bill_no=%s""", (bn,))
+        # 要么一份审批单都没有，要么有但这三块没抽过——两种都不许当成「没填」
+        assert not apps or any(not a["detail_read"] for a in apps), (bn, apps)
         why = res[bn]["TR-通用-02"].message
-        assert "没有读" in why, (bn, why)
-    # 命中仍然是 4 张，一张都不许多——多出来的就是这类误报
+        assert ("没有读到" in why or "尚未读图" in why), (bn, why)
+    # 命中 5 张，一张都不许多——多出来的就是这类误报
     hits = [bn for bn, m in res.items() if m["TR-通用-02"].outcome == "hit"]
-    assert len(hits) == 4, sorted(hits)
+    assert len(hits) == 5, sorted(hits)
+
+
+def test_读图读出来的逐日表也能命中_而且是我亲眼核过的那一天():
+    """第四轮补提示词之后拿到的**新阳性样本**，不是换个说法的旧结论。
+
+    FJPG-BX2603270004 的 雒朔出差审批单.jpg 是 OA 页面截图：
+    表头「出差起止时间 2026-03-25 至 2026-03-26」，而「差旅用餐情况」
+    和「差旅用车情况」两张小表**各只有 2026-03-26 一行**。
+    这一条是打开原图逐格看过的（不是推断），所以它可以当锚点钉住。
+
+    人工对这张单驳的是另一件事（「出差审批未体现出差人回填情况（签字及日期）」），
+    而票面上签名日期现在是有的（雒朔 2026-03-25）——
+    客户给的 29 张是**已整改**的快照，驳回原因描述的是驳回当时。
+    所以这一条要说清：**它和人工驳回同一张单，但不是同一个理由。**
+    """
+    _, res = _run_all()
+    f = res["FJPG-BX2603270004"]["TR-通用-02"]
+    assert f.outcome == "hit", (f.outcome, f.message)
+    mine = [a for a in f.evidence["逐份明细"] if a["审批单"] == "ATT-6496"]
+    assert len(mine) == 1, f.evidence["逐份明细"]
+    assert mine[0]["缺的日期"] == ["2026-03-25"], mine[0]
+    assert mine[0]["出差起止"] == "2026-03-25~2026-03-26", mine[0]
+    # 签名日期票面上有，所以**不许**同时报「没有签名回填日期」
+    assert mine[0]["出差人签名日期"] == "2026-03-25", mine[0]
+    assert "签名" not in f.message, f.message
+    # 这一行确实是读图写的，不是文字层
+    src = db.query_one("""SELECT extracted_from, detail_read
+                            FROM trip_application WHERE app_no='ATT-6496'""")
+    assert src["extracted_from"] == "审批单读图" and src["detail_read"], dict(src)
 
 
 def test_一张单挂两份审批单要逐份判():

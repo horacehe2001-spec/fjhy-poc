@@ -38,16 +38,25 @@ def _n(sql, *a):
 def test_附件发票审批单都入库了且只在本实例():
     assert _n("SELECT count(*) FROM attachment WHERE instance_id=%s") == 147
     assert _n("SELECT count(*) FROM invoice WHERE instance_id=%s") == 53
-    # 15 文字层 + 8 读图（2026-11-01 读图批）
-    assert _n("SELECT count(*) FROM trip_application WHERE instance_id=%s") == 23
+    # 15 文字层 + 7 读图。**读图那一批从 8 变 7 是重读的结果，不是漏了一份**：
+    # 2026-11-01 第四轮补逐日表时顺带重读了这 8 份，
+    # 6f8ca644…jpg 第二次模型自报把握从「中」降到「低」，
+    # 低把握不回写（本模块的既有闸），于是它那一行没了。
+    # 这是对的：同一张图两次读出来的起止日期是 2024-03-04~2024-03-18，
+    # 而报账单是 2026 年 3 月——差两年，本来就不该当成读准了。
+    assert _n("SELECT count(*) FROM trip_application WHERE instance_id=%s") == 22
     assert _n("""SELECT count(*) FROM trip_application
                   WHERE instance_id=%s AND extracted_from='审批单文字层'""") == 15
     assert _n("""SELECT count(*) FROM trip_application
-                  WHERE instance_id=%s AND extracted_from='审批单读图'""") == 8
+                  WHERE instance_id=%s AND extracted_from='审批单读图'""") == 7
     # 90 不是 87：逐日行按**用餐段与用车段日期的并集**铺（2026-11-01 改）。
     # 原来只按用餐段铺，某天只填了用车就整天不入库，判「逐日表覆盖了几天」时
     # 会把它算成「两样都没填」——比实际严重，报告上多报一天。
-    assert _n("SELECT count(*) FROM trip_calendar WHERE instance_id=%s") == 90
+    # 111 = 文字层 90 + 读图 21（第四轮给 A01 的提示词补了那两张小表）。
+    assert _n("SELECT count(*) FROM trip_calendar WHERE instance_id=%s") == 111
+    assert _n("""SELECT count(*) FROM trip_calendar c
+                   JOIN trip_application t ON t.app_no = c.app_no
+                  WHERE c.instance_id=%s AND t.extracted_from='审批单读图'""") == 21
     # 别家一行不动（这几个数是第四批之前实测的基线）
     assert db.scalar("SELECT count(*) FROM attachment WHERE instance_id='fjhy'") == 273
     assert db.scalar("SELECT count(*) FROM invoice WHERE instance_id='fjhy'") == 184
@@ -131,8 +140,9 @@ def test_票面上没有的字段留空而不是补零():
 
 # ── 出差审批单与逐日 ────────────────────────────────────────────────────
 def test_出差审批单的表头字段全取到了():
-    """**只看文字层解出来的那 15 份。** 2026-11-01 读图批又写了 8 份，
-    但那一轮的提示词只问了出差起止日期和出差地点三个字段——
+    """**只看文字层解出来的那 15 份。** 2026-11-01 读图批又写了 7 份，
+    那两轮的提示词问的字段比文字层少（第三轮只问表头三个字段，
+    第四轮补了逐日表和签名日期，但天数/人数/事由/审批日期仍然没问）——
     其余列本来就是空的，混进来这条用例就变成在骂读图批没读它没问的东西。
     「哪些份该有全部字段」是按**来源**分的，不是按实例分的。"""
     for col in ("start_date", "end_date", "place", "days", "person_count",
@@ -481,7 +491,7 @@ def test_培训通知的活动起止解出来了():
     assert same == {"2026-05-24~2026-05-28"}, same
 
 
-def test_通用02已经不靠读图了_但剩下六张要明说还没判():
+def test_通用02已经不靠读图了_剩下两张要明说没读到():
     """**TR-通用-02 从这张「等视觉」名单里摘出来了，摘的理由要能复核。**
 
     原来它的结论是「0/29 张（判的就是图片内容）」。那个结论是错的：
@@ -493,31 +503,45 @@ def test_通用02已经不靠读图了_但剩下六张要明说还没判():
     摘出来之后要守住另一头：剩下 6 张审批单确实是扫描件/JPG，
     它们必须是 pending，**不许因为规则整体能跑了就算进「通过」**。
 
-    **2026-11-01 这 6 张的判据变了，数字没变。** 读图批把它们的审批单
-    读进来了，所以「没有审批单」这个判据不成立了；但那一轮只问了表头
-    三个字段，逐日表和签名日期**没读**。判据换成「这张单的审批单
-    全部来自只读了表头的读图批」——数字仍然是 6，含义从
-    「还没解析」变成「解析了，但没解析这条规则要的那部分」。
+    **2026-11-01 第三轮：读图把这 8 份读进来了，但只问了表头三个字段**，
+    逐日表和签名日期没读。当时的判据是「这张单的审批单全部来自读图批」，
+    数字仍是 6。
+
+    **第四轮：提示词补上了逐日表和签名日期，判据换成 detail_read**
+    （migration 0062 的列，TRUE = 这三块抽过了）。数字从 6 降到 2，
+    而且这两张**不是「还没做」**：它们是 image_t0000000896/897，
+    整页年份被读成 2016（实为 2026），表头日期和逐日行都被年份闸挡下，
+    所以 detail_read 留在 FALSE。另有 1 张差旅单（FJPG-BX2603240507）
+    重读后模型自报把握降到「低」，整行不回写——它退回「没有审批单」。
+
+    **判据不许再写成 extracted_from。** 来源和覆盖面是两个维度：
+    按来源判，下一轮提示词再补字段时，读到了也会被判成 pending（漏判）。
     """
     sc = rf.MANUAL_REVIEW["TR-通用-02"]["scope"]
     assert sc.startswith("20/29"), sc
-    # 读图批之后已经没有「一份审批单都没有」的差旅单了
+    # 读图批之后只剩 1 张差旅单一份审批单都没有（低把握那张不回写）
     assert _n("""SELECT count(*) FROM expense_bill b
                   WHERE b.instance_id=%s AND b.doc_type='差旅费报账单'
                     AND NOT EXISTS (SELECT 1 FROM trip_application t
-                                     WHERE t.bill_no=b.bill_no)""") == 0
-    # 6 张只有「读图表头」审批单的差旅单 —— 这个数就是 scope 里写的「判不了 6」
-    n_head_only = _n("""SELECT count(*) FROM expense_bill b
-                         WHERE b.instance_id=%s AND b.doc_type='差旅费报账单'
-                           AND EXISTS (SELECT 1 FROM trip_application t
-                                        WHERE t.bill_no=b.bill_no)
-                           AND NOT EXISTS (SELECT 1 FROM trip_application t
-                                            WHERE t.bill_no=b.bill_no
-                                              AND t.extracted_from='审批单文字层')""")
-    assert n_head_only == 6, n_head_only
+                                     WHERE t.bill_no=b.bill_no)""") == 1
+    # 有审批单、但其中有份没抽过逐日表/签名日期的差旅单 —— 这就是「判不了 2」
+    n_unread = _n("""SELECT count(*) FROM expense_bill b
+                      WHERE b.instance_id=%s AND b.doc_type='差旅费报账单'
+                        AND EXISTS (SELECT 1 FROM trip_application t
+                                     WHERE t.bill_no=b.bill_no)
+                        AND EXISTS (SELECT 1 FROM trip_application t
+                                     WHERE t.bill_no=b.bill_no
+                                       AND NOT t.detail_read)""")
+    assert n_unread == 1, n_unread
     assert "没读" in rf.MANUAL_REVIEW["TR-通用-02"]["why"], (
-        "复核结论里没说清这 6 张是「没读」不是「没填」")
-    assert "判不了 6" in sc, sc
+        "复核结论里没说清这些是「没读」不是「没填」")
+    # 抽过的那些，三块必须是一整套：逐日行有了，签名日期也该有
+    # （票面真没有签名日期是允许的——那正是这条规则要命中的情形——
+    #  所以只钉「读图来源里 detail_read 的份数」，不钉签名日期非空）
+    assert _n("""SELECT count(*) FROM trip_application
+                  WHERE instance_id=%s AND extracted_from='审批单读图'
+                    AND detail_read""") == 5
+    assert "判不了 2" in sc, sc
     # 人工为「未体现出差人回填情况（签字及日期）」驳过的那张就在这 6 张里，
     # 所以「签名回填」那一半本批没有阳性样本。这件事必须写在复核结论里，
     # 不能让报告读成「本批全部有回填」。
@@ -575,10 +599,19 @@ def test_标准入库后重核的几条范围也要对得上库():
           JOIN trip_application t ON t.bill_no = b.bill_no
           JOIN expense_detail d ON d.bill_no = b.bill_no
          WHERE b.instance_id = %s AND d.expense_item = '伙食补助费'""", (IID,))
-    # 2026-11-01：读图批给 8 份扫描/JPG 审批单补了出差日期，
+    # 2026-11-01：读图批给扫描/JPG 审批单补了出差日期，
     # 「有审批单」的单据变多了，这两条规则的适用面跟着变大。
     # **数字变了就改数字，不许把断言删掉**——这一条守的是
     # 「复核结论里的范围要对得上库里数得出来的数」。
-    assert (n_city, n_meal) == (12, 18), (n_city, n_meal)
+    # 第四轮重读之后 12→11、18→17：FJPG-BX2603240507 那份审批单
+    # 第二次读的把握降到「低」，整行不回写，于是它不再「有审批单」。
+    assert (n_city, n_meal) == (11, 17), (n_city, n_meal)
     assert rf.MANUAL_REVIEW["TR-差旅-20"]["scope"].startswith("12/29")
-    assert rf.MANUAL_REVIEW["TR-差旅-15"]["scope"].startswith("14/29")
+    # TR-差旅-15 的适用面不按这里的 n_meal 算，按**有没有逐日日历**算
+    # （它判的是「向接待单位交纳伙食费」，判据在 trip_calendar 上）。
+    # 第四轮读图写了 21 行逐日，于是 14→18。两个数不相等是对的，
+    # 别为了让它们相等去改其中一个。
+    assert rf.MANUAL_REVIEW["TR-差旅-15"]["scope"].startswith("18/29")
+    assert db.scalar("""SELECT count(DISTINCT t.bill_no) FROM trip_application t
+                         JOIN trip_calendar c ON c.app_no = t.app_no
+                        WHERE t.instance_id=%s""", (IID,)) == 18

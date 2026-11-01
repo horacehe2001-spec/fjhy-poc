@@ -21,6 +21,14 @@
 依然**不问金额**：业务接待审批单票面上的「标准（元/人）」「预算总额」
 看得见也不问，放开与否是口径决策，决策权在用户。
 
+**2026-11-01 第四轮：A01 出差审批单补上逐日用餐/用车两张小表与出差人
+签名日期。** 补它们不是为了多抽几个字段，是因为第三轮**只抽表头就入库**
+造出了 6 条误报：TR-通用-02 判的正是这两样，它看到空值一律当成
+「票面上没填」。这一轮同时把「抽没抽过」显式记进
+trip_application.detail_read（migration 0062）——
+**覆盖面要让规则看得见，不能靠规则去猜来源**。
+这三个字段是三态的（None 没读到 / "" 读了是空的 / 有值），见 _TRISTATE_KEYS。
+
 和 attachment_classify 同样的三条纪律：
   1. 判不出就是 NULL，不猜
   2. 把握不到「高」不回写到 invoice / hotel_invoice / transport_voucher /
@@ -109,15 +117,60 @@ A16_PROMPT = (
     "分管领导审批日期: <YYYY-MM-DD，这一格没有写 无，看不清写 不确定>\n"
     "主管领导审批日期: <YYYY-MM-DD，这一格没有写 无，看不清写 不确定>")
 
+# ── 出差审批单（A01）的逐日两张小表 ────────────────────────────────────────
+# 票面下半截是两张小表：「差旅用餐情况」日期 × 早/中/晚，
+# 「差旅用车情况」日期 × 上午/下午。每一格填的是下面这几个固定说法之一
+# （OA 打印件是文字，手写纸质表是三选一的勾选框，实测两种都见过）。
+#
+# **这两张菜单必须正好是本实例 EN05/EN06 的取值**——trip_application
+# .meal_situation/.car_situation 有外键 → enum_value_current，
+# 而 trip_calendar 的口径（下面 _day_rows 的调用处）也靠它判
+# 「这一格算不算接待单位安排的」。模型读出菜单以外的说法就丢掉，
+# 不猜它想选哪个（同 inv_type 的处理，理由也一样：这列有外键，编错直接 500）。
+# tests/test_attach_extract_fields.py 有一条用例把这两张菜单钉在库里的 EN05/EN06 上。
+EN05_MENU = ["自行用餐（含免费）", "协助安排就餐", "按规定接待一餐"]
+EN06_MENU = ["自行用车", "接待单位协助提供车辆", "本单位或其他单位提供车辆"]
+SELF_MEAL = "自行用餐（含免费）"
+SELF_CAR = "自行用车"
+MEAL_SLOTS = ["早", "中", "晚"]
+# 口径和 app/demo/load_822gh_attachments.py 的文字层装载**必须一致**，
+# 否则同一张表里会有两套含义的行。那边定的是：
+#   · 一天三行，每行一个餐次，meal_slot 记餐次
+#   · has_meal = 该餐不是「自行用餐（含免费）」（即接待单位安排了）
+#   · has_car  = 该日用车格里出现过「自行用车」以外的取值
+#   · place 留空（逐日地点票面上没有）
+A01_DETAIL_PROMPT = (
+    "逐日用餐: <「差旅用餐情况」小表里**填了内容的**每一行，"
+    "一行写成 日期=早的取值|中的取值|晚的取值，多天写在同一行、用分号隔开；"
+    "取值只许从这三个里选：%s；"
+    "勾选框表单就写打了勾的那一项，某一格空着写 空；"
+    "日期没写年份就按「出差起止时间」的年份补；"
+    "整张小表一行都没填写 无，看不清写 不确定>\n"
+    "逐日用车: <「差旅用车情况」小表里填了内容的每一行，"
+    "一行写成 日期=上午的取值|下午的取值，多天写在同一行、用分号隔开；"
+    "取值只许从这三个里选：%s；"
+    "某一格空着写 空；整张小表一行都没填写 无，看不清写 不确定>\n"
+    "出差人签名日期: <表单最下方「出差人签名」那一栏里的日期，YYYY-MM-DD；"
+    "有好几个签名就写**最早**的那个；"
+    "这一栏只有名字没有日期、或者整栏空着，写 无；看不清写 不确定>"
+    % ("/".join(EN05_MENU), "/".join(EN06_MENU)))
+
 FIELD_SPECS = {
-    "A01": {  # 出差审批单 → trip_application
+    # A01 2026-11-01 第四轮补了逐日两张小表与出差人签名日期。补它们的理由：
+    # TR-通用-02 判的正是这两样，而第三轮的提示词只问了表头三个字段，
+    # 规则看到空值当成「票面上没填」，**一次造出 6 条误报**。
+    # 现在票面上读没读到，由 trip_application.detail_read 显式记着（0062）。
+    "A01": {  # 出差审批单 → trip_application + trip_calendar
         "table": "trip_application",
-        "fields": ["start_date", "end_date", "place"],
+        "fields": ["start_date", "end_date", "place",
+                   "meal_days", "car_days", "backfill_date"],
         "prompt_fields": (
             "出差起始日期: <YYYY-MM-DD，看不清写 不确定>\n"
             "出差结束日期: <YYYY-MM-DD，看不清写 不确定>\n"
-            "出差地点: <目的地城市/地区，看不清写 不确定>"),
-        "keys": ["start_date", "end_date", "place"],
+            "出差地点: <目的地城市/地区，看不清写 不确定>\n"
+            + A01_DETAIL_PROMPT),
+        "keys": ["start_date", "end_date", "place",
+                 "meal_days", "car_days", "backfill_date"],
     },
     "A03": {  # 交通费报销凭证 → invoice + transport_voucher
         "table": "invoice+transport_voucher",
@@ -224,6 +277,9 @@ def _cfg(config_id=None):
 
 _FIELD_LABELS = {
     "出差起始日期": "start_date", "出差结束日期": "end_date", "出差地点": "place",
+    # A01 逐日两张小表与签名日期（三态，见 _TRISTATE_KEYS）
+    "逐日用餐": "meal_days", "逐日用车": "car_days",
+    "出差人签名日期": "backfill_date",
     "发票抬头": "title", "开票单位": "issuer", "发票明细": "detail_text",
     "交通工具": "vehicle", "座位等级": "seat_class", "出发地": "from_place",
     "到达地": "to_place", "乘车日期": "ride_date", "是否含往返": "has_round_trip",
@@ -253,6 +309,18 @@ _DATE_KEYS = ("start_date", "end_date", "ride_date", "check_in", "check_out",
               "issue_date", "notice_start", "notice_end",
               "entertain_at", "meal_at") + tuple(k for k, _ in A16_NODE_KEYS)
 _INT_KEYS = ("nights", "meal_persons")
+# ── 三态字段：None / "" / 有值 ──────────────────────────────────────────────
+# 其它字段只有两态（有值 / None），因为「票面没填」和「我没读清」对它们
+# 的后果一样——都只是少一个值。**这三个不一样**：TR-通用-02 判的就是
+# 「这两张小表填没填满」「签名日期有没有」，空值本身就是结论。
+#   None = 模型答「不确定」或整行没答 → **没读到**，规则必须 pending
+#   ""   = 模型答「无」              → **读了，票面上是空的**，规则可以命中
+#   有值 = 读到的内容
+# 这个三态要能进 attachment_extract.fields 这张台账的 JSON（"" 和 null 在
+# JSON 里是两个值），因为重放是从台账里取 fields 再调 _apply 的——
+# 塞不进台账的状态，重放时就丢了。
+_TRISTATE_KEYS = ("meal_days", "car_days", "backfill_date")
+_UNSURE_WORDS = ("不确定", "看不清", "无法判断", "不清楚")
 _LINE_RE = re.compile(r"([一-龥]+)[:：]\s*(.+)")
 _CONF_RE = re.compile(r"把握[:：]\s*([高中低])")
 
@@ -262,9 +330,17 @@ _DATE_RE = re.compile(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})")
 def _clean(label_cn, raw):
     """把一行原始回答转成可以入库的值。**「不确定」「无」一律变成 None，不猜。**"""
     raw = (raw or "").strip()
+    key = _FIELD_LABELS.get(label_cn)
+    # 三态字段要在「一律塌成 None」之前拦下来，否则「无」和「不确定」
+    # 在这里就被抹成同一个值，后面再也分不开（见 _TRISTATE_KEYS 的说明）。
+    if key in _TRISTATE_KEYS:
+        if not raw or raw in _UNSURE_WORDS:
+            return None
+        if raw in ("无", "空", "没有", "-", "—"):
+            return ""
+        return raw
     if not raw or raw in ("不确定", "无", "无法判断", "看不清"):
         return None
-    key = _FIELD_LABELS.get(label_cn)
     if key in _DATE_KEYS:
         m = _DATE_RE.search(raw)
         if not m:
@@ -319,7 +395,75 @@ def _parse(content, type_code):
     return fields, confidence
 
 
-def extract_one(attachment_id, config_id=None, max_tokens=600):
+# ── A01 逐日小表的解析（纯函数，不碰库，可单测）──────────────────────────
+# 日期容忍三种写法：2026-03-25 / 2026年3月25日 / 4月29日（手写表不写年）。
+# 不写年的用出差起止年份补——**补不出来就丢掉这一行**，
+# 一个没有年份的「月29日」落进 trip_calendar 只会让覆盖率算错。
+_DAY_RE = re.compile(r"(?:(\d{4})\s*[-/年.])?\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})")
+
+
+def _menu_pick(raw, menu):
+    """把一格的取值对到菜单上。对不上就 None——不猜它想选哪个。"""
+    raw = (raw or "").strip()
+    if not raw or raw in ("空", "无", "/", "-", "—") or raw in _UNSURE_WORDS:
+        return None
+    if raw in menu:
+        return raw
+    # 实测模型会漏掉括号部分（答「自行用餐」而票面是「自行用餐（含免费）」）。
+    # 单向包含即可判定，因为这两张菜单内部没有互相包含的取值。
+    for m in menu:
+        if raw in m or m in raw:
+            return m
+    return None
+
+
+def _one_or_none(vals):
+    """逐日逐格的取值聚合成单据级的一个值：全都一样才给，否则留空。
+    口径抄 app/demo/load_822gh_attachments.py 的同名函数——两条链路写的是
+    同一张表的同一列，聚合口径不一样的话，同一列里会有两种含义的值。"""
+    s = {v for v in vals if v}
+    return s.pop() if len(s) == 1 else None
+
+
+def _day_rows(raw, n_slots, menu, ref_year):
+    """「日期=取值|取值|取值；日期=…」→ ([(YYYY-MM-DD, [取值, …])], 丢掉几行)。
+
+    raw 为 None 表示**没读到**（调用方要据此决定 detail_read），
+    为 "" 表示读了、票面上这张小表是空的——两者在这里都返回空列表，
+    区分是调用方的事。
+
+    **第二个返回值不是调试信息，是闸的输入。** 丢掉的行分两种：
+    日期根本解不出来、年份离基准太远。两种都意味着这张小表**没读准**，
+    而「没读准」和「票面上没填」对 TR-通用-02 是相反的结论——
+    悄悄丢几行再让规则按剩下的算覆盖率，报出来的「缺 3 天」是假的。
+    2026-11-01 实测：image_t0000000896/897 两份的年份被读成 2016（实为 2026），
+    表头日期被年份闸挡下了，逐日行**也**整批被挡——
+    如果这时候 detail_read 还是 TRUE，这两张单立刻变成两条误报。
+    """
+    out, dropped = [], 0
+    for seg in re.split(r"[;；]", raw or ""):
+        m = re.match(r"(.*?)[=＝:：](.*)$", seg.strip())
+        if not m:
+            continue
+        dm = _DAY_RE.search(m.group(1))
+        if not dm:
+            dropped += 1
+            continue
+        y, mo, d = dm.groups()
+        y = int(y) if y else ref_year
+        # 年份离基准太远的整行丢掉（同表头日期的那道闸，理由一样：
+        # 一个 2016 年的逐日行会让「覆盖了哪几天」彻底错位）。
+        if not y or not (1 <= int(mo) <= 12 and 1 <= int(d) <= 31) \
+                or (ref_year and abs(y - ref_year) > 1):
+            dropped += 1
+            continue
+        vals = [_menu_pick(x, menu)
+                for x in re.split(r"[|｜、,，]", m.group(2))][:n_slots]
+        out.append(("%04d-%02d-%02d" % (y, int(mo), int(d)), vals))
+    return out, dropped
+
+
+def extract_one(attachment_id, config_id=None, max_tokens=900):
     """抽一张附件的字段。**一次调用，一行台账。**
 
     只有 type_code 在 FIELD_SPECS 里（已判过类型、且是决策表要求读图的发票/
@@ -441,7 +585,8 @@ def _apply(type_code, bill_no, attachment_id, f, model_name, confidence,
         place = f.get("place")
         if place and (len(place) > 20 or re.search(r"[，,。；;]", place)):
             f = dict(f, place=None)
-        if not any(f.get(k) for k in ("start_date", "end_date", "place")):
+        if not any(f.get(k) for k in ("start_date", "end_date", "place")) \
+                and all(f.get(k) is None for k in _TRISTATE_KEYS):
             return None
         days = None
         if f.get("start_date") and f.get("end_date"):
@@ -449,16 +594,67 @@ def _apply(type_code, bill_no, attachment_id, f, model_name, confidence,
             y1, m1, d1 = (int(x) for x in f["start_date"].split("-"))
             y2, m2, d2 = (int(x) for x in f["end_date"].split("-"))
             days = (date(y2, m2, d2) - date(y1, m1, d1)).days + 1
+        # ── 逐日两张小表 + 出差人签名日期（2026-11-01 第四轮补的）──────────
+        # detail_read 只在**三块都给了明确答复**时才置 TRUE。
+        # 「明确答复」包含「无」（票面上是空的），不包含「不确定」。
+        # 这一步容不得乐观：置成 TRUE 而实际没读清，TR-通用-02 就会拿
+        # 空值去报「逐日表缺 N 天」——第三轮那 6 条误报就是这么来的，
+        # 而且那种文案比真命中还确定（「缺 2026-04-14」听起来像查过了）。
+        meal_rows, meal_bad = _day_rows(f.get("meal_days"), 3, EN05_MENU, ref_y)
+        car_rows, car_bad = _day_rows(f.get("car_days"), 2, EN06_MENU, ref_y)
+        meal_by_day, car_by_day = dict(meal_rows), dict(car_rows)
+        # 单据级的那两格：逐日全都一样才给，否则留空（口径抄文字层装载的
+        # _one_or_none——挑一个「主要的」出来就是在编）。两列都有外键。
+        meal_sit = _one_or_none(v for vs in meal_by_day.values() for v in vs)
+        car_sit = _one_or_none(v for vs in car_by_day.values() for v in vs)
+        # 签名日期**要过和表头日期同一道年份闸**。少了这一道的后果实测过：
+        # image_t0000000896 的年份整页被读成 2016，起止日期被闸挡住了，
+        # 而签名日期 2016-08-13 原样落了库——一个差十年的日期留在
+        # 「有没有回填」这一列上，判「有」是对的、值是错的，
+        # 下一条按日期比对的规则就会拿它去算。
+        backfill = None
+        if f.get("backfill_date"):
+            bm = _DATE_RE.search(f["backfill_date"])
+            if bm and 1 <= int(bm.group(2)) <= 12 and 1 <= int(bm.group(3)) <= 31 \
+                    and not (ref_y and abs(int(bm.group(1)) - ref_y) > 1):
+                backfill = "%04d-%02d-%02d" % (int(bm.group(1)),
+                                               int(bm.group(2)), int(bm.group(3)))
+        # 三块都给了明确答复（「无」算明确），而且**一行都没有被闸丢掉**，
+        # 才算「读过」。被闸丢掉的那部分等于没读到，置 TRUE 就是把
+        # 「没读准」当成「票面上没填」——第三轮那 6 条误报就是这么来的。
+        backfill_bad = bool(f.get("backfill_date")) and backfill is None
+        detail_read = (all(f.get(k) is not None for k in _TRISTATE_KEYS)
+                       and not meal_bad and not car_bad and not backfill_bad)
         db.execute("""
             INSERT INTO trip_application(app_no, bill_no, start_date, end_date,
-                place, days, synced_from_oa, extracted_from)
-            VALUES (%s,%s,%s,%s,%s,%s,FALSE,'审批单读图')
+                place, days, synced_from_oa, extracted_from,
+                backfill_date, meal_situation, car_situation, detail_read)
+            VALUES (%s,%s,%s,%s,%s,%s,FALSE,'审批单读图',%s,%s,%s,%s)
             ON CONFLICT (app_no) DO UPDATE SET
                 start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date,
                 place=EXCLUDED.place, days=EXCLUDED.days,
-                extracted_from=EXCLUDED.extracted_from""",
+                extracted_from=EXCLUDED.extracted_from,
+                backfill_date=EXCLUDED.backfill_date,
+                meal_situation=EXCLUDED.meal_situation,
+                car_situation=EXCLUDED.car_situation,
+                detail_read=EXCLUDED.detail_read""",
             (inv_id, bill_no, f.get("start_date"), f.get("end_date"),
-             f.get("place"), days))
+             f.get("place"), days, backfill, meal_sit, car_sit, detail_read))
+        # 逐日行**先清后插**：同一张图重读是新 attempt，不清会累加，
+        # 而「覆盖了哪几天」是按行数之外的日期集合算的，累加不报错、
+        # 只会让缺漏被旧行填平（漏报）。清的范围只有这一份审批单。
+        db.execute("DELETE FROM trip_calendar WHERE app_no=%s", (inv_id,))
+        for d in sorted(set(meal_by_day) | set(car_by_day)):
+            vs = meal_by_day.get(d, [])
+            has_car = any(v and v != SELF_CAR for v in car_by_day.get(d, []))
+            for k, slot in enumerate(MEAL_SLOTS):
+                v = vs[k] if k < len(vs) else None
+                # instance_id 由 0046 的触发器从 trip_application 继承，不传。
+                db.execute("""INSERT INTO trip_calendar(app_no, cal_date,
+                                  meal_slot, has_meal, has_car)
+                              VALUES (%s,%s,%s,%s,%s)""",
+                           (inv_id, d, slot,
+                            (v is not None and v != SELF_MEAL), has_car))
         return "trip_application:%s" % inv_id
     if type_code in ("A03", "A04", "A05"):
         core_keys = ("title", "issuer", "detail_text",

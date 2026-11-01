@@ -62,6 +62,11 @@ TYPES = ["A16", "A06", "A01"]
 GO = os.environ.get("VISION") == "1"
 ONLY = int(os.environ.get("ONLY") or 0)
 PICK = [t for t in (os.environ.get("TYPE") or "").split(",") if t]
+# IDS=6495,6504 —— 点名挑附件号。ONLY 只能取「前 N 份」，而试跑要挑的是
+# **有代表性的那几份**（比如一份 OA 打印件 + 一份手写勾选表），
+# 顺序碰巧排在前面的不一定是它们。
+IDS = [int(x) for x in (os.environ.get("IDS") or "").replace("，", ",").split(",")
+       if x.strip().isdigit()]
 REAPPLY = os.environ.get("REAPPLY") == "1"
 WORK = os.path.join(config.SERVER_DIR, "var", "822gh_import")
 
@@ -148,16 +153,26 @@ def reapply():
                    WHERE instance_id=%s AND extracted_from=%s""",
                (IID, "审批单读图"))
     # trip_calendar 是 ON DELETE CASCADE 挂在 trip_application 上。
-    # 读图写的这些行一条逐日记录都没有（提示词只问了表头三个字段），
-    # 所以这一删不会带走任何逐日数据——但**这是个需要当场核的前提**，
-    # 不是可以假设的，下面那句就是核它。
-    n_cal = db.scalar("""SELECT count(*) FROM trip_calendar c
-                           JOIN trip_application t ON t.app_no = c.app_no
-                          WHERE t.instance_id=%s AND t.extracted_from=%s""",
-                      (IID, "审批单读图")) or 0
-    if n_cal:
-        raise SystemExit("中止：读图写的出差审批单下面挂着 %d 行逐日记录，"
-                         "删掉它们会连带删除逐日数据" % n_cal)
+    # **第四轮起读图自己也写逐日行了**（A01 的提示词补了那两张小表），
+    # 所以「挂着逐日行就中止」这道闸的原始写法已经不适用——
+    # 它会把每一次正常重放都挡死。闸要换个问法，但不能撤：
+    # 真正的危险是**删掉重放补不回来的行**，也就是挂在「这一批台账里
+    # 没有对应记录」的审批单下面的逐日行。2026-11-01 第三轮差点删掉的
+    # 90 行就属于这一类（它们是文字层写的，台账里一条都没有）。
+    orphan = db.scalar("""
+        SELECT count(*) FROM trip_calendar c
+          JOIN trip_application t ON t.app_no = c.app_no
+         WHERE t.instance_id=%s AND t.extracted_from=%s
+           AND t.app_no NOT IN (SELECT %s || e.attachment_id
+                                  FROM attachment_extract e
+                                  JOIN attachment a ON a.id = e.attachment_id
+                                 WHERE a.instance_id=%s AND e.ok
+                                   AND e.fields IS NOT NULL)""",
+        (IID, "审批单读图", "ATT-", IID)) or 0
+    if orphan:
+        raise SystemExit("中止：读图来源的出差审批单下面挂着 %d 行逐日记录，"
+                         "而它们对应的台账记录找不到——重放补不回这些行，"
+                         "删了就是真没了" % orphan)
     db.execute("""DELETE FROM trip_application
                    WHERE instance_id=%s AND extracted_from=%s""",
                (IID, "审批单读图"))
@@ -230,6 +245,13 @@ def main():
     if PICK:
         p("")
         p("（TYPE=%s：只挑这些类型，%d 份）" % (",".join(PICK), len(ids)))
+    if IDS:
+        miss = [i for i in IDS if i not in ids]
+        ids = [i for i in ids if i in IDS]
+        p("")
+        p("（IDS=%s：点名 %d 份%s）"
+          % (",".join(str(i) for i in IDS), len(ids),
+             ("；不在待读范围里的 %s" % miss) if miss else ""))
     if ONLY:
         ids = ids[:ONLY]
         p("")
